@@ -28,8 +28,11 @@ with "not yet supported in the GUI":
       there's a reason to read those fields
 - [ ] Sources: `Merge`, `Docker`, `Dlt`, `Otel` (`Schema` is wired, see
       below)
-- [ ] Streaming: `Tail`, `Reset` (`Pause`/`Resume`/`Stop` already work, see
-      above)
+- [ ] `Reset` (`Pause`/`Resume`/`Stop`/`Tail` already work, see below) —
+      deliberately skipped, not just unstarted: it wipes the whole SQLite
+      database (`db.reset_all()`) and touches app-wide fields `GuiState`
+      doesn't have (`session.restore_policy`/`restore_file_policy`),
+      unlike every other command on this list so far
 - [ ] Misc: `EnableMcp`/`DisableMcp`, `DefaultFilters`, `Run`, `Path`
       (`SidebarPosition` is wired, see below)
 
@@ -94,7 +97,10 @@ Even once the modes above are rendered, there's no effect yet for:
   sidebar actually moves sides, with its border flipping to match),
   `:schema <name>`/`:schema none`/`:schema` (shows the current one via a
   status message) — doesn't auto-load a format's default filter file the
-  way the TUI's does, see above; `Ctrl+P` file-switcher popup
+  way the TUI's does, see above; `Ctrl+P` file-switcher popup; `:tail`
+  (toggles `tail_mode` and jumps to the last line once — doesn't yet
+  follow newly-arriving lines, since the GUI has no live-tail growth
+  consumption at all)
 - Resizable, content-auto-fit log table columns; Time/Level columns hidden
   for unstructured files
 - Visual-line selection highlighting; a separate cursor-row highlight for

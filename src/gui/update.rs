@@ -612,16 +612,26 @@ fn handle_command_string(state: &mut GuiState, cmd: String) -> Effect {
     }
 }
 
-/// Handles `Commands::Pause`/`Resume`/`Stop` directly on `tab.stream`,
-/// mirroring the TUI's `cmd_pause`/`cmd_resume`/`cmd_stop` (`src/ui/
-/// commands/stream.rs`) — these never touch `LogManager`, so they skip the
-/// async `Effect::ExecuteCommand` round trip entirely. Returns `true` when
-/// `command` was one of these and has been applied.
+/// Handles `Commands::Pause`/`Resume`/`Stop`/`Tail` directly on
+/// `tab.stream`, mirroring the TUI's `cmd_pause`/`cmd_resume`/`cmd_stop`/
+/// `cmd_tail` (`src/ui/commands/stream.rs`) — these never touch
+/// `LogManager`, so they skip the async `Effect::ExecuteCommand` round
+/// trip entirely. `Tail` jumping to the last line is a one-time effect;
+/// actually following new lines as they arrive needs live-tail growth
+/// consumption, which the GUI doesn't have yet (see `GUI_PARITY_BACKLOG.md`).
+/// Returns `true` when `command` was one of these and has been applied.
 fn apply_stream_command(tab: &mut TabState, command: &Commands) -> bool {
     match command {
         Commands::Pause => tab.stream.paused = true,
         Commands::Resume => tab.stream.paused = false,
         Commands::Stop => tab.stream.watch = None,
+        Commands::Tail => {
+            tab.stream.tail_mode = !tab.stream.tail_mode;
+            if tab.stream.tail_mode {
+                let last = tab.filter.visible_indices.len().saturating_sub(1);
+                tab.scroll.scroll_offset = last;
+            }
+        }
         _ => return false,
     }
     true
@@ -1530,6 +1540,20 @@ mod tests {
         assert!(matches!(effect, Effect::None));
         assert!(state.tabs[0].stream.watch.is_none());
         assert!(!is_tab_live(&state.tabs[0]));
+    }
+
+    #[tokio::test]
+    async fn tail_command_toggles_tail_mode_and_jumps_to_the_last_line() {
+        let (mut state, _file) = state_with_one_tab().await;
+        assert!(!state.tabs[0].stream.tail_mode);
+        state.tabs[0].scroll.scroll_offset = 0;
+        let effect = handle_command_string(&mut state, "tail".to_string());
+        assert!(matches!(effect, Effect::None));
+        assert!(state.tabs[0].stream.tail_mode);
+        let last = state.tabs[0].filter.visible_indices.len() - 1;
+        assert_eq!(state.tabs[0].scroll.scroll_offset, last);
+        handle_command_string(&mut state, "tail".to_string());
+        assert!(!state.tabs[0].stream.tail_mode);
     }
 
     #[tokio::test]
