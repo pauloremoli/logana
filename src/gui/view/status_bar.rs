@@ -1,0 +1,27 @@
+use crate::gui::status::{status_bar_info, status_bar_left_text, status_bar_right_text};
+use crate::ui::TabState;
+use gpui_kit::gpui::prelude::*;
+use gpui_kit::gpui::{div, px};
+
+/// The bottom status bar: total/showing/filtered counts on the left,
+/// cursor position on the right. `.flex()`/`.h()`/`.overflow_hidden()` are
+/// load-bearing here, not cosmetic — see `log_pane.rs`'s `styled_line_row`
+/// doc comment for why a flat row like this must always set them.
+pub fn status_bar(tab: Option<&TabState>) -> impl IntoElement {
+    let (left, right) = match tab {
+        Some(tab) => {
+            let info = status_bar_info(tab);
+            (status_bar_left_text(&info), status_bar_right_text(&info))
+        }
+        None => (String::new(), String::new()),
+    };
+    div()
+        .flex()
+        .justify_between()
+        .items_center()
+        .h(px(24.))
+        .px(px(8.))
+        .overflow_hidden()
+        .child(left)
+        .child(right)
+}

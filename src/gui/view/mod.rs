@@ -5,6 +5,7 @@ pub mod log_pane;
 pub mod mode_bar;
 pub mod search_bar;
 pub mod sidebar;
+pub mod status_bar;
 pub mod tab_bar;
 
 use crate::gui::app::App;
@@ -21,6 +22,7 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
         .child(command_bar::command_bar(&app.state))
         .child(search_bar::search_bar(&app.state))
         .child(mode_bar::mode_bar(&app.state))
+        .child(status_bar::status_bar(app.state.active_tab()))
 }
 
 fn body(app: &mut App, _window: &mut Window, cx: &mut Context<App>) -> impl IntoElement {
