@@ -1,11 +1,11 @@
 use crate::gui::app::App;
-use crate::gui::color::{LineStyle, ratatui_color_to_gpui, resolve_line_style};
+use crate::gui::color::{ratatui_color_to_gpui, resolve_line_style};
 use crate::mode::app_mode::ModeRenderState;
 use crate::theme::Theme as TuiTheme;
 use crate::ui::TabState;
 use gpui_kit::base::{VirtualListScrollHandle, v_virtual_list};
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{AnyElement, Context, Rgba, Size, div, px};
+use gpui_kit::gpui::{AnyElement, Context, Size, div, px};
 use std::rc::Rc;
 
 /// Fixed row height, used for every visible log line — the virtual list
@@ -97,51 +97,27 @@ fn line_row(tab: &TabState, line_idx: usize, selected: bool, theme: &TuiTheme) -
         }
         return row.into_any_element();
     }
-    match resolve_line_style(
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    let mut row = div().w_full().truncate().child(text);
+    // Splitting the line into separate per-span text children (so only
+    // the matched substring, not the whole row, carries the color) made
+    // every styled row render far taller than its 20px virtual-list slot
+    // and bleed into the rows below it — reverted to coloring the whole
+    // row until that layout issue is understood; see `LineStyle::spans`
+    // for the still-correct match-only byte ranges, unused here for now.
+    if let Some(style) = resolve_line_style(
         bytes,
         tab.log_manager.get_filters(),
         tab.log_manager.get_group_styles(),
     ) {
-        Some(style) => styled_line_row(bytes, &style),
-        None => {
-            let text = String::from_utf8_lossy(bytes).into_owned();
-            div().w_full().truncate().child(text).into_any_element()
+        if let Some(bg) = style.bg {
+            row = row.bg(bg);
         }
-    }
-}
-
-/// Splits a line into alternating plain/highlighted text segments so
-/// `style`'s color applies only to its spans — one span per match by
-/// default, or the whole line for a line-mode (`-l`) filter — leaving the
-/// rest of the line in the default text color. gpui has no single-element
-/// "highlight this substring" primitive, so this builds one child per
-/// segment instead of styling the row as a whole.
-fn styled_line_row(bytes: &[u8], style: &LineStyle) -> AnyElement {
-    let mut row = div().w_full().overflow_hidden().whitespace_nowrap();
-    let mut pos = 0usize;
-    for &(start, end) in &style.spans {
-        if start > pos {
-            row = row.child(text_segment(&bytes[pos..start], None, None));
+        if let Some(fg) = style.fg {
+            row = row.text_color(fg);
         }
-        row = row.child(text_segment(&bytes[start..end], style.fg, style.bg));
-        pos = end.max(pos);
-    }
-    if pos < bytes.len() {
-        row = row.child(text_segment(&bytes[pos..], None, None));
     }
     row.into_any_element()
-}
-
-fn text_segment(bytes: &[u8], fg: Option<Rgba>, bg: Option<Rgba>) -> AnyElement {
-    let text = String::from_utf8_lossy(bytes).into_owned();
-    let mut el = div().child(text);
-    if let Some(bg) = bg {
-        el = el.bg(bg);
-    }
-    if let Some(fg) = fg {
-        el = el.text_color(fg);
-    }
-    el.into_any_element()
 }
 
 #[cfg(test)]
