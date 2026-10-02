@@ -87,7 +87,59 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             state.nav_page = page;
             Effect::None
         }
+        Message::TimeRangeToggled => {
+            state.time_range_open = !state.time_range_open;
+            Effect::None
+        }
+        Message::TimeRangeSelected(preset) => {
+            state.time_range_open = false;
+            state.time_range_preset = preset;
+            apply_time_range_preset(state, preset)
+        }
+        Message::StreamToggled(tab_idx) => {
+            let cmd = match state.tabs.get(tab_idx) {
+                Some(tab) if tab.stream.paused => "resume",
+                Some(_) => "pause",
+                None => return Effect::None,
+            };
+            state.active_tab = tab_idx;
+            handle_command_string(state, cmd.to_string())
+        }
     }
+}
+
+/// Applies a time-range preset: runs the real `:date-filter` command for
+/// every preset except `AllTime`, which instead clears the date filter —
+/// but only when it's the *only* active filter, so switching to "All
+/// time" can never silently drop unrelated filters the user still wants.
+/// With other filters present, this just points the user at the Filters
+/// panel instead of guessing what they meant.
+fn apply_time_range_preset(
+    state: &mut GuiState,
+    preset: crate::gui::time_range::TimeRangePreset,
+) -> Effect {
+    let tab_idx = state.active_tab;
+    let Some(expr) =
+        crate::gui::time_range::date_filter_expression(preset, time::OffsetDateTime::now_utc())
+    else {
+        let Some(tab) = state.tabs.get(tab_idx) else {
+            return Effect::None;
+        };
+        let filters = tab.log_manager.get_filters();
+        return match filters {
+            [only] if only.pattern.starts_with(DATE_PREFIX) => {
+                handle_command_string(state, "clear-filters".to_string())
+            }
+            _ if filters.iter().any(|f| f.pattern.starts_with(DATE_PREFIX)) => {
+                state.status = Some(StatusMessage::Error(
+                    "Remove the date filter from the Filters panel".to_string(),
+                ));
+                Effect::None
+            }
+            _ => Effect::None,
+        };
+    };
+    handle_command_string(state, format!("date-filter {expr}"))
 }
 
 /// Drives the active tab's real `Mode` object with a keystroke, exactly
@@ -963,6 +1015,112 @@ mod tests {
             Message::NavPageSelected(crate::gui::state::NavPage::Logs),
         );
         assert_eq!(state.nav_page, crate::gui::state::NavPage::Logs);
+    }
+
+    #[tokio::test]
+    async fn time_range_toggled_opens_and_closes_the_dropdown() {
+        let (mut state, _file) = state_with_one_tab().await;
+        assert!(!state.time_range_open);
+        update(&mut state, Message::TimeRangeToggled);
+        assert!(state.time_range_open);
+        update(&mut state, Message::TimeRangeToggled);
+        assert!(!state.time_range_open);
+    }
+
+    #[tokio::test]
+    async fn time_range_selected_closes_the_dropdown_and_records_the_preset() {
+        use crate::gui::time_range::TimeRangePreset;
+        let (mut state, _file) = state_with_one_tab().await;
+        state.time_range_open = true;
+        let effect = update(
+            &mut state,
+            Message::TimeRangeSelected(TimeRangePreset::LastHour),
+        );
+        assert!(!state.time_range_open);
+        assert_eq!(state.time_range_preset, TimeRangePreset::LastHour);
+        match effect {
+            Effect::ExecuteCommand { command, .. } => {
+                assert!(matches!(command, Commands::DateFilter { .. }));
+            }
+            other => panic!("expected ExecuteCommand, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn all_time_clears_a_lone_date_filter() {
+        use crate::gui::time_range::TimeRangePreset;
+        let (mut state, _file) = state_with_one_tab().await;
+        let lm = execute_command(
+            state.tabs[0].log_manager.clone(),
+            command("date-filter > 2024-01-01"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap();
+        state.tabs[0].log_manager = lm;
+        assert_eq!(state.tabs[0].log_manager.get_filters().len(), 1);
+
+        let effect = update(
+            &mut state,
+            Message::TimeRangeSelected(TimeRangePreset::AllTime),
+        );
+        match effect {
+            Effect::ExecuteCommand { command, .. } => {
+                assert!(matches!(command, Commands::ClearFilters));
+            }
+            other => panic!("expected ExecuteCommand(ClearFilters), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn all_time_leaves_other_filters_alone_and_shows_a_status_message() {
+        use crate::gui::time_range::TimeRangePreset;
+        let (mut state, _file) = state_with_one_tab().await;
+        let lm = execute_command(
+            state.tabs[0].log_manager.clone(),
+            command("date-filter > 2024-01-01"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap();
+        let lm = execute_command(lm, command("filter ERROR"), TEST_THEME_BG)
+            .await
+            .unwrap();
+        state.tabs[0].log_manager = lm;
+        assert_eq!(state.tabs[0].log_manager.get_filters().len(), 2);
+
+        let effect = update(
+            &mut state,
+            Message::TimeRangeSelected(TimeRangePreset::AllTime),
+        );
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(state.tabs[0].log_manager.get_filters().len(), 2);
+        assert!(matches!(state.status, Some(StatusMessage::Error(_))));
+    }
+
+    #[tokio::test]
+    async fn all_time_is_a_no_op_without_any_date_filter() {
+        use crate::gui::time_range::TimeRangePreset;
+        let (mut state, _file) = state_with_one_tab().await;
+        let effect = update(
+            &mut state,
+            Message::TimeRangeSelected(TimeRangePreset::AllTime),
+        );
+        assert!(matches!(effect, Effect::None));
+        assert!(state.status.is_none());
+    }
+
+    #[tokio::test]
+    async fn stream_toggled_pauses_a_live_tab_and_resumes_it() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.tabs[0].stream.watch = Some(fake_watch_state());
+        let effect = update(&mut state, Message::StreamToggled(0));
+        assert!(matches!(effect, Effect::None));
+        assert!(state.tabs[0].stream.paused);
+
+        let effect = update(&mut state, Message::StreamToggled(0));
+        assert!(matches!(effect, Effect::None));
+        assert!(!state.tabs[0].stream.paused);
     }
 
     #[tokio::test]

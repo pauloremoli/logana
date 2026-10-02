@@ -1,4 +1,5 @@
 use crate::db::Database;
+use crate::gui::time_range::TimeRangePreset;
 use crate::theme::Theme as TuiTheme;
 use crate::ui::TabState;
 use std::sync::Arc;
@@ -10,6 +11,8 @@ pub struct GuiState {
     pub status: Option<StatusMessage>,
     pub theme: TuiTheme,
     pub nav_page: NavPage,
+    pub time_range_open: bool,
+    pub time_range_preset: TimeRangePreset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +41,8 @@ impl GuiState {
             status: None,
             theme: TuiTheme::default(),
             nav_page: NavPage::default(),
+            time_range_open: false,
+            time_range_preset: TimeRangePreset::default(),
         }
     }
 

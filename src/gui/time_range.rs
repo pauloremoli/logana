@@ -1,12 +1,22 @@
 /// A preset choice for the search bar's time-range dropdown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TimeRangePreset {
     Last15Min,
     LastHour,
     Last24Hours,
     Today,
+    #[default]
     AllTime,
 }
+
+/// Every preset, in the order the dropdown lists them.
+pub const ALL_PRESETS: [TimeRangePreset; 5] = [
+    TimeRangePreset::Last15Min,
+    TimeRangePreset::LastHour,
+    TimeRangePreset::Last24Hours,
+    TimeRangePreset::Today,
+    TimeRangePreset::AllTime,
+];
 
 /// Label shown on the dropdown's closed button and its own menu entry.
 pub fn preset_label(preset: TimeRangePreset) -> &'static str {
