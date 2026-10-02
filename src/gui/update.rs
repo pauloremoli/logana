@@ -217,22 +217,49 @@ fn handle_global_key(state: &mut GuiState, code: KeyCode, modifiers: KeyModifier
 /// rather than silently ignored — see `execute_command`.
 fn handle_command_string(state: &mut GuiState, cmd: String) -> Effect {
     let tab_idx = state.active_tab;
+    let command = match parse_command(&cmd) {
+        Ok(Some(command)) => command,
+        Ok(None) => return Effect::None,
+        Err(err) => {
+            state.status = Some(StatusMessage::Error(err));
+            return Effect::None;
+        }
+    };
+    if let Some(tab) = state.tabs.get_mut(tab_idx)
+        && apply_stream_command(tab, &command)
+    {
+        return Effect::None;
+    }
     let Some(tab) = state.tabs.get(tab_idx) else {
         return Effect::None;
     };
-    match parse_command(&cmd) {
-        Ok(Some(command)) => Effect::ExecuteCommand {
-            tab_idx,
-            log_manager: tab.log_manager.clone(),
-            command,
-            theme_bg: crate::theme::color_to_rgb(state.theme.root_bg),
-        },
-        Ok(None) => Effect::None,
-        Err(err) => {
-            state.status = Some(StatusMessage::Error(err));
-            Effect::None
-        }
+    Effect::ExecuteCommand {
+        tab_idx,
+        log_manager: tab.log_manager.clone(),
+        command,
+        theme_bg: crate::theme::color_to_rgb(state.theme.root_bg),
     }
+}
+
+/// Handles `Commands::Pause`/`Resume`/`Stop` directly on `tab.stream`,
+/// mirroring the TUI's `cmd_pause`/`cmd_resume`/`cmd_stop` (`src/ui/
+/// commands/stream.rs`) — these never touch `LogManager`, so they skip the
+/// async `Effect::ExecuteCommand` round trip entirely. Returns `true` when
+/// `command` was one of these and has been applied.
+fn apply_stream_command(tab: &mut TabState, command: &Commands) -> bool {
+    match command {
+        Commands::Pause => tab.stream.paused = true,
+        Commands::Resume => tab.stream.paused = false,
+        Commands::Stop => tab.stream.watch = None,
+        _ => return false,
+    }
+    true
+}
+
+/// Whether `tab` is actively tailing its source: a watcher is running and
+/// hasn't been paused. Feeds the search bar's "Live" dot/toggle.
+pub fn is_tab_live(tab: &TabState) -> bool {
+    tab.stream.watch.is_some() && !tab.stream.paused
 }
 
 fn advance_tab(state: &mut GuiState, delta: isize) {
@@ -868,6 +895,54 @@ mod tests {
         force_recompute(&mut tab);
         state.tabs.push(tab);
         (state, file)
+    }
+
+    fn fake_watch_state() -> crate::ui::FileWatchState {
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        crate::ui::FileWatchState {
+            snapshot_rx: rx,
+            reader_path: PathBuf::from("test.log"),
+            temp_file: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn pause_command_pauses_a_live_tab() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.tabs[0].stream.watch = Some(fake_watch_state());
+        assert!(is_tab_live(&state.tabs[0]));
+        let effect = handle_command_string(&mut state, "pause".to_string());
+        assert!(matches!(effect, Effect::None));
+        assert!(state.tabs[0].stream.paused);
+        assert!(!is_tab_live(&state.tabs[0]));
+    }
+
+    #[tokio::test]
+    async fn resume_command_unpauses_a_tab() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.tabs[0].stream.watch = Some(fake_watch_state());
+        state.tabs[0].stream.paused = true;
+        let effect = handle_command_string(&mut state, "resume".to_string());
+        assert!(matches!(effect, Effect::None));
+        assert!(!state.tabs[0].stream.paused);
+        assert!(is_tab_live(&state.tabs[0]));
+    }
+
+    #[tokio::test]
+    async fn stop_command_clears_the_watcher() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.tabs[0].stream.watch = Some(fake_watch_state());
+        let effect = handle_command_string(&mut state, "stop".to_string());
+        assert!(matches!(effect, Effect::None));
+        assert!(state.tabs[0].stream.watch.is_none());
+        assert!(!is_tab_live(&state.tabs[0]));
+    }
+
+    #[tokio::test]
+    async fn is_tab_live_is_false_without_a_watcher() {
+        let (state, _file) = state_with_one_tab().await;
+        assert!(state.tabs[0].stream.watch.is_none());
+        assert!(!is_tab_live(&state.tabs[0]));
     }
 
     #[tokio::test]
