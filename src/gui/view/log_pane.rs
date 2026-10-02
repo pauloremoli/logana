@@ -13,7 +13,9 @@ use std::rc::Rc;
 
 /// Fixed row height, used for every visible log line — the virtual list
 /// only needs height to lay out rows; width is inferred from content.
-const ROW_HEIGHT_PX: f32 = 20.0;
+/// 24px (not a bare 1:1 text-line height) deliberately leaves a few
+/// pixels of breathing room above/below each row's text.
+const ROW_HEIGHT_PX: f32 = 24.0;
 
 /// Column widths, shared between the fixed header row and every data row
 /// so they can never drift apart. Message has no fixed width — it's the
@@ -22,7 +24,9 @@ const COL_LINE_NO_WIDTH: f32 = 56.0;
 // Wide enough for a full microsecond-precision ISO 8601 timestamp
 // ("2026-04-11T19:39:02.389121Z", 27 chars) without truncating.
 const COL_TIME_WIDTH: f32 = 230.0;
-const COL_LEVEL_WIDTH: f32 = 64.0;
+// Wide enough for "WARNING" (the longest `LogLevel` uppercase label) plus
+// the pill's own padding without clipping — 64px cut it off.
+const COL_LEVEL_WIDTH: f32 = 84.0;
 
 /// Renders the log table: a fixed header row (`#`/Time/Level/Message)
 /// above the currently-visible window of `tab.filter.visible_indices`,
@@ -126,6 +130,26 @@ fn row_time_text(tab: &TabState, bytes: &[u8]) -> Option<String> {
     Some(timestamp.to_string())
 }
 
+/// The Message column's bytes: a detected format's parsed `message` field,
+/// so the timestamp/level/target already shown in their own columns don't
+/// also repeat inline — or the full raw line when there's no detected
+/// format, parsing fails, or the format doesn't capture a `message` field
+/// (an unstructured file's only option). `LogFormatParser::parse_line`'s
+/// contract guarantees `message` borrows from `bytes` itself, so this
+/// recovers its byte range via the same pointer-offset technique
+/// `ui::tab_state::merged_message_range` already uses for the same
+/// invariant, rather than reparsing or copying.
+fn row_message_bytes<'a>(tab: &TabState, bytes: &'a [u8]) -> &'a [u8] {
+    let Some(parser) = tab.display.format.as_deref() else {
+        return bytes;
+    };
+    let Some(message) = parser.parse_line(bytes).and_then(|parts| parts.message) else {
+        return bytes;
+    };
+    let start = message.as_ptr() as usize - bytes.as_ptr() as usize;
+    &bytes[start..start + message.len()]
+}
+
 /// Each row renders as a `#`/Time/Level/Message table row, matching the
 /// TUI's default (`:wrap` is off until a later phase implements it):
 /// wrapping a long line onto multiple visual lines without the virtual
@@ -160,15 +184,16 @@ fn line_row(
     } else {
         level_cell(classify_line_level(tab, bytes), theme)
     };
+    let message_bytes = row_message_bytes(tab, bytes);
     let message_cell = if selected {
         div()
             .flex_1()
             .overflow_hidden()
             .whitespace_nowrap()
-            .child(String::from_utf8_lossy(bytes).into_owned())
+            .child(String::from_utf8_lossy(message_bytes).into_owned())
             .into_any_element()
     } else {
-        message_cell(tab, bytes)
+        message_cell(tab, message_bytes)
     };
 
     let mut row = div()
@@ -189,11 +214,12 @@ fn line_row(
             row = row.text_color(fg);
         }
     }
-    // Matches the TUI's own visual-selection render: every selected row
-    // gets the bg/fg above, but only the one at the cursor (`tab.scroll.
-    // scroll_offset`, one end of the selected range) also gets bold +
-    // underline, marking which end is "active".
-    if is_cursor_row {
+    // Matches the TUI's own visual-selection render (see
+    // `test_cursor_line_has_no_cursor_bg` in `src/ui/render.rs`): plain
+    // cursor movement outside of `VisualLineMode` gets no highlighting at
+    // all — bold + underline marks which end of an active selection is
+    // "the cursor", not just "wherever the cursor currently is".
+    if selected && is_cursor_row {
         row = row.font_weight(FontWeight::BOLD).underline();
     }
     row.into_any_element()
@@ -230,7 +256,8 @@ fn level_cell(level: LogLevel, theme: &TuiTheme) -> AnyElement {
             div()
                 .flex_shrink_0()
                 .px(px(6.))
-                .rounded(px(4.))
+                .py(px(1.))
+                .rounded(px(6.))
                 .bg(bg)
                 .text_color(fg)
                 .whitespace_nowrap()
@@ -359,6 +386,24 @@ mod tests {
         let t = tab().await;
         assert!(t.display.format.is_none());
         assert_eq!(row_time_text(&t, b"a"), None);
+    }
+
+    #[tokio::test]
+    async fn row_message_bytes_is_the_full_line_without_a_detected_format() {
+        let t = tab().await;
+        let line = b"<134>Oct 11 22:14:15 myhost sshd[1234]: Accepted password for user";
+        assert_eq!(row_message_bytes(&t, line), line.as_slice());
+    }
+
+    #[tokio::test]
+    async fn row_message_bytes_strips_the_syslog_prefix_so_time_is_not_duplicated() {
+        let mut t = tab().await;
+        t.display.format = Some(Arc::new(crate::parser::SyslogParser::default()));
+        let line = b"<134>Oct 11 22:14:15 myhost sshd[1234]: Accepted password for user";
+        assert_eq!(
+            row_message_bytes(&t, line),
+            b"Accepted password for user".as_slice()
+        );
     }
 
     #[tokio::test]
