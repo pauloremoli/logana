@@ -12,6 +12,7 @@ use crate::gui::state::{GuiState, StatusMessage};
 use crate::ingestion::FileReader;
 use crate::input::{KeyCode, KeyModifiers};
 use crate::mode::command_mode::CommandMode;
+use crate::mode::file_switcher_mode::FileSwitcherMode;
 use crate::mode::normal_mode::NormalMode;
 use crate::mode::theme_picker_mode::ThemePickerMode;
 use crate::mode::value_colors_mode::{
@@ -538,8 +539,29 @@ fn handle_global_key(state: &mut GuiState, code: KeyCode, modifiers: KeyModifier
     {
         let history = tab.interaction.command_history.clone();
         tab.interaction.mode = Box::new(CommandMode::with_history("open ".to_string(), 5, history));
+    } else if kb.global.file_switcher.matches(code, modifiers) {
+        open_file_switcher(state);
     }
     Effect::None
+}
+
+/// Mirrors the TUI's `App::handle_open_file_switcher` (`src/ui/tabs.rs`):
+/// snapshots every open tab's (stable id, title) and enters
+/// `FileSwitcherMode` on the active tab. Fully self-contained — needs
+/// `&mut GuiState` only to read every tab's id/title, not any app-wide
+/// field like `state.theme` — and needs no new `KeyResult` wiring:
+/// confirming an entry already emits `KeyResult::SwitchToTab`, handled in
+/// `apply_key_result` since the sidebar's tab-switch work.
+fn open_file_switcher(state: &mut GuiState) {
+    let entries: Vec<(crate::ui::TabId, String)> =
+        state.tabs.iter().map(|t| (t.id, t.title.clone())).collect();
+    let Some(active_tab) = state.active_tab() else {
+        return;
+    };
+    let active_tab_id = active_tab.id;
+    if let Some(tab) = state.active_tab_mut() {
+        tab.interaction.mode = Box::new(FileSwitcherMode::new(entries, active_tab_id));
+    }
 }
 
 /// Parses and runs a command string the exact same way `KeyResult::
@@ -2060,6 +2082,26 @@ mod tests {
             state.tabs[0].interaction.mode.render_state(),
             crate::mode::app_mode::ModeRenderState::GroupManagement { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn ctrl_p_enters_file_switcher_mode_listing_every_tab() {
+        let (mut state, _file) = state_with_one_tab().await;
+        update(
+            &mut state,
+            Message::KeyPressed(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        );
+        match state.tabs[0].interaction.mode.render_state() {
+            crate::mode::app_mode::ModeRenderState::FileSwitcher {
+                entries,
+                active_tab,
+                ..
+            } => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].0, active_tab);
+            }
+            other => panic!("expected FileSwitcher, got {other:?}"),
+        }
     }
 
     #[tokio::test]

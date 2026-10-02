@@ -53,7 +53,6 @@ the `Box<dyn Mode>` boundary) but nothing draws their popup yet:
 - [ ] `dlt_select_mode`
 - [ ] `docker_select_mode`
 - [ ] `export_footer_mode`
-- [ ] `file_switcher_mode`
 - [ ] `merge_select_mode`
 - [ ] `select_fields_mode`
 - [ ] `visual_char_mode` — only visual **line** selection is highlighted in
@@ -95,7 +94,7 @@ Even once the modes above are rendered, there's no effect yet for:
   sidebar actually moves sides, with its border flipping to match),
   `:schema <name>`/`:schema none`/`:schema` (shows the current one via a
   status message) — doesn't auto-load a format's default filter file the
-  way the TUI's does, see above
+  way the TUI's does, see above; `Ctrl+P` file-switcher popup
 - Resizable, content-auto-fit log table columns; Time/Level columns hidden
   for unstructured files
 - Visual-line selection highlighting; a separate cursor-row highlight for

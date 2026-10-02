@@ -1,5 +1,6 @@
 pub mod command_palette;
 pub mod field_facets;
+pub mod file_switcher_overlay;
 pub mod filter_pane;
 pub mod group_pane;
 pub mod keybindings_help_overlay;
@@ -68,6 +69,9 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
         root = root.child(overlay);
     }
     if let Some(overlay) = value_colors_overlay::value_colors_overlay(&app.state, viewport, cx) {
+        root = root.child(overlay);
+    }
+    if let Some(overlay) = file_switcher_overlay::file_switcher_overlay(&app.state, viewport, cx) {
         root = root.child(overlay);
     }
     root
