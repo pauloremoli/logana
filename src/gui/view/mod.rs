@@ -12,7 +12,9 @@ pub mod tab_bar;
 use crate::gui::app::App;
 use crate::gui::state::NavPage;
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{Context, Window, div};
+use gpui_kit::gpui::{Context, Window, div, px};
+
+const APP_TITLE_HEIGHT: f32 = 32.0;
 
 pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoElement {
     div()
@@ -24,6 +26,14 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
                 .flex()
                 .flex_col()
                 .flex_1()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .h(px(APP_TITLE_HEIGHT))
+                        .overflow_hidden()
+                        .child("logana"),
+                )
                 .child(tab_bar::tab_bar(&app.state, cx))
                 .child(body(app, window, cx))
                 .child(command_bar::command_bar(&app.state))
