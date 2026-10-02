@@ -7,8 +7,10 @@ use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div, px};
 
-const NAV_ITEM_HEIGHT: f32 = 56.0;
-const NAV_RAIL_WIDTH: f32 = 88.0;
+const NAV_ITEM_HEIGHT: f32 = 36.0;
+// Wide enough for icon + the longest label ("Annotations") + a count
+// badge to all sit on one line without truncating.
+const NAV_RAIL_WIDTH: f32 = 168.0;
 
 /// The active tab's bookmark count, for the nav rail's `Bookmarks` badge —
 /// scoped to the active tab, same as every other per-tab panel (filters,
@@ -85,42 +87,32 @@ fn nav_item(
     badge_count: Option<usize>,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
-    // The label row (text + optional badge) is its own nested flex row,
-    // not a bare text child: without an explicit `.truncate()` (which
-    // bundles `overflow_hidden()`/`whitespace_nowrap()`/ellipsis), a
-    // multi-word label like "Bookmarks" or "Annotations" wraps onto
-    // multiple lines inside this narrow column and visually overlaps the
-    // badge/next item — this is exactly what broke in an earlier build.
-    let mut label_row = div()
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap_1()
-        .w_full()
-        .overflow_hidden()
-        .child(div().truncate().child(label));
-    if let Some(count) = badge_count.filter(|c| *c > 0) {
-        label_row = label_row.child(Badge::new().count(count));
-    }
-
+    // Icon, label, and badge all sit on one row now (not icon-above-label
+    // like an earlier version) — `.truncate()` on the label (bundling
+    // `overflow_hidden()`/`whitespace_nowrap()`/ellipsis) still matters:
+    // without it a multi-word label like "Bookmarks" wraps onto multiple
+    // lines and overlaps its neighbors, which is exactly what broke in an
+    // earlier build when this was a bare text child.
     let mut item = div()
         .id(label)
         .flex()
-        .flex_col()
         .items_center()
-        .justify_center()
-        .gap_1()
+        .gap_2()
         .mx(px(4.))
+        .px(px(8.))
         .rounded(px(6.))
         .h(px(NAV_ITEM_HEIGHT))
         .overflow_hidden()
         .child(Icon::new(icon))
-        .child(label_row)
+        .child(div().flex_1().min_w(px(0.)).truncate().child(label))
         .on_click(
             cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
                 app.dispatch(Message::NavPageSelected(page), window, cx);
             }),
         );
+    if let Some(count) = badge_count.filter(|c| *c > 0) {
+        item = item.child(Badge::new().count(count));
+    }
     if active {
         item = item.bg(cx.theme().accent);
     }
