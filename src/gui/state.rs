@@ -13,6 +13,7 @@ pub struct GuiState {
     pub nav_page: NavPage,
     pub time_range_open: bool,
     pub time_range_preset: TimeRangePreset,
+    pub sidebar_tab: SidebarTab,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,16 @@ pub enum NavPage {
     Settings,
 }
 
+/// The right sidebar's active tab — Groups replaces the mockup's
+/// Annotations tab (no annotations UI exists yet; logana already has real
+/// filter-group data to show here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SidebarTab {
+    #[default]
+    Filters,
+    Groups,
+}
+
 impl GuiState {
     pub fn new(db: Arc<Database>) -> Self {
         Self {
@@ -43,6 +54,7 @@ impl GuiState {
             nav_page: NavPage::default(),
             time_range_open: false,
             time_range_preset: TimeRangePreset::default(),
+            sidebar_tab: SidebarTab::default(),
         }
     }
 

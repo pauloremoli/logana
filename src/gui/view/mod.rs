@@ -67,8 +67,9 @@ fn body(app: &mut App, _window: &mut Window, cx: &mut Context<App>) -> impl Into
                 log_pane::log_pane(active_tab, tab, &app.log_scroll, cx)
             })
             .child({
+                let sidebar_tab = app.state.sidebar_tab;
                 let tab = &app.state.tabs[active_tab];
-                sidebar::sidebar(active_tab, tab, cx)
+                sidebar::sidebar(active_tab, tab, sidebar_tab, cx)
             })
             .into_any_element(),
         None => div()

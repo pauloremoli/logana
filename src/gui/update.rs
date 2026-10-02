@@ -105,6 +105,26 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             state.active_tab = tab_idx;
             handle_command_string(state, cmd.to_string())
         }
+        Message::SidebarTabSelected(tab) => {
+            state.sidebar_tab = tab;
+            Effect::None
+        }
+        Message::SidebarToggled => {
+            toggle_display(state, |d| d.show_sidebar = !d.show_sidebar);
+            Effect::None
+        }
+        Message::ClearAllFilters(tab_idx) => {
+            state.active_tab = tab_idx;
+            handle_command_string(state, "clear-filters".to_string())
+        }
+        Message::FilterRemoved(tab_idx, id) => match state.tabs.get(tab_idx) {
+            Some(tab) => Effect::RemoveFilter {
+                tab_idx,
+                log_manager: tab.log_manager.clone(),
+                id,
+            },
+            None => Effect::None,
+        },
     }
 }
 
@@ -1130,6 +1150,56 @@ mod tests {
         let effect = update(&mut state, Message::StreamToggled(0));
         assert!(matches!(effect, Effect::None));
         assert!(!state.tabs[0].stream.paused);
+    }
+
+    #[tokio::test]
+    async fn sidebar_tab_selected_switches_tabs() {
+        let (mut state, _file) = state_with_one_tab().await;
+        assert_eq!(state.sidebar_tab, crate::gui::state::SidebarTab::Filters);
+        update(
+            &mut state,
+            Message::SidebarTabSelected(crate::gui::state::SidebarTab::Groups),
+        );
+        assert_eq!(state.sidebar_tab, crate::gui::state::SidebarTab::Groups);
+    }
+
+    #[tokio::test]
+    async fn clear_all_filters_dispatches_the_real_command() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let effect = update(&mut state, Message::ClearAllFilters(0));
+        match effect {
+            Effect::ExecuteCommand { command, .. } => {
+                assert!(matches!(command, Commands::ClearFilters));
+            }
+            other => panic!("expected ExecuteCommand(ClearFilters), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn filter_removed_requests_the_remove_effect() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let lm = execute_command(
+            state.tabs[0].log_manager.clone(),
+            command("filter ERROR"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap();
+        state.tabs[0].log_manager = lm;
+        let id = state.tabs[0].log_manager.get_filters()[0].id;
+
+        let effect = update(&mut state, Message::FilterRemoved(0, id));
+        match effect {
+            Effect::RemoveFilter {
+                tab_idx,
+                id: removed_id,
+                ..
+            } => {
+                assert_eq!(tab_idx, 0);
+                assert_eq!(removed_id, id);
+            }
+            other => panic!("expected RemoveFilter, got {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -2,6 +2,9 @@ use crate::filters::{FilterDef, FilterType, GroupDef};
 use crate::gui::app::App;
 use crate::gui::color::{filter_row_bg_color, filter_row_color, group_tag_color};
 use crate::gui::message::Message;
+use gpui_kit::assets::IconName;
+use gpui_kit::component::Icon;
+use gpui_kit::component::button::Button;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div};
@@ -25,11 +28,22 @@ pub fn filter_pane(
     management: Option<&FilterManagementView>,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
-    let mut col = div()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(format!("Filters [{}]", filter_defs.len()));
+    let mut col = div().flex().flex_col().gap_2().child(
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(format!("Active Filters ({})", filter_defs.len()))
+            .child(
+                Button::new("clear-all-filters")
+                    .label("Clear all")
+                    .on_click(
+                        cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
+                            app.dispatch(Message::ClearAllFilters(tab_idx), window, cx);
+                        }),
+                    ),
+            ),
+    );
     if let Some(mgmt) = management {
         col = col.child(if mgmt.searching {
             format!("/{}", mgmt.search)
@@ -83,6 +97,15 @@ fn filter_row(
         .child(tag_text)
         .child(pattern_text)
         .child(ignore_case_tag(def.ignore_case))
+        .child(
+            Button::new(("filter-remove", id))
+                .icon(Icon::new(IconName::X))
+                .on_click(
+                    cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
+                        app.dispatch(Message::FilterRemoved(tab_idx, id), window, cx);
+                    }),
+                ),
+        )
 }
 
 /// Abbreviated filter-type label, matching the TUI sidebar's row format.

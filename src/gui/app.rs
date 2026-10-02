@@ -116,6 +116,11 @@ impl App {
                 log_manager,
                 name,
             } => self.spawn_remove_group(tab_idx, log_manager, name, cx),
+            Effect::RemoveFilter {
+                tab_idx,
+                log_manager,
+                id,
+            } => self.spawn_remove_filter(tab_idx, log_manager, id, cx),
             Effect::ExecuteCommand {
                 tab_idx,
                 log_manager,
@@ -225,6 +230,29 @@ impl App {
                 .expect("remove_group task panicked");
             this.update_in(cx, |app, window, cx| {
                 app.dispatch(Message::GroupsMutated(tab_idx, log_manager), window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn spawn_remove_filter(
+        &self,
+        tab_idx: usize,
+        mut log_manager: LogManager,
+        id: usize,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let log_manager = runtime::handle()
+                .spawn(async move {
+                    log_manager.remove_filter(id).await;
+                    log_manager
+                })
+                .await
+                .expect("remove_filter task panicked");
+            this.update_in(cx, |app, window, cx| {
+                app.dispatch(Message::FiltersMutated(tab_idx, log_manager), window, cx);
             })
             .ok();
         })

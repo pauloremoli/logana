@@ -1,5 +1,5 @@
 use crate::db::LogManager;
-use crate::gui::state::NavPage;
+use crate::gui::state::{NavPage, SidebarTab};
 use crate::gui::time_range::TimeRangePreset;
 use crate::ingestion::FileReader;
 use crate::input::{KeyCode, KeyModifiers};
@@ -34,6 +34,11 @@ pub enum Message {
     /// Pause/resume the active tab's live tail, toggling based on its
     /// current `tab.stream.paused` state.
     StreamToggled(usize),
+
+    SidebarTabSelected(SidebarTab),
+    SidebarToggled,
+    ClearAllFilters(usize),
+    FilterRemoved(usize, usize),
 }
 
 pub struct FileLoaded {

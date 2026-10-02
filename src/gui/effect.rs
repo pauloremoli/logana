@@ -27,6 +27,11 @@ pub enum Effect {
         log_manager: LogManager,
         name: String,
     },
+    RemoveFilter {
+        tab_idx: usize,
+        log_manager: LogManager,
+        id: usize,
+    },
     ExecuteCommand {
         tab_idx: usize,
         log_manager: LogManager,
