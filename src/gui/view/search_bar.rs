@@ -6,6 +6,7 @@ use crate::gui::update::is_tab_live;
 use crate::mode::app_mode::ModeRenderState;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable;
+use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::Icon;
 use gpui_kit::component::badge::Badge;
 use gpui_kit::component::button::Button;
@@ -29,6 +30,8 @@ pub fn search_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
         .h(px(SEARCH_BAR_HEIGHT))
         .px(px(8.))
         .overflow_hidden()
+        .border_b_1()
+        .border_color(cx.theme().border)
         .child(search_input(state))
         .child(time_range_control(state, cx))
         .child(filter_count_badge(state))

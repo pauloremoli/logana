@@ -30,6 +30,8 @@ pub fn nav_rail(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
         .w(px(NAV_RAIL_WIDTH))
         .h_full()
         .overflow_hidden()
+        .border_r_1()
+        .border_color(cx.theme().border)
         .child(nav_item(
             IconName::FileText,
             "Logs",

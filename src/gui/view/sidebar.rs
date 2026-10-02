@@ -8,6 +8,7 @@ use crate::mode::app_mode::ModeRenderState;
 use crate::ui::TabState;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Selectable;
+use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::Icon;
 use gpui_kit::component::button::Button;
 use gpui_kit::gpui::prelude::*;
@@ -57,9 +58,12 @@ pub fn sidebar(
     let mut col = div()
         .flex()
         .flex_col()
+        .flex_shrink_0()
         .gap_4()
         .w(px(SIDEBAR_WIDTH))
         .p_2()
+        .border_l_1()
+        .border_color(cx.theme().border)
         .child(sidebar_header(sidebar_tab, cx));
     col = match sidebar_tab {
         SidebarTab::Filters => {
