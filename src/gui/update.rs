@@ -147,6 +147,21 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
                 None => handle_command_string(state, format!("filter --field {field}={value}")),
             }
         }
+        Message::ColumnResizeMoved(column, mouse_x) => {
+            if let Some(last_x) = state.column_resize_last_x {
+                crate::gui::column_widths::apply_width_delta(
+                    &mut state.column_widths,
+                    column,
+                    mouse_x - last_x,
+                );
+            }
+            state.column_resize_last_x = Some(mouse_x);
+            Effect::None
+        }
+        Message::ColumnResizeEnded => {
+            state.column_resize_last_x = None;
+            Effect::None
+        }
     }
 }
 
@@ -428,6 +443,7 @@ fn push_tab(state: &mut GuiState, loaded: FileLoaded) {
     let mut tab = TabState::new(loaded.reader, loaded.log_manager, title);
     tab.stream.watch = Some(loaded.watch);
     force_recompute(&mut tab);
+    state.column_widths = crate::gui::column_widths::fit_column_widths(&tab);
     state.tabs.push(tab);
     state.active_tab = state.tabs.len() - 1;
 }
@@ -1264,6 +1280,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn column_resize_moved_applies_the_delta_from_the_previous_event() {
+        use crate::gui::column_widths::{ColumnWidths, ResizableColumn};
+        let (mut state, _file) = state_with_one_tab().await;
+        assert_eq!(state.column_resize_last_x, None);
+        update(
+            &mut state,
+            Message::ColumnResizeMoved(ResizableColumn::Time, 100.0),
+        );
+        // First event in a drag only records its position — nothing to
+        // diff against yet, so the width is unchanged.
+        assert_eq!(state.column_widths.time, ColumnWidths::default().time);
+        assert_eq!(state.column_resize_last_x, Some(100.0));
+        update(
+            &mut state,
+            Message::ColumnResizeMoved(ResizableColumn::Time, 130.0),
+        );
+        assert_eq!(
+            state.column_widths.time,
+            ColumnWidths::default().time + 30.0
+        );
+        assert_eq!(state.column_resize_last_x, Some(130.0));
+    }
+
+    #[tokio::test]
+    async fn column_resize_ended_clears_the_last_x_so_the_next_drag_starts_fresh() {
+        use crate::gui::column_widths::ResizableColumn;
+        let (mut state, _file) = state_with_one_tab().await;
+        update(
+            &mut state,
+            Message::ColumnResizeMoved(ResizableColumn::Level, 50.0),
+        );
+        assert_eq!(state.column_resize_last_x, Some(50.0));
+        update(&mut state, Message::ColumnResizeEnded);
+        assert_eq!(state.column_resize_last_x, None);
+    }
+
+    #[tokio::test]
     async fn facet_value_toggled_adds_a_field_filter_when_none_exists() {
         let (mut state, _file) = state_with_one_tab().await;
         let effect = update(
@@ -1573,5 +1626,20 @@ mod tests {
         let loaded = load_file(file.path().to_path_buf(), db).await.unwrap();
         update(&mut state, Message::FileLoaded(Ok(loaded)));
         assert!(is_tab_live(&state.tabs[0]));
+    }
+
+    #[tokio::test]
+    async fn pushing_a_loaded_tab_auto_fits_column_widths() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut state = GuiState::new(Arc::clone(&db));
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "hello\nworld\n").unwrap();
+        let loaded = load_file(file.path().to_path_buf(), db).await.unwrap();
+        update(&mut state, Message::FileLoaded(Ok(loaded)));
+        assert_eq!(
+            state.column_widths,
+            crate::gui::column_widths::fit_column_widths(&state.tabs[0]),
+            "push_tab should auto-fit column_widths to the newly loaded file"
+        );
     }
 }

@@ -1,5 +1,6 @@
 pub mod app;
 pub mod color;
+pub mod column_widths;
 pub mod effect;
 pub mod key;
 pub mod level;

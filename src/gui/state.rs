@@ -1,4 +1,5 @@
 use crate::db::Database;
+use crate::gui::column_widths::ColumnWidths;
 use crate::gui::time_range::TimeRangePreset;
 use crate::theme::Theme as TuiTheme;
 use crate::ui::TabState;
@@ -20,6 +21,16 @@ pub struct GuiState {
     /// newly-seen field starts collapsed without needing to be
     /// pre-populated.
     pub facet_expanded: HashMap<String, bool>,
+    /// The log table's current column widths — re-fit to content whenever
+    /// a file loads (`gui::column_widths::fit_column_widths`), overridden
+    /// per-column by dragging a header resize handle.
+    pub column_widths: ColumnWidths,
+    /// The mouse's x position as of the last `ColumnResizeMoved` dispatch
+    /// during an active column-resize drag — `None` outside a drag. Each
+    /// move event's width change is the delta from this to the event's
+    /// own position, so the handle only needs its *current* position per
+    /// event, not its position when the drag started.
+    pub column_resize_last_x: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +73,8 @@ impl GuiState {
             time_range_preset: TimeRangePreset::default(),
             sidebar_tab: SidebarTab::default(),
             facet_expanded: HashMap::new(),
+            column_widths: ColumnWidths::default(),
+            column_resize_last_x: None,
         }
     }
 

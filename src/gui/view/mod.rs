@@ -87,7 +87,13 @@ fn body(app: &mut App, _window: &mut Window, cx: &mut Context<App>) -> impl Into
                     .min_w(px(0.))
                     .px(px(16.))
                     .py(px(8.))
-                    .child(log_pane::log_pane(active_tab, tab, &app.log_scroll, cx))
+                    .child(log_pane::log_pane(
+                        active_tab,
+                        tab,
+                        app.state.column_widths,
+                        &app.log_scroll,
+                        cx,
+                    ))
             })
             .child({
                 let sidebar_tab = app.state.sidebar_tab;

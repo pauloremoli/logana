@@ -1,14 +1,19 @@
 use crate::gui::app::App;
 use crate::gui::color::{LineStyle, ratatui_color_to_gpui, resolve_line_style};
+use crate::gui::column_widths::{ColumnWidths, ResizableColumn};
 use crate::gui::level::{classify_line_level, level_pill_colors};
+use crate::gui::message::Message;
 use crate::mode::app_mode::ModeRenderState;
 use crate::parser::LogLevel;
 use crate::theme::Theme as TuiTheme;
 use crate::ui::TabState;
 use gpui_kit::base::{VirtualListScrollHandle, v_virtual_list};
+use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{AnyElement, Context, FontWeight, Rgba, Size, div, px};
+use gpui_kit::gpui::{
+    AnyElement, Context, DragMoveEvent, Empty, FontWeight, MouseButton, Rgba, Size, div, px,
+};
 use std::rc::Rc;
 
 /// Fixed row height, used for every visible log line — the virtual list
@@ -16,28 +21,25 @@ use std::rc::Rc;
 /// 24px (not a bare 1:1 text-line height) deliberately leaves a few
 /// pixels of breathing room above/below each row's text.
 const ROW_HEIGHT_PX: f32 = 24.0;
+/// Width of the draggable strip between two fixed columns — thin enough
+/// to stay out of the way, wide enough to be a comfortable mouse target.
+const RESIZE_HANDLE_WIDTH_PX: f32 = 6.0;
 
-/// Column widths, shared between the fixed header row and every data row
-/// so they can never drift apart. Message has no fixed width — it's the
-/// only cell allowed to grow (`.flex_1()`).
-const COL_LINE_NO_WIDTH: f32 = 56.0;
-// Wide enough for a full microsecond-precision ISO 8601 timestamp
-// ("2026-04-11T19:39:02.389121Z", 27 chars) without truncating.
-const COL_TIME_WIDTH: f32 = 230.0;
-// Wide enough for "WARNING" (the longest `LogLevel` uppercase label) plus
-// the pill's own padding without clipping — 64px cut it off.
-const COL_LEVEL_WIDTH: f32 = 84.0;
-
-/// Renders the log table: a fixed header row (`#`/Time/Level/Message)
-/// above the currently-visible window of `tab.filter.visible_indices`,
-/// via gpui-component's virtual-scrolling list — no manual viewport math
-/// or rendered-line cap, unlike the discarded iced prototype. `log_scroll`
+/// Renders the log table: a fixed header row (`#`/Time/Level/Message,
+/// with draggable resize handles between the fixed-width columns) above
+/// the currently-visible window of `tab.filter.visible_indices`, via
+/// gpui-component's virtual-scrolling list — no manual viewport math or
+/// rendered-line cap, unlike the discarded iced prototype. `log_scroll`
 /// is `App`'s own handle (not reachable through `cx`, which derefs to
 /// gpui's own `App` platform type, not ours), passed in so `App::
 /// sync_log_scroll` can drive the same handle after every dispatch.
+/// `widths` is `GuiState::column_widths` — auto-fit to content whenever a
+/// file loads, overridden per-column by dragging a header handle; see
+/// `gui::column_widths` for both.
 pub fn log_pane(
     tab_idx: usize,
     tab: &TabState,
+    widths: ColumnWidths,
     log_scroll: &VirtualListScrollHandle,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
@@ -48,7 +50,7 @@ pub fn log_pane(
         .flex()
         .flex_col()
         .size_full()
-        .child(header_row())
+        .child(header_row(widths, cx))
         .child(
             div()
                 .relative()
@@ -78,6 +80,7 @@ pub fn log_pane(
                                         selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&pos)),
                                         pos == tab.scroll.scroll_offset,
                                         &app.state.theme,
+                                        widths,
                                     )
                                 })
                                 .collect()
@@ -91,18 +94,63 @@ pub fn log_pane(
 }
 
 /// `#`/Time/Level/Message column titles, fixed above the scrolling list —
-/// same width constants as `line_row`'s cells, so columns stay aligned.
-fn header_row() -> impl IntoElement {
+/// same `widths` `line_row`'s cells use, so columns stay aligned. A
+/// resize handle sits after each fixed-width title so dragging it resizes
+/// that column; Message has none (it always fills remaining space).
+fn header_row(widths: ColumnWidths, cx: &mut Context<App>) -> impl IntoElement {
     div()
         .flex()
-        .gap_2()
+        .items_center()
         .pb(px(4.))
         .h(px(ROW_HEIGHT_PX + 4.))
         .overflow_hidden()
-        .child(fixed_cell(COL_LINE_NO_WIDTH, "#"))
-        .child(fixed_cell(COL_TIME_WIDTH, "Time"))
-        .child(fixed_cell(COL_LEVEL_WIDTH, "Level"))
+        .child(fixed_cell(widths.line_no, "#"))
+        .child(resize_handle(ResizableColumn::LineNo, cx))
+        .child(fixed_cell(widths.time, "Time"))
+        .child(resize_handle(ResizableColumn::Time, cx))
+        .child(fixed_cell(widths.level, "Level"))
+        .child(resize_handle(ResizableColumn::Level, cx))
         .child(div().flex_1().overflow_hidden().child("Message"))
+}
+
+/// One column boundary's drag handle: `on_drag` starts gpui's native
+/// drag-and-drop with `column` as the payload (an invisible `Empty` ghost
+/// — the resize cursor is feedback enough, no floating preview needed);
+/// `on_drag_move` fires on every pointer move for the duration of that
+/// drag, dispatching this step's absolute mouse x so the reducer
+/// (`Message::ColumnResizeMoved`) can diff it against the previous
+/// event's x and apply the delta — see `GuiState::column_resize_last_x`'s
+/// doc comment for why a delta instead of a start/end pair.
+/// `on_mouse_up_out` (not `on_mouse_up`) ends the drag even when the
+/// pointer is released outside the thin handle itself, which is the
+/// common case once a drag is underway.
+fn resize_handle(column: ResizableColumn, cx: &mut Context<App>) -> AnyElement {
+    let id = match column {
+        ResizableColumn::LineNo => "resize-line-no",
+        ResizableColumn::Time => "resize-time",
+        ResizableColumn::Level => "resize-level",
+    };
+    div()
+        .id(id)
+        .flex_shrink_0()
+        .w(px(RESIZE_HANDLE_WIDTH_PX))
+        .h(px(ROW_HEIGHT_PX))
+        .cursor_col_resize()
+        .hover(|style| style.bg(cx.theme().border))
+        .on_drag(column, |_column, _offset, _window, cx| cx.new(|_| Empty))
+        .on_drag_move(cx.listener(
+            move |app: &mut App, e: &DragMoveEvent<ResizableColumn>, window, cx| {
+                let mouse_x = f32::from(e.event.position.x);
+                app.dispatch(Message::ColumnResizeMoved(*e.drag(cx), mouse_x), window, cx);
+            },
+        ))
+        .on_mouse_up_out(
+            MouseButton::Left,
+            cx.listener(|app: &mut App, _, window, cx| {
+                app.dispatch(Message::ColumnResizeEnded, window, cx);
+            }),
+        )
+        .into_any_element()
 }
 
 /// `VisualLineMode`'s selected range, as `(low, high)` visible-position
@@ -165,24 +213,22 @@ fn line_row(
     selected: bool,
     is_cursor_row: bool,
     theme: &TuiTheme,
+    widths: ColumnWidths,
 ) -> AnyElement {
     let owned_line_bytes = tab.file_reader.get_line(line_idx);
     let bytes: &[u8] = &owned_line_bytes;
 
-    let number_cell = fixed_cell(COL_LINE_NO_WIDTH, (line_idx + 1).to_string());
-    let time_cell = fixed_cell(
-        COL_TIME_WIDTH,
-        row_time_text(tab, bytes).unwrap_or_default(),
-    );
+    let number_cell = fixed_cell(widths.line_no, (line_idx + 1).to_string());
+    let time_cell = fixed_cell(widths.time, row_time_text(tab, bytes).unwrap_or_default());
     // Selection highlighting (below) already colors the whole row, so a
     // selected row skips the level pill and match-only highlighting and
     // just shows plain text in every cell — same as the TUI's visual
     // selection, which doesn't layer filter colors under the selection
     // tint either.
     let level_cell = if selected {
-        fixed_cell(COL_LEVEL_WIDTH, "")
+        fixed_cell(widths.level, "")
     } else {
-        level_cell(classify_line_level(tab, bytes), theme)
+        level_cell(classify_line_level(tab, bytes), theme, widths.level)
     };
     let message_bytes = row_message_bytes(tab, bytes);
     let message_cell = if selected {
@@ -243,12 +289,12 @@ fn fixed_cell(width: f32, text: impl Into<gpui_kit::gpui::SharedString>) -> AnyE
 /// The Level column: a small colored pill for a classified level, or a
 /// blank cell (`LogLevel::Unknown` — always true for an unstructured
 /// file, per `classify_line_level`).
-fn level_cell(level: LogLevel, theme: &TuiTheme) -> AnyElement {
+fn level_cell(level: LogLevel, theme: &TuiTheme, width: f32) -> AnyElement {
     let mut cell = div()
         .flex()
         .flex_shrink_0()
         .items_center()
-        .w(px(COL_LEVEL_WIDTH))
+        .w(px(width))
         .h(px(ROW_HEIGHT_PX))
         .overflow_hidden();
     if let Some((bg, fg)) = level_pill_colors(&level, theme) {
@@ -378,7 +424,7 @@ mod tests {
     async fn line_row_does_not_panic_for_paged_storage() {
         let tab = paged_tab().await;
         let theme = TuiTheme::default();
-        let _ = line_row(&tab, 0, false, false, &theme);
+        let _ = line_row(&tab, 0, false, false, &theme, ColumnWidths::default());
     }
 
     #[tokio::test]
