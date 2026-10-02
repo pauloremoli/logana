@@ -83,6 +83,10 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             apply_log_manager(state, tab_idx, log_manager);
             Effect::None
         }
+        Message::NavPageSelected(page) => {
+            state.nav_page = page;
+            Effect::None
+        }
     }
 }
 
@@ -943,6 +947,22 @@ mod tests {
         let (state, _file) = state_with_one_tab().await;
         assert!(state.tabs[0].stream.watch.is_none());
         assert!(!is_tab_live(&state.tabs[0]));
+    }
+
+    #[tokio::test]
+    async fn nav_page_selected_switches_pages_and_back() {
+        let (mut state, _file) = state_with_one_tab().await;
+        assert_eq!(state.nav_page, crate::gui::state::NavPage::Logs);
+        update(
+            &mut state,
+            Message::NavPageSelected(crate::gui::state::NavPage::Bookmarks),
+        );
+        assert_eq!(state.nav_page, crate::gui::state::NavPage::Bookmarks);
+        update(
+            &mut state,
+            Message::NavPageSelected(crate::gui::state::NavPage::Logs),
+        );
+        assert_eq!(state.nav_page, crate::gui::state::NavPage::Logs);
     }
 
     #[tokio::test]

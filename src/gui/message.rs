@@ -1,4 +1,5 @@
 use crate::db::LogManager;
+use crate::gui::state::NavPage;
 use crate::ingestion::FileReader;
 use crate::input::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
@@ -23,6 +24,8 @@ pub enum Message {
     GroupToggled(usize, String),
     GroupDeleted(usize, String),
     GroupsMutated(usize, LogManager),
+
+    NavPageSelected(NavPage),
 }
 
 pub struct FileLoaded {

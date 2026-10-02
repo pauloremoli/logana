@@ -9,11 +9,24 @@ pub struct GuiState {
     pub active_tab: usize,
     pub status: Option<StatusMessage>,
     pub theme: TuiTheme,
+    pub nav_page: NavPage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusMessage {
     Error(String),
+}
+
+/// The left nav rail's current page. Only `Logs` has real content today —
+/// the others render a plain placeholder (see `gui::view::nav_rail`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NavPage {
+    #[default]
+    Logs,
+    Bookmarks,
+    Annotations,
+    Searches,
+    Settings,
 }
 
 impl GuiState {
@@ -24,6 +37,7 @@ impl GuiState {
             active_tab: 0,
             status: None,
             theme: TuiTheme::default(),
+            nav_page: NavPage::default(),
         }
     }
 
