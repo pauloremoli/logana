@@ -126,7 +126,15 @@ impl App {
                 log_manager,
                 command,
                 theme_bg,
-            } => self.spawn_execute_command(tab_idx, log_manager, command, theme_bg, cx),
+                filter_context,
+            } => self.spawn_execute_command(
+                tab_idx,
+                log_manager,
+                command,
+                theme_bg,
+                filter_context,
+                cx,
+            ),
         }
     }
 
@@ -265,11 +273,14 @@ impl App {
         log_manager: LogManager,
         command: Commands,
         theme_bg: (u8, u8, u8),
+        filter_context: Option<usize>,
         cx: &mut Context<Self>,
     ) {
         cx.spawn(async move |this, cx| {
             let result = runtime::handle()
-                .spawn(async move { update::execute_command(log_manager, command, theme_bg).await })
+                .spawn(async move {
+                    update::execute_command(log_manager, command, theme_bg, filter_context).await
+                })
                 .await
                 .expect("execute_command task panicked");
             this.update_in(cx, |app, window, cx| {

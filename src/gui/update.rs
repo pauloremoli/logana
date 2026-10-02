@@ -338,6 +338,26 @@ fn apply_theme_by_name(state: &mut GuiState, theme_name: &str) {
     }
 }
 
+/// Mirrors the TUI's `App::cmd_set_theme` (`src/ui/commands/display.rs`)
+/// for `:set-theme <name>` — unlike `apply_theme_by_name` (used for the
+/// `:theme` picker's silent-on-failure live preview, where a bad name
+/// should be unreachable since it only ever comes from `Theme::
+/// list_available_themes`), a user-typed `:set-theme` name can easily be
+/// wrong, so a load failure surfaces as a status message instead of
+/// silently doing nothing. Doesn't persist to `AppSettingsStore` — the
+/// same deliberate simplification as `apply_display_command`.
+fn set_theme_by_name(state: &mut GuiState, theme_name: &str) {
+    let theme_filename = format!("{}.json", theme_name.to_lowercase());
+    match crate::theme::Theme::from_file(&theme_filename) {
+        Ok(theme) => state.theme = theme,
+        Err(e) => {
+            state.status = Some(StatusMessage::Error(format!(
+                "Failed to load theme '{theme_name}': {e}"
+            )));
+        }
+    }
+}
+
 /// Mirrors the TUI's `App::cmd_theme_picker` (`src/ui/commands/
 /// display.rs`): snapshots the current theme (so `KeyResult::RevertTheme`
 /// can restore it on Esc) and enters `ThemePickerMode` on the active tab.
@@ -490,6 +510,10 @@ fn handle_command_string(state: &mut GuiState, cmd: String) -> Effect {
         open_value_colors_picker(state, &command);
         return Effect::None;
     }
+    if let Commands::SetTheme { theme_name } = &command {
+        set_theme_by_name(state, theme_name);
+        return Effect::None;
+    }
     if let Some(tab) = state.tabs.get_mut(tab_idx)
         && (apply_stream_command(tab, &command) || apply_display_command(tab, &command))
     {
@@ -503,6 +527,7 @@ fn handle_command_string(state: &mut GuiState, cmd: String) -> Effect {
         log_manager: tab.log_manager.clone(),
         command,
         theme_bg: crate::theme::color_to_rgb(state.theme.root_bg),
+        filter_context: tab.filter.filter_context,
     }
 }
 
@@ -753,6 +778,7 @@ pub async fn execute_command(
     mut log_manager: LogManager,
     command: Commands,
     theme_bg: (u8, u8, u8),
+    filter_context: Option<usize>,
 ) -> Result<LogManager, String> {
     match command {
         Commands::Filter {
@@ -824,6 +850,9 @@ pub async fn execute_command(
             bg,
             line_mode,
         } => add_date_filter(&mut log_manager, expr, fg, bg, line_mode).await?,
+        Commands::SetColor { fg, bg, line_mode } => {
+            set_selected_filter_color(&mut log_manager, filter_context, fg, bg, line_mode).await;
+        }
         other => return Err(format!("{other:?} is not yet supported in the GUI")),
     }
     Ok(log_manager)
@@ -938,6 +967,46 @@ async fn add_date_filter(
     Ok(())
 }
 
+/// Mirrors the TUI's `App::cmd_set_color` (`src/ui/commands/filter.rs`):
+/// recolors whichever filter `filter_context` names (`tab.filter.
+/// filter_context`, set for free by `FilterManagementMode::handle_key`
+/// whenever a filter is selected there), but only if it's an `Include`/
+/// `Highlight` filter — recoloring an `Exclude` filter makes no sense,
+/// since it's never drawn. `None` (no filter selected, or `:set-color`
+/// run outside filter management) silently no-ops, same as the TUI.
+async fn set_selected_filter_color(
+    log_manager: &mut LogManager,
+    filter_context: Option<usize>,
+    fg: Option<String>,
+    bg: Option<String>,
+    line_mode: bool,
+) {
+    let Some(selected) = filter_context else {
+        return;
+    };
+    let Some(filter) = log_manager.get_filters().get(selected).cloned() else {
+        return;
+    };
+    if !matches!(
+        filter.filter_type,
+        FilterType::Include | FilterType::Highlight
+    ) {
+        return;
+    }
+    let match_only = if line_mode {
+        false
+    } else {
+        filter
+            .color_config
+            .as_ref()
+            .map(|cc| cc.match_only)
+            .unwrap_or(true)
+    };
+    log_manager
+        .set_color_config(filter.id, fg.as_deref(), bg.as_deref(), match_only)
+        .await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -969,9 +1038,14 @@ mod tests {
 
     #[tokio::test]
     async fn execute_command_filter_adds_an_include_filter() {
-        let lm = execute_command(log_manager().await, command("filter ERROR"), TEST_THEME_BG)
-            .await
-            .unwrap();
+        let lm = execute_command(
+            log_manager().await,
+            command("filter ERROR"),
+            TEST_THEME_BG,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(lm.get_filters().len(), 1);
         assert_eq!(lm.get_filters()[0].filter_type, FilterType::Include);
         assert_eq!(lm.get_filters()[0].pattern, "ERROR");
@@ -979,9 +1053,14 @@ mod tests {
 
     #[tokio::test]
     async fn execute_command_exclude_adds_an_exclude_filter() {
-        let lm = execute_command(log_manager().await, command("exclude DEBUG"), TEST_THEME_BG)
-            .await
-            .unwrap();
+        let lm = execute_command(
+            log_manager().await,
+            command("exclude DEBUG"),
+            TEST_THEME_BG,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(lm.get_filters()[0].filter_type, FilterType::Exclude);
     }
 
@@ -991,6 +1070,7 @@ mod tests {
             log_manager().await,
             command("highlight WARN"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap();
@@ -1003,6 +1083,7 @@ mod tests {
             log_manager().await,
             command("filter --field level=error"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap();
@@ -1018,6 +1099,7 @@ mod tests {
             log_manager().await,
             command("filter --auto ERROR"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap();
@@ -1035,6 +1117,7 @@ mod tests {
             log_manager().await,
             command("filter --fga ERROR"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap();
@@ -1052,6 +1135,7 @@ mod tests {
             log_manager().await,
             command("filter --auto --fga ERROR"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap_err();
@@ -1065,6 +1149,7 @@ mod tests {
             log_manager().await,
             command("group net --auto"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap();
@@ -1078,10 +1163,15 @@ mod tests {
 
     #[tokio::test]
     async fn execute_command_clear_filters_removes_everything() {
-        let lm = execute_command(log_manager().await, command("filter ERROR"), TEST_THEME_BG)
-            .await
-            .unwrap();
-        let lm = execute_command(lm, command("clear-filters"), TEST_THEME_BG)
+        let lm = execute_command(
+            log_manager().await,
+            command("filter ERROR"),
+            TEST_THEME_BG,
+            None,
+        )
+        .await
+        .unwrap();
+        let lm = execute_command(lm, command("clear-filters"), TEST_THEME_BG, None)
             .await
             .unwrap();
         assert!(lm.get_filters().is_empty());
@@ -1089,14 +1179,19 @@ mod tests {
 
     #[tokio::test]
     async fn execute_command_disable_then_enable_filters() {
-        let lm = execute_command(log_manager().await, command("filter ERROR"), TEST_THEME_BG)
-            .await
-            .unwrap();
-        let lm = execute_command(lm, command("disable-filters"), TEST_THEME_BG)
+        let lm = execute_command(
+            log_manager().await,
+            command("filter ERROR"),
+            TEST_THEME_BG,
+            None,
+        )
+        .await
+        .unwrap();
+        let lm = execute_command(lm, command("disable-filters"), TEST_THEME_BG, None)
             .await
             .unwrap();
         assert!(!lm.get_filters()[0].enabled);
-        let lm = execute_command(lm, command("enable-filters"), TEST_THEME_BG)
+        let lm = execute_command(lm, command("enable-filters"), TEST_THEME_BG, None)
             .await
             .unwrap();
         assert!(lm.get_filters()[0].enabled);
@@ -1108,14 +1203,15 @@ mod tests {
             log_manager().await,
             command("filter -g net ERROR"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap();
-        let lm = execute_command(lm, command("toggle-group net"), TEST_THEME_BG)
+        let lm = execute_command(lm, command("toggle-group net"), TEST_THEME_BG, None)
             .await
             .unwrap();
         assert!(!lm.get_filters()[0].enabled);
-        let lm = execute_command(lm, command("toggle-group net"), TEST_THEME_BG)
+        let lm = execute_command(lm, command("toggle-group net"), TEST_THEME_BG, None)
             .await
             .unwrap();
         assert!(lm.get_filters()[0].enabled);
@@ -1127,6 +1223,7 @@ mod tests {
             log_manager().await,
             command("toggle-group missing"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap_err();
@@ -1139,6 +1236,7 @@ mod tests {
             log_manager().await,
             command("group net --fg red"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap();
@@ -1152,6 +1250,7 @@ mod tests {
             log_manager().await,
             command("group net --clear --fg red"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap_err();
@@ -1164,6 +1263,7 @@ mod tests {
             log_manager().await,
             command("date-filter > 2024-01-01"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap();
@@ -1177,6 +1277,7 @@ mod tests {
             log_manager().await,
             command("date-filter not-a-date"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap_err();
@@ -1185,10 +1286,79 @@ mod tests {
 
     #[tokio::test]
     async fn execute_command_rejects_an_unimplemented_command() {
-        let err = execute_command(log_manager().await, command("wrap"), TEST_THEME_BG)
+        let err = execute_command(log_manager().await, command("wrap"), TEST_THEME_BG, None)
             .await
             .unwrap_err();
         assert!(err.contains("not yet supported"));
+    }
+
+    #[tokio::test]
+    async fn set_color_recolors_the_filter_named_by_filter_context() {
+        let mut lm = execute_command(
+            log_manager().await,
+            command("filter ERROR"),
+            TEST_THEME_BG,
+            None,
+        )
+        .await
+        .unwrap();
+        lm = execute_command(lm, command("filter WARN"), TEST_THEME_BG, None)
+            .await
+            .unwrap();
+        // filter_context names a position in get_filters(), same as the
+        // TUI's FilterManagementMode selection — recolor the second one.
+        let lm = execute_command(
+            lm,
+            command("set-color --fg [255,0,0]"),
+            TEST_THEME_BG,
+            Some(1),
+        )
+        .await
+        .unwrap();
+        let recolored = &lm.get_filters()[1];
+        assert_eq!(recolored.pattern, "WARN");
+        assert_eq!(
+            recolored.color_config.as_ref().and_then(|cc| cc.fg),
+            Some(ratatui::style::Color::Rgb(255, 0, 0))
+        );
+        assert!(lm.get_filters()[0].color_config.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_color_is_a_no_op_without_a_filter_context() {
+        let lm = execute_command(
+            log_manager().await,
+            command("filter ERROR"),
+            TEST_THEME_BG,
+            None,
+        )
+        .await
+        .unwrap();
+        let lm = execute_command(lm, command("set-color --fg [255,0,0]"), TEST_THEME_BG, None)
+            .await
+            .unwrap();
+        assert!(lm.get_filters()[0].color_config.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_color_does_not_recolor_an_exclude_filter() {
+        let lm = execute_command(
+            log_manager().await,
+            command("exclude DEBUG"),
+            TEST_THEME_BG,
+            None,
+        )
+        .await
+        .unwrap();
+        let lm = execute_command(
+            lm,
+            command("set-color --fg [255,0,0]"),
+            TEST_THEME_BG,
+            Some(0),
+        )
+        .await
+        .unwrap();
+        assert!(lm.get_filters()[0].color_config.is_none());
     }
 
     #[test]
@@ -1417,6 +1587,7 @@ mod tests {
             state.tabs[0].log_manager.clone(),
             command("date-filter > 2024-01-01"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap();
@@ -1443,10 +1614,11 @@ mod tests {
             state.tabs[0].log_manager.clone(),
             command("date-filter > 2024-01-01"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap();
-        let lm = execute_command(lm, command("filter ERROR"), TEST_THEME_BG)
+        let lm = execute_command(lm, command("filter ERROR"), TEST_THEME_BG, None)
             .await
             .unwrap();
         state.tabs[0].log_manager = lm;
@@ -1516,6 +1688,7 @@ mod tests {
             state.tabs[0].log_manager.clone(),
             command("filter ERROR"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap();
@@ -1605,6 +1778,7 @@ mod tests {
             state.tabs[0].log_manager.clone(),
             command("filter --field level=error"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .expect("field filter should be accepted");
@@ -1794,6 +1968,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_theme_command_applies_a_known_bundled_theme() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let before = state.theme.clone();
+        let entries = crate::theme::Theme::list_available_themes();
+        let other = entries
+            .iter()
+            .find(|name| {
+                crate::theme::Theme::from_file(format!("{}.json", name.to_lowercase()))
+                    .is_ok_and(|t| t != before)
+            })
+            .expect("at least one bundled theme should differ from the default")
+            .clone();
+        let effect = handle_command_string(&mut state, format!("set-theme {other}"));
+        assert!(matches!(effect, Effect::None));
+        assert_ne!(state.theme, before);
+        assert!(state.status.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_theme_command_reports_an_unknown_theme() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let before = state.theme.clone();
+        handle_command_string(&mut state, "set-theme not-a-real-theme".to_string());
+        assert_eq!(state.theme, before);
+        assert!(matches!(state.status, Some(StatusMessage::Error(_))));
+    }
+
+    #[tokio::test]
     async fn value_colors_command_opens_the_value_colors_picker_populated() {
         let (mut state, _file) = state_with_one_tab().await;
         let effect = handle_command_string(&mut state, "value-colors".to_string());
@@ -1898,11 +2100,13 @@ mod tests {
             state.tabs[0].log_manager.clone(),
             command("filter one"),
             TEST_THEME_BG,
+            None,
         ));
         let lm = setup_rt.block_on(execute_command(
             lm.unwrap(),
             command("filter two"),
             TEST_THEME_BG,
+            None,
         ));
         state.tabs[0].log_manager = lm.unwrap();
         force_recompute(&mut state.tabs[0]);
@@ -1945,6 +2149,7 @@ mod tests {
             state.tabs[0].log_manager.clone(),
             command("filter line"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap();
@@ -1958,10 +2163,11 @@ mod tests {
             log_manager().await,
             command("filter -g net ERROR"),
             TEST_THEME_BG,
+            None,
         )
         .await
         .unwrap();
-        lm = execute_command(lm, command("toggle-group net"), TEST_THEME_BG)
+        lm = execute_command(lm, command("toggle-group net"), TEST_THEME_BG, None)
             .await
             .unwrap();
         assert!(!lm.get_filters()[0].enabled);

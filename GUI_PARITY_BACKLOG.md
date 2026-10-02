@@ -17,11 +17,15 @@ with "not yet supported in the GUI":
 
 - [ ] Persistence: `Save`, `SaveFilters`, `LoadFilters`, `ImportFilters`,
       `Export`, `ExportMarked`
-- [ ] Theming/coloring: `SetTheme`, `SetColor` (`Theme`/`ValueColors`/
-      `LevelColors` — opening each picker — are wired, see below)
 - [ ] Field layout: `HideField`, `ShowField`, `ShowAllFields`,
-      `SelectFields` (needs structured/JSON field display, which the GUI
-      doesn't have yet)
+      `SelectFields` — unlike the rest of this list, `SelectFieldsMode`
+      itself needs no new GUI plumbing (it mutates `tab.display.
+      field_layout`/`hidden_fields` directly in `Mode::handle_key`, same
+      as `FilterManagementMode`), but nothing in the GUI's log table
+      reads either field yet (`log_pane.rs`'s Message cell always shows
+      `row_message_bytes`, never a structured/field-aware rendering), so
+      wiring the picker now would be a fully inert popup — skipped until
+      there's a reason to read those fields
 - [ ] Sources: `Merge`, `Docker`, `Dlt`, `Otel`, `Schema`
 - [ ] Streaming: `Tail`, `Reset` (`Pause`/`Resume`/`Stop` already work, see
       above)
@@ -83,7 +87,10 @@ Even once the modes above are rendered, there's no effect yet for:
 - Command palette overlay (`:` commands), search bar (click to enter
   `SearchMode`), time-range dropdown, `?` keybindings-help overlay,
   `:theme` picker (live preview, apply on Enter, revert on Esc — not
-  persisted, see above), `:value-colors`/`:level-colors` pickers
+  persisted, see above), `:value-colors`/`:level-colors` pickers,
+  `:set-theme <name>`, `:set-color` (recolors the filter named by
+  `tab.filter.filter_context`, threaded through a new `Effect::
+  ExecuteCommand.filter_context` field)
 - Resizable, content-auto-fit log table columns; Time/Level columns hidden
   for unstructured files
 - Visual-line selection highlighting; a separate cursor-row highlight for

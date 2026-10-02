@@ -41,5 +41,10 @@ pub enum Effect {
         /// rather than inside `execute_command` so that function stays a
         /// plain, gpui-free `(LogManager, Commands) -> Result<..>` step.
         theme_bg: (u8, u8, u8),
+        /// `tab.filter.filter_context` — which filter `:set-color` (the
+        /// only command needing it so far) targets. Populated for free by
+        /// `FilterManagementMode::handle_key` whenever a filter is
+        /// selected there, same as the TUI.
+        filter_context: Option<usize>,
     },
 }
