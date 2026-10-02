@@ -363,7 +363,7 @@ fn handle_command_string(state: &mut GuiState, cmd: String) -> Effect {
         }
     };
     if let Some(tab) = state.tabs.get_mut(tab_idx)
-        && apply_stream_command(tab, &command)
+        && (apply_stream_command(tab, &command) || apply_display_command(tab, &command))
     {
         return Effect::None;
     }
@@ -391,6 +391,68 @@ fn apply_stream_command(tab: &mut TabState, command: &Commands) -> bool {
         _ => return false,
     }
     true
+}
+
+/// Handles the display-toggle commands directly on `tab.display`,
+/// mirroring the TUI's `cmd_wrap`/`cmd_line_numbers`/etc. (`src/ui/
+/// commands/display.rs`) for the active tab only — these never touch
+/// `LogManager`, so (like `apply_stream_command`) they skip the async
+/// `Effect::ExecuteCommand` round trip entirely. Returns `true` when
+/// `command` was one of these and has been applied.
+///
+/// Deliberate simplification vs. the TUI: `Wrap`/`LineNumbers`/
+/// `RelativeLineNumbers`/`Collapse`/`Expand` are app-wide settings in the
+/// TUI (broadcast to every open tab and persisted to
+/// `AppSettingsStore`) — the GUI applies them to the active tab only and
+/// doesn't persist them, since `GuiState` doesn't load persisted display
+/// settings on startup either. `ShowKeys`/`HideKeys`/`Raw` were already
+/// active-tab-only, app-wide-setting-free commands in the TUI itself, so
+/// those match exactly.
+fn apply_display_command(tab: &mut TabState, command: &Commands) -> bool {
+    match command {
+        Commands::Wrap => tab.display.wrap = !tab.display.wrap,
+        Commands::LineNumbers => tab.display.show_line_numbers = !tab.display.show_line_numbers,
+        Commands::RelativeLineNumbers => {
+            tab.display.relative_line_numbers = !tab.display.relative_line_numbers;
+        }
+        Commands::ShowKeys => {
+            tab.display.show_keys = true;
+            tab.invalidate_parse_cache();
+        }
+        Commands::HideKeys => {
+            tab.display.show_keys = false;
+            tab.invalidate_parse_cache();
+        }
+        Commands::Raw => {
+            tab.display.raw_mode = !tab.display.raw_mode;
+            force_recompute(tab);
+        }
+        Commands::Collapse => set_collapse_continuations(tab, true),
+        Commands::Expand => set_collapse_continuations(tab, false),
+        _ => return false,
+    }
+    true
+}
+
+/// Mirrors the TUI's `App::set_collapse_continuations` body for a single
+/// tab (the TUI's own version loops every open tab and persists to the
+/// DB — see `apply_display_command`'s doc comment for why the GUI scopes
+/// this to the active tab only): restores the pristine pre-collapse
+/// baseline, clears per-group `<`/`>` overrides, and re-derives
+/// visibility from scratch, since `:collapse`/`:expand` are bulk,
+/// idempotent resets rather than a toggle relative to whatever was
+/// individually flipped. Re-pins the cursor to the nearest still-visible
+/// line afterward, since collapsing/expanding can hide or reveal the line
+/// it was on.
+fn set_collapse_continuations(tab: &mut TabState, enabled: bool) {
+    let current_line = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset);
+    tab.display.collapse_continuations = enabled;
+    if let Some(baseline) = tab.filter.pre_collapse_visible.take() {
+        tab.filter.visible_indices = baseline;
+    }
+    tab.filter.overridden_groups.clear();
+    tab.sync_collapse_mask();
+    tab.restore_scroll_to_line(current_line);
 }
 
 /// Whether `tab` is actively tailing its source: a watcher is running and
@@ -1095,6 +1157,83 @@ mod tests {
         let (state, _file) = state_with_one_tab().await;
         assert!(state.tabs[0].stream.watch.is_none());
         assert!(!is_tab_live(&state.tabs[0]));
+    }
+
+    #[tokio::test]
+    async fn wrap_command_toggles_wrap_on_the_active_tab() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let before = state.tabs[0].display.wrap;
+        let effect = handle_command_string(&mut state, "wrap".to_string());
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(state.tabs[0].display.wrap, !before);
+    }
+
+    #[tokio::test]
+    async fn line_numbers_command_toggles_line_numbers() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let before = state.tabs[0].display.show_line_numbers;
+        handle_command_string(&mut state, "line-numbers".to_string());
+        assert_eq!(state.tabs[0].display.show_line_numbers, !before);
+    }
+
+    #[tokio::test]
+    async fn relative_line_numbers_command_toggles_relative_line_numbers() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let before = state.tabs[0].display.relative_line_numbers;
+        handle_command_string(&mut state, "relative-line-numbers".to_string());
+        assert_eq!(state.tabs[0].display.relative_line_numbers, !before);
+    }
+
+    #[tokio::test]
+    async fn show_keys_and_hide_keys_commands_set_show_keys() {
+        let (mut state, _file) = state_with_one_tab().await;
+        handle_command_string(&mut state, "show-keys".to_string());
+        assert!(state.tabs[0].display.show_keys);
+        handle_command_string(&mut state, "hide-keys".to_string());
+        assert!(!state.tabs[0].display.show_keys);
+    }
+
+    #[tokio::test]
+    async fn raw_command_toggles_raw_mode_and_recomputes_visibility() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let before = state.tabs[0].display.raw_mode;
+        let effect = handle_command_string(&mut state, "raw".to_string());
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(state.tabs[0].display.raw_mode, !before);
+    }
+
+    #[tokio::test]
+    async fn collapse_and_expand_commands_toggle_collapse_continuations() {
+        let (mut state, _file) = state_with_one_tab().await;
+        handle_command_string(&mut state, "collapse".to_string());
+        assert!(state.tabs[0].display.collapse_continuations);
+        handle_command_string(&mut state, "expand".to_string());
+        assert!(!state.tabs[0].display.collapse_continuations);
+    }
+
+    #[tokio::test]
+    async fn display_commands_never_reach_execute_command() {
+        // These never touch LogManager, so handle_command_string must
+        // intercept them the same way it already does for pause/resume/
+        // stop, rather than returning an Effect::ExecuteCommand that
+        // execute_command would reject as unsupported.
+        let (mut state, _file) = state_with_one_tab().await;
+        for cmd in [
+            "wrap",
+            "line-numbers",
+            "relative-line-numbers",
+            "show-keys",
+            "hide-keys",
+            "raw",
+            "collapse",
+            "expand",
+        ] {
+            let effect = handle_command_string(&mut state, cmd.to_string());
+            assert!(
+                matches!(effect, Effect::None),
+                "{cmd} should be intercepted, got {effect:?}"
+            );
+        }
     }
 
     #[tokio::test]

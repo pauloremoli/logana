@@ -6,24 +6,34 @@ gaps are found. Last reviewed: 2026-10-02 (gpui-rewrite branch).
 
 ## Commands not wired up
 
-`execute_command` (`src/gui/update.rs`) only implements `Filter`, `Exclude`,
+`execute_command` (`src/gui/update.rs`) implements `Filter`, `Exclude`,
 `Highlight`, `ClearFilters`, `DisableFilters`, `EnableFilters`,
-`ToggleGroup`, `Group`, `DateFilter`. Everything else in `Commands` errors
+`ToggleGroup`, `Group`, `DateFilter`. `Pause`/`Resume`/`Stop`
+(`apply_stream_command`) and `Wrap`/`LineNumbers`/`RelativeLineNumbers`/
+`ShowKeys`/`HideKeys`/`Raw`/`Collapse`/`Expand` (`apply_display_command`)
+are intercepted in `handle_command_string` before `execute_command`, since
+neither touches `LogManager`. Everything else in `Commands` still errors
 with "not yet supported in the GUI":
 
 - [ ] Persistence: `Save`, `SaveFilters`, `LoadFilters`, `ImportFilters`,
       `Export`, `ExportMarked`
-- [ ] Display toggles: `Wrap`, `LineNumbers`, `RelativeLineNumbers`,
-      `Collapse`, `Expand`, `Raw`, `ShowKeys`, `HideKeys`
 - [ ] Theming/coloring: `SetTheme`, `Theme`, `LevelColors`, `ValueColors`,
       `SetColor`
 - [ ] Field layout: `HideField`, `ShowField`, `ShowAllFields`,
       `SelectFields` (needs structured/JSON field display, which the GUI
       doesn't have yet)
 - [ ] Sources: `Merge`, `Docker`, `Dlt`, `Otel`, `Schema`
-- [ ] Streaming: `Tail`, `Stop`, `Pause`, `Resume`, `Reset`
+- [ ] Streaming: `Tail`, `Reset` (`Pause`/`Resume`/`Stop` already work, see
+      above)
 - [ ] Misc: `EnableMcp`/`DisableMcp`, `DefaultFilters`, `SidebarPosition`,
       `Run`, `Path`
+
+`Wrap`/`LineNumbers`/`RelativeLineNumbers`/`Collapse`/`Expand` are a
+deliberate simplification vs. the TUI: app-wide settings there (broadcast
+to every open tab, persisted to `AppSettingsStore`), active-tab-only and
+not persisted in the GUI, since `GuiState` doesn't load persisted display
+settings on startup either. `ShowKeys`/`HideKeys`/`Raw` already matched
+this shape in the TUI itself.
 
 ## Modes with no GUI rendering
 
@@ -63,7 +73,11 @@ Even once the modes above are rendered, there's no effect yet for:
   `App::open_file`
 - Tab switch/close (mouse + keyboard)
 - Filter/group toggle (mouse + keyboard)
-- Command bar, search bar, mode bar
-- Visual-line selection highlighting
+- Command palette overlay (`:` commands), search bar (click to enter
+  `SearchMode`), time-range dropdown
+- Resizable, content-auto-fit log table columns; Time/Level columns hidden
+  for unstructured files
+- Visual-line selection highlighting; a separate cursor-row highlight for
+  plain navigation outside an active selection
 - Theme-aware rendering
 - Focus handling (window stays reliably focused for key capture)
