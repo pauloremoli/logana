@@ -8,7 +8,7 @@ use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div, px};
 
 const NAV_ITEM_HEIGHT: f32 = 56.0;
-const NAV_RAIL_WIDTH: f32 = 60.0;
+const NAV_RAIL_WIDTH: f32 = 88.0;
 
 /// The active tab's bookmark count, for the nav rail's `Bookmarks` badge —
 /// scoped to the active tab, same as every other per-tab panel (filters,
@@ -81,6 +81,24 @@ fn nav_item(
     badge_count: Option<usize>,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
+    // The label row (text + optional badge) is its own nested flex row,
+    // not a bare text child: without an explicit `.truncate()` (which
+    // bundles `overflow_hidden()`/`whitespace_nowrap()`/ellipsis), a
+    // multi-word label like "Bookmarks" or "Annotations" wraps onto
+    // multiple lines inside this narrow column and visually overlaps the
+    // badge/next item — this is exactly what broke in an earlier build.
+    let mut label_row = div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap_1()
+        .w_full()
+        .overflow_hidden()
+        .child(div().truncate().child(label));
+    if let Some(count) = badge_count.filter(|c| *c > 0) {
+        label_row = label_row.child(Badge::new().count(count));
+    }
+
     let mut item = div()
         .id(label)
         .flex()
@@ -92,7 +110,7 @@ fn nav_item(
         .w_full()
         .overflow_hidden()
         .child(Icon::new(icon))
-        .child(label)
+        .child(label_row)
         .on_click(
             cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
                 app.dispatch(Message::NavPageSelected(page), window, cx);
@@ -100,9 +118,6 @@ fn nav_item(
         );
     if active {
         item = item.bg(cx.theme().accent);
-    }
-    if let Some(count) = badge_count.filter(|c| *c > 0) {
-        item = item.child(Badge::new().count(count));
     }
     item
 }

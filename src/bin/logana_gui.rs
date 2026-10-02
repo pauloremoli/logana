@@ -11,38 +11,48 @@ use std::sync::Arc;
 fn main() {
     let (db, theme) = runtime::handle().block_on(open_database_and_theme());
 
-    gpui_kit::application().run(move |cx| {
-        gpui_kit::init(cx);
-        gui_theme::install(&theme, cx);
-        cx.bind_keys([
-            KeyBinding::new("q", Quit, None),
-            KeyBinding::new("ctrl-o", OpenFile, None),
-        ]);
-        GlobalState::global_mut(cx).set_app_menus(vec![
-            Menu::new("File")
-                .items([
-                    MenuItem::action("Open...", OpenFile),
-                    MenuItem::separator(),
-                    MenuItem::action("Quit", Quit),
-                ])
-                .owned(),
-        ]);
-        gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-            let app = cx.new(|cx| App::new(Arc::clone(&db), theme.clone(), cx));
-            // Give the root element initial keyboard focus so key capture
-            // starts working immediately, without requiring a click into
-            // the window first.
-            let root_focus = app.read(cx).root_focus.clone();
-            window.defer(cx, move |window, cx| {
-                if window.focused(cx).is_none() {
-                    root_focus.focus(window, cx);
-                }
-            });
-            app
-        })
-        .expect("failed to open window");
-        cx.activate(true);
-    });
+    // Without this, every `Icon::new(IconName::..)` silently renders
+    // nothing (just the surrounding Button/div chrome) — the SVG asset
+    // never resolves because no AssetSource is registered at all. Matches
+    // gpui-component's own reference app (`crates/story/src/main.rs`:
+    // `gpui_platform::application().with_assets(Assets)`); `AllAssets`
+    // specifically, not the smaller `Assets`, since this app's icons
+    // (Bookmark, MessageSquare, Funnel, Group, ...) come from the full
+    // Lucide catalog, not gpui-component's own curated subset.
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::AllAssets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            gui_theme::install(&theme, cx);
+            cx.bind_keys([
+                KeyBinding::new("q", Quit, None),
+                KeyBinding::new("ctrl-o", OpenFile, None),
+            ]);
+            GlobalState::global_mut(cx).set_app_menus(vec![
+                Menu::new("File")
+                    .items([
+                        MenuItem::action("Open...", OpenFile),
+                        MenuItem::separator(),
+                        MenuItem::action("Quit", Quit),
+                    ])
+                    .owned(),
+            ]);
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                let app = cx.new(|cx| App::new(Arc::clone(&db), theme.clone(), cx));
+                // Give the root element initial keyboard focus so key capture
+                // starts working immediately, without requiring a click into
+                // the window first.
+                let root_focus = app.read(cx).root_focus.clone();
+                window.defer(cx, move |window, cx| {
+                    if window.focused(cx).is_none() {
+                        root_focus.focus(window, cx);
+                    }
+                });
+                app
+            })
+            .expect("failed to open window");
+            cx.activate(true);
+        });
 }
 
 async fn open_database_and_theme() -> (Arc<Database>, TuiTheme) {

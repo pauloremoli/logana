@@ -18,7 +18,9 @@ const ROW_HEIGHT_PX: f32 = 20.0;
 /// so they can never drift apart. Message has no fixed width — it's the
 /// only cell allowed to grow (`.flex_1()`).
 const COL_LINE_NO_WIDTH: f32 = 56.0;
-const COL_TIME_WIDTH: f32 = 180.0;
+// Wide enough for a full microsecond-precision ISO 8601 timestamp
+// ("2026-04-11T19:39:02.389121Z", 27 chars) without truncating.
+const COL_TIME_WIDTH: f32 = 230.0;
 const COL_LEVEL_WIDTH: f32 = 64.0;
 
 /// Renders the log table: a fixed header row (`#`/Time/Level/Message)
@@ -205,22 +207,19 @@ fn fixed_cell(width: f32, text: impl Into<gpui_kit::gpui::SharedString>) -> AnyE
 /// blank cell (`LogLevel::Unknown` — always true for an unstructured
 /// file, per `classify_line_level`).
 fn level_cell(level: LogLevel, theme: &TuiTheme) -> AnyElement {
+    // Flattened to one div (bg/text_color on the cell itself, no nested
+    // pill child) rather than a smaller inner badge — a nested, padded,
+    // differently-sized child here was the suspected cause of this cell
+    // visually overlapping the Time cell before it; simplest form first.
     let mut cell = div()
-        .flex()
         .flex_shrink_0()
-        .items_center()
         .w(px(COL_LEVEL_WIDTH))
         .h(px(ROW_HEIGHT_PX))
-        .overflow_hidden();
+        .overflow_hidden()
+        .whitespace_nowrap();
     if let Some((bg, fg)) = level_pill_colors(&level, theme) {
-        cell = cell.child(
-            div()
-                .flex_shrink_0()
-                .px(px(4.))
-                .bg(bg)
-                .text_color(fg)
-                .child(format!("{level:?}").to_uppercase()),
-        );
+        cell = cell.bg(bg).text_color(fg);
+        cell = cell.child(format!("{level:?}").to_uppercase());
     }
     cell.into_any_element()
 }
