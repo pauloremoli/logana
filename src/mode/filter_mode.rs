@@ -1391,6 +1391,50 @@ mod tests {
         assert_eq!(tab.log_manager.get_filters().len(), 0);
     }
 
+    /// Regression test for a real GUI bug: `delete_filter` calls
+    /// `tab.log_manager.remove_filter(id).await` (a real sqlx DB write)
+    /// *before* `tab.begin_filter_refresh()`. The GUI used to drive every
+    /// `Mode::handle_key` with `futures::FutureExt::now_or_never()`, which
+    /// polls a future exactly once and discards it if that single poll
+    /// doesn't finish — a real DB call essentially never finishes on its
+    /// very first poll, so `now_or_never()` returned `None`: the in-memory
+    /// `filter_defs.retain` (synchronous, before the `.await`) still ran,
+    /// but `begin_filter_refresh()` — which comes after — never did,
+    /// leaving `visible_indices` stale and the log pane showing the old,
+    /// filtered view even with every filter gone. `gui::update::
+    /// dispatch_key` now drives the future to completion with `Handle::
+    /// block_on` instead, which this test exercises directly (a plain,
+    /// non-`#[tokio::test]` fn with a runtime only *entered*, mirroring
+    /// the real call site exactly) to prove the fix.
+    #[test]
+    fn deleting_the_last_filter_refreshes_visible_indices() {
+        let setup_rt = tokio::runtime::Runtime::new().unwrap();
+        let mut tab = setup_rt.block_on(async {
+            let mut tab = make_tab(&["a", "b"]).await;
+            add_filter(&mut tab, "a", FilterType::Include).await;
+            tab
+        });
+        assert_eq!(tab.log_manager.get_filters().len(), 1);
+        assert_eq!(
+            tab.filter.visible_indices.len(),
+            1,
+            "the include filter should have narrowed the view before deletion"
+        );
+
+        setup_rt.block_on(Box::new(filter_mode(0)).handle_key(
+            &mut tab,
+            KeyCode::Char('d'),
+            KeyModifiers::NONE,
+        ));
+
+        assert_eq!(tab.log_manager.get_filters().len(), 0);
+        assert_eq!(
+            tab.filter.visible_indices.len(),
+            2,
+            "both lines should be visible again now that no filter is active"
+        );
+    }
+
     #[tokio::test]
     async fn test_d_with_no_filters_no_panic() {
         let mut tab = make_tab(&["line"]).await;

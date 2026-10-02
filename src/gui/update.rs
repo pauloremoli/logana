@@ -12,7 +12,6 @@ use crate::mode::command_mode::CommandMode;
 use crate::mode::normal_mode::NormalMode;
 use crate::ui::{KeyResult, TabState, VisibleLines};
 use clap::Parser;
-use futures::FutureExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -88,30 +87,42 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
 }
 
 /// Drives the active tab's real `Mode` object with a keystroke, exactly
-/// like the TUI's event loop (`App::run` in `src/ui/app.rs`) does —
-/// `Mode::handle_key` never actually suspends (no implementation awaits
-/// real I/O inside the trait method itself; async work is always
-/// expressed as a `KeyResult` the caller performs afterward), so it's
-/// polled synchronously with `now_or_never()` rather than routed through
-/// an async round trip on every keystroke.
+/// like the TUI's event loop (`App::run` in `src/ui/app.rs`) does.
+///
+/// `Mode::handle_key` isn't guaranteed to resolve on its very first poll —
+/// several implementations call real `LogManager`/DB methods directly
+/// (e.g. `FilterManagementMode::delete_filter`), and a real DB write
+/// essentially never completes synchronously. This used to be driven with
+/// `futures::FutureExt::now_or_never()`, which polls a future exactly
+/// once and discards it if that poll doesn't finish — silently abandoning
+/// it mid-flight the moment it returned `Pending`: whatever ran before
+/// that point (a synchronous `Vec::retain`, say) stayed applied, but
+/// anything after it (like `TabState::begin_filter_refresh`, which
+/// recomputes the visible lines) never ran, leaving the log pane stale —
+/// e.g. deleting every filter never brought the hidden lines back.
+///
+/// `futures::executor::block_on` instead actually drives the future to
+/// completion on this thread. It's used in place of `tokio::runtime::
+/// Handle::block_on` specifically because this function also runs inside
+/// unit tests' `#[tokio::test]` bodies (via `update()`), which already
+/// have their own ambient tokio runtime on the current thread — `Handle::
+/// block_on` panics ("Cannot start a runtime from within a runtime") in
+/// that case, where `futures::executor::block_on` (a plain, runtime-
+/// agnostic poll loop) does not. The `.enter()` guard still ensures
+/// `tokio::task::spawn_blocking`/sqlx calls inside the future always have
+/// a live `Handle` to dispatch onto, same as before — on gpui's own
+/// thread, which has no ambient runtime at all, this is the only source
+/// of one. Blocking the calling thread is fine either way: every `Mode::
+/// handle_key` implementation only does small, local, bounded work
+/// (in-memory mutation, a local SQLite write) — nothing in this codebase
+/// keeps one pending indefinitely.
 fn dispatch_key(state: &mut GuiState, code: KeyCode, modifiers: KeyModifiers) -> Effect {
     let Some(tab) = state.active_tab_mut() else {
         return Effect::None;
     };
     let mode = std::mem::replace(&mut tab.interaction.mode, Box::new(NormalMode::default()));
-    // `Mode::handle_key` never truly suspends — it doesn't await real I/O
-    // inside the trait method itself — but some implementations (e.g.
-    // `TabState::begin_filter_refresh`, which `tokio::task::spawn_blocking`s
-    // the background filter scan) assume an ambient tokio runtime, which
-    // gpui's own render thread doesn't provide. Entering the shared
-    // runtime's context for the call — without actually awaiting or
-    // blocking on anything here — gives `spawn_blocking` a live `Handle`
-    // to spawn onto, same as if this ran on a tokio worker thread.
     let _guard = runtime::handle().enter();
-    let Some((next_mode, result)) = mode.handle_key(tab, code, modifiers).now_or_never() else {
-        tab.interaction.mode = Box::new(NormalMode::default());
-        return Effect::None;
-    };
+    let (next_mode, result) = futures::executor::block_on(mode.handle_key(tab, code, modifiers));
     tab.interaction.mode = next_mode;
     sync_filter_recompute(tab);
     apply_key_result(state, result, code, modifiers)
@@ -214,6 +225,7 @@ fn handle_command_string(state: &mut GuiState, cmd: String) -> Effect {
             tab_idx,
             log_manager: tab.log_manager.clone(),
             command,
+            theme_bg: crate::theme::color_to_rgb(state.theme.root_bg),
         },
         Ok(None) => Effect::None,
         Err(err) => {
@@ -376,6 +388,7 @@ pub fn parse_command(input: &str) -> Result<Option<Commands>, String> {
 pub async fn execute_command(
     mut log_manager: LogManager,
     command: Commands,
+    theme_bg: (u8, u8, u8),
 ) -> Result<LogManager, String> {
     match command {
         Commands::Filter {
@@ -390,7 +403,8 @@ pub async fn execute_command(
             auto,
             fga,
         } => {
-            reject_unsupported_filter_args(&field, auto, fga)?;
+            reject_unsupported_filter_args(&field)?;
+            let (fg, bg) = crate::ui::resolve_colors(auto, fga, fg, bg, theme_bg)?;
             let options = filter_options(fg, bg, line_mode, regex, ignore_case, group);
             log_manager
                 .add_filter_with_color(pattern.join(" "), FilterType::Include, options)
@@ -403,7 +417,7 @@ pub async fn execute_command(
             ignore_case,
             group,
         } => {
-            reject_unsupported_filter_args(&field, false, false)?;
+            reject_unsupported_filter_args(&field)?;
             let options = filter_options(None, None, false, regex, ignore_case, group);
             log_manager
                 .add_filter_with_color(pattern.join(" "), FilterType::Exclude, options)
@@ -421,7 +435,8 @@ pub async fn execute_command(
             auto,
             fga,
         } => {
-            reject_unsupported_filter_args(&field, auto, fga)?;
+            reject_unsupported_filter_args(&field)?;
+            let (fg, bg) = crate::ui::resolve_colors(auto, fga, fg, bg, theme_bg)?;
             let options = filter_options(fg, bg, line_mode, regex, ignore_case, group);
             log_manager
                 .add_filter_with_color(pattern.join(" "), FilterType::Highlight, options)
@@ -451,18 +466,13 @@ pub async fn execute_command(
 }
 
 /// `--field` filtering needs the structured/JSON field display the GUI
-/// doesn't have yet; `--auto`/`--fga` need the TUI's private color-resolver
-/// (kept out of scope for this migration, see project notes). Both are
-/// rejected rather than silently ignored.
-fn reject_unsupported_filter_args(field: &[String], auto: bool, fga: bool) -> Result<(), String> {
+/// doesn't have yet, so it's rejected rather than silently ignored.
+fn reject_unsupported_filter_args(field: &[String]) -> Result<(), String> {
     if !field.is_empty() {
         return Err(
             "--field filtering requires structured field display, not yet supported in the GUI"
                 .to_string(),
         );
-    }
-    if auto || fga {
-        return Err("--auto/--fga are not yet supported in the GUI".to_string());
     }
     Ok(())
 }
@@ -532,9 +542,11 @@ async fn set_group_style(
         log_manager.clear_group_style(&name).await;
         return Ok(());
     }
-    if auto {
-        return Err("--auto is not yet supported in the GUI".to_string());
-    }
+    // Matches the TUI's `cmd_group`: `--auto` for a group style resolves
+    // against a fixed black background, not the real theme background
+    // (unlike `:filter --auto`/`--fga`, which use it) — not this GUI's
+    // call to make differently.
+    let (fg, bg) = crate::ui::resolve_colors(auto, false, fg, bg, (0, 0, 0))?;
     log_manager
         .set_group_style(&name, fg.as_deref(), bg.as_deref(), !line_mode)
         .await;
@@ -565,6 +577,10 @@ mod tests {
     use super::*;
     use crate::db::Database;
 
+    /// Arbitrary theme background for tests that don't care what `--auto`/
+    /// `--fga` resolve against, only that a color comes out.
+    const TEST_THEME_BG: (u8, u8, u8) = (30, 30, 30);
+
     async fn log_manager() -> LogManager {
         let db = Arc::new(Database::in_memory().await.unwrap());
         LogManager::new(db, None).await
@@ -587,7 +603,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_command_filter_adds_an_include_filter() {
-        let lm = execute_command(log_manager().await, command("filter ERROR"))
+        let lm = execute_command(log_manager().await, command("filter ERROR"), TEST_THEME_BG)
             .await
             .unwrap();
         assert_eq!(lm.get_filters().len(), 1);
@@ -597,7 +613,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_command_exclude_adds_an_exclude_filter() {
-        let lm = execute_command(log_manager().await, command("exclude DEBUG"))
+        let lm = execute_command(log_manager().await, command("exclude DEBUG"), TEST_THEME_BG)
             .await
             .unwrap();
         assert_eq!(lm.get_filters()[0].filter_type, FilterType::Exclude);
@@ -605,47 +621,113 @@ mod tests {
 
     #[tokio::test]
     async fn execute_command_highlight_adds_a_highlight_filter() {
-        let lm = execute_command(log_manager().await, command("highlight WARN"))
-            .await
-            .unwrap();
+        let lm = execute_command(
+            log_manager().await,
+            command("highlight WARN"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap();
         assert_eq!(lm.get_filters()[0].filter_type, FilterType::Highlight);
     }
 
     #[tokio::test]
     async fn execute_command_rejects_field_filters() {
-        let err = execute_command(log_manager().await, command("filter --field level=error"))
-            .await
-            .unwrap_err();
+        let err = execute_command(
+            log_manager().await,
+            command("filter --field level=error"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("structured field display"));
     }
 
     #[tokio::test]
-    async fn execute_command_rejects_auto_color_flags() {
-        let err = execute_command(log_manager().await, command("filter --auto ERROR"))
-            .await
-            .unwrap_err();
+    async fn execute_command_auto_assigns_a_readable_fg_bg_pair() {
+        let lm = execute_command(
+            log_manager().await,
+            command("filter --auto ERROR"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap();
+        let color_config = lm.get_filters()[0]
+            .color_config
+            .clone()
+            .expect("--auto should assign a color_config");
+        assert!(color_config.fg.is_some());
+        assert!(color_config.bg.is_some());
+    }
+
+    #[tokio::test]
+    async fn execute_command_fga_assigns_only_a_readable_fg() {
+        let lm = execute_command(
+            log_manager().await,
+            command("filter --fga ERROR"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap();
+        let color_config = lm.get_filters()[0]
+            .color_config
+            .clone()
+            .expect("--fga should assign a color_config");
+        assert!(color_config.fg.is_some());
+        assert!(color_config.bg.is_none());
+    }
+
+    #[tokio::test]
+    async fn execute_command_rejects_auto_combined_with_fga() {
+        let err = execute_command(
+            log_manager().await,
+            command("filter --auto --fga ERROR"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("--auto"));
+        assert!(err.contains("--fga"));
+    }
+
+    #[tokio::test]
+    async fn execute_command_group_auto_assigns_a_readable_fg_bg_pair() {
+        let lm = execute_command(
+            log_manager().await,
+            command("group net --auto"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap();
+        let color_config = lm.get_group_styles()[0]
+            .color_config
+            .clone()
+            .expect("--auto should assign a color_config");
+        assert!(color_config.fg.is_some());
+        assert!(color_config.bg.is_some());
     }
 
     #[tokio::test]
     async fn execute_command_clear_filters_removes_everything() {
-        let lm = execute_command(log_manager().await, command("filter ERROR"))
+        let lm = execute_command(log_manager().await, command("filter ERROR"), TEST_THEME_BG)
             .await
             .unwrap();
-        let lm = execute_command(lm, command("clear-filters")).await.unwrap();
+        let lm = execute_command(lm, command("clear-filters"), TEST_THEME_BG)
+            .await
+            .unwrap();
         assert!(lm.get_filters().is_empty());
     }
 
     #[tokio::test]
     async fn execute_command_disable_then_enable_filters() {
-        let lm = execute_command(log_manager().await, command("filter ERROR"))
+        let lm = execute_command(log_manager().await, command("filter ERROR"), TEST_THEME_BG)
             .await
             .unwrap();
-        let lm = execute_command(lm, command("disable-filters"))
+        let lm = execute_command(lm, command("disable-filters"), TEST_THEME_BG)
             .await
             .unwrap();
         assert!(!lm.get_filters()[0].enabled);
-        let lm = execute_command(lm, command("enable-filters"))
+        let lm = execute_command(lm, command("enable-filters"), TEST_THEME_BG)
             .await
             .unwrap();
         assert!(lm.get_filters()[0].enabled);
@@ -653,14 +735,18 @@ mod tests {
 
     #[tokio::test]
     async fn execute_command_toggle_group_toggles_members_off_then_on() {
-        let lm = execute_command(log_manager().await, command("filter -g net ERROR"))
-            .await
-            .unwrap();
-        let lm = execute_command(lm, command("toggle-group net"))
+        let lm = execute_command(
+            log_manager().await,
+            command("filter -g net ERROR"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap();
+        let lm = execute_command(lm, command("toggle-group net"), TEST_THEME_BG)
             .await
             .unwrap();
         assert!(!lm.get_filters()[0].enabled);
-        let lm = execute_command(lm, command("toggle-group net"))
+        let lm = execute_command(lm, command("toggle-group net"), TEST_THEME_BG)
             .await
             .unwrap();
         assert!(lm.get_filters()[0].enabled);
@@ -668,49 +754,69 @@ mod tests {
 
     #[tokio::test]
     async fn execute_command_toggle_group_errors_for_an_unknown_group() {
-        let err = execute_command(log_manager().await, command("toggle-group missing"))
-            .await
-            .unwrap_err();
+        let err = execute_command(
+            log_manager().await,
+            command("toggle-group missing"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("missing"));
     }
 
     #[tokio::test]
     async fn execute_command_group_sets_a_predefined_style() {
-        let lm = execute_command(log_manager().await, command("group net --fg red"))
-            .await
-            .unwrap();
+        let lm = execute_command(
+            log_manager().await,
+            command("group net --fg red"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap();
         assert_eq!(lm.get_group_styles().len(), 1);
         assert_eq!(lm.get_group_styles()[0].name, "net");
     }
 
     #[tokio::test]
     async fn execute_command_group_clear_rejects_other_flags() {
-        let err = execute_command(log_manager().await, command("group net --clear --fg red"))
-            .await
-            .unwrap_err();
+        let err = execute_command(
+            log_manager().await,
+            command("group net --clear --fg red"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("--clear"));
     }
 
     #[tokio::test]
     async fn execute_command_date_filter_adds_a_tagged_include_filter() {
-        let lm = execute_command(log_manager().await, command("date-filter > 2024-01-01"))
-            .await
-            .unwrap();
+        let lm = execute_command(
+            log_manager().await,
+            command("date-filter > 2024-01-01"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap();
         assert!(lm.get_filters()[0].pattern.starts_with(DATE_PREFIX));
         assert_eq!(lm.get_filters()[0].filter_type, FilterType::Include);
     }
 
     #[tokio::test]
     async fn execute_command_date_filter_rejects_an_invalid_expression() {
-        let err = execute_command(log_manager().await, command("date-filter not-a-date"))
-            .await
-            .unwrap_err();
+        let err = execute_command(
+            log_manager().await,
+            command("date-filter not-a-date"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("Invalid date filter"));
     }
 
     #[tokio::test]
     async fn execute_command_rejects_an_unimplemented_command() {
-        let err = execute_command(log_manager().await, command("wrap"))
+        let err = execute_command(log_manager().await, command("wrap"), TEST_THEME_BG)
             .await
             .unwrap_err();
         assert!(err.contains("not yet supported"));
@@ -907,8 +1013,13 @@ mod tests {
         let lm = setup_rt.block_on(execute_command(
             state.tabs[0].log_manager.clone(),
             command("filter one"),
+            TEST_THEME_BG,
         ));
-        let lm = setup_rt.block_on(execute_command(lm.unwrap(), command("filter two")));
+        let lm = setup_rt.block_on(execute_command(
+            lm.unwrap(),
+            command("filter two"),
+            TEST_THEME_BG,
+        ));
         state.tabs[0].log_manager = lm.unwrap();
         force_recompute(&mut state.tabs[0]);
         drop(setup_rt);
@@ -946,19 +1057,27 @@ mod tests {
     #[tokio::test]
     async fn command_executed_ok_applies_the_log_manager_and_recomputes() {
         let (mut state, _file) = state_with_one_tab().await;
-        let lm = execute_command(state.tabs[0].log_manager.clone(), command("filter line"))
-            .await
-            .unwrap();
+        let lm = execute_command(
+            state.tabs[0].log_manager.clone(),
+            command("filter line"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap();
         update(&mut state, Message::CommandExecuted(0, Ok(lm)));
         assert_eq!(state.tabs[0].log_manager.get_filters().len(), 1);
     }
 
     #[tokio::test]
     async fn toggle_group_checkbox_enables_a_disabled_group() {
-        let mut lm = execute_command(log_manager().await, command("filter -g net ERROR"))
-            .await
-            .unwrap();
-        lm = execute_command(lm, command("toggle-group net"))
+        let mut lm = execute_command(
+            log_manager().await,
+            command("filter -g net ERROR"),
+            TEST_THEME_BG,
+        )
+        .await
+        .unwrap();
+        lm = execute_command(lm, command("toggle-group net"), TEST_THEME_BG)
             .await
             .unwrap();
         assert!(!lm.get_filters()[0].enabled);

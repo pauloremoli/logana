@@ -28,21 +28,28 @@ pub fn group_row_color(def: &GroupDef) -> Option<Rgba> {
     ratatui_color_to_gpui(def.color_config.as_ref()?.fg?)
 }
 
-/// The color a log line should render with: the first enabled filter (in
-/// list order) that has a resolved color and whose pattern matches the raw
-/// line bytes. `None` means no styled filter matched — the line renders in
-/// the default text color.
-pub fn resolve_line_color(
+/// Resolves both the foreground and background color a log line should
+/// render with, from the first enabled filter (in list order) that has a
+/// resolved color and whose pattern matches the raw line bytes — fg and
+/// bg always come from the *same* matched filter's `ColorConfig`, not two
+/// independent searches, so a filter styled with only `--bg` still wins
+/// over a later filter that only sets `--fg`, mirroring how the TUI's own
+/// `FilterManager`-built `Style`s combine both from one filter. `(None,
+/// None)` means no styled filter matched — the line renders in the
+/// default text color with no background.
+pub fn resolve_line_colors(
     line: &[u8],
     filter_defs: &[FilterDef],
     group_defs: &[GroupDef],
-) -> Option<Rgba> {
-    filter_defs
+) -> (Option<Rgba>, Option<Rgba>) {
+    let matched = filter_defs
         .iter()
         .filter(|def| def.enabled)
         .find_map(|def| {
             let cc = effective_color_config(def, group_defs)?;
-            let fg = cc.fg?;
+            if cc.fg.is_none() && cc.bg.is_none() {
+                return None;
+            }
             let filter = build_filter(
                 &def.pattern,
                 FilterDecision::Include,
@@ -54,8 +61,25 @@ pub fn resolve_line_color(
             if filter.matches(line) == FilterDecision::Neutral {
                 return None;
             }
-            ratatui_color_to_gpui(fg)
-        })
+            Some(cc)
+        });
+    match matched {
+        Some(cc) => (
+            cc.fg.and_then(ratatui_color_to_gpui),
+            cc.bg.and_then(ratatui_color_to_gpui),
+        ),
+        None => (None, None),
+    }
+}
+
+/// The foreground-only half of [`resolve_line_colors`], for callers that
+/// don't render a background.
+pub fn resolve_line_color(
+    line: &[u8],
+    filter_defs: &[FilterDef],
+    group_defs: &[GroupDef],
+) -> Option<Rgba> {
+    resolve_line_colors(line, filter_defs, group_defs).0
 }
 
 pub fn ratatui_color_to_gpui(color: RatatuiColor) -> Option<Rgba> {
@@ -233,6 +257,66 @@ mod tests {
     fn group_row_color_is_none_without_a_style() {
         let group = GroupDef::default();
         assert_eq!(group_row_color(&group), None);
+    }
+
+    fn filter_def_with_colors(
+        pattern: &str,
+        fg: Option<RatatuiColor>,
+        bg: Option<RatatuiColor>,
+    ) -> FilterDef {
+        FilterDef {
+            id: 1,
+            pattern: pattern.to_string(),
+            filter_type: FilterType::Include,
+            enabled: true,
+            color_config: Some(ColorConfig {
+                fg,
+                bg,
+                match_only: true,
+            }),
+            use_regex: false,
+            ignore_case: false,
+            group: None,
+        }
+    }
+
+    #[test]
+    fn resolve_line_colors_returns_both_fg_and_bg_from_the_same_filter() {
+        let defs = vec![filter_def_with_colors(
+            "ERROR",
+            Some(RatatuiColor::Red),
+            Some(RatatuiColor::Blue),
+        )];
+        assert_eq!(
+            resolve_line_colors(b"ERROR: something broke", &defs, &[]),
+            (Some(rgba_from_u8(128, 0, 0)), Some(rgba_from_u8(0, 0, 128)))
+        );
+    }
+
+    #[test]
+    fn resolve_line_colors_supports_a_background_only_filter() {
+        let defs = vec![filter_def_with_colors(
+            "ERROR",
+            None,
+            Some(RatatuiColor::Blue),
+        )];
+        assert_eq!(
+            resolve_line_colors(b"ERROR: something broke", &defs, &[]),
+            (None, Some(rgba_from_u8(0, 0, 128)))
+        );
+    }
+
+    #[test]
+    fn resolve_line_colors_is_none_none_when_nothing_matches() {
+        let defs = vec![filter_def_with_colors(
+            "ERROR",
+            Some(RatatuiColor::Red),
+            Some(RatatuiColor::Blue),
+        )];
+        assert_eq!(
+            resolve_line_colors(b"all good here", &defs, &[]),
+            (None, None)
+        );
     }
 
     #[test]

@@ -56,7 +56,7 @@ strum = { version = "0.28.0", features = ["derive"] }
 schemars = { version = "0.8", default-features = false, features = ["derive", "preserve_order"] }
 arc-swap = { version = "1.9", default-features = false }
 gpui-kit = { version = "0.7", optional = true }
-futures = { version = "0.3", default-features = false, features = ["std"], optional = true }
+futures = { version = "0.3", default-features = false, features = ["std", "executor"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["rayon", "html_reports"] }

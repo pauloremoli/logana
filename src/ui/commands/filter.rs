@@ -32,7 +32,7 @@ pub(super) struct FilterArgs {
 /// explicit `--fg` (and, for `--auto`, `--bg` too) — silently overriding one
 /// or the other would be more surprising than just asking the user to pick
 /// one.
-fn resolve_colors(
+pub(crate) fn resolve_colors(
     auto: bool,
     fga: bool,
     fg: Option<String>,

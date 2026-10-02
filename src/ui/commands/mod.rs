@@ -11,6 +11,8 @@ mod io;
 mod stream;
 
 pub(crate) use filter::build_field_filter_pattern;
+#[cfg(feature = "gui")]
+pub(crate) use filter::resolve_colors;
 
 pub(super) fn parse_key_value(pattern: &str) -> Result<(&str, &str), String> {
     let eq = pattern

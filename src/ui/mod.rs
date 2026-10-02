@@ -14,6 +14,8 @@ pub use value_colors::{
 mod app;
 mod commands;
 pub(crate) use commands::build_field_filter_pattern;
+#[cfg(feature = "gui")]
+pub(crate) use commands::resolve_colors;
 pub mod field_layout;
 mod input;
 mod input_handler;

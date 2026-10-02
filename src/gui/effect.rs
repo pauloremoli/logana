@@ -31,5 +31,10 @@ pub enum Effect {
         tab_idx: usize,
         log_manager: LogManager,
         command: Commands,
+        /// The active tab's theme background, for `--auto`/`--fga` color
+        /// generation (`execute_command`/`resolve_colors`) — resolved here
+        /// rather than inside `execute_command` so that function stays a
+        /// plain, gpui-free `(LogManager, Commands) -> Result<..>` step.
+        theme_bg: (u8, u8, u8),
     },
 }

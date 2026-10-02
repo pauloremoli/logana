@@ -1,5 +1,5 @@
 use crate::gui::app::App;
-use crate::gui::color::{ratatui_color_to_gpui, resolve_line_color};
+use crate::gui::color::{ratatui_color_to_gpui, resolve_line_colors};
 use crate::mode::app_mode::ModeRenderState;
 use crate::theme::Theme as TuiTheme;
 use crate::ui::TabState;
@@ -84,7 +84,8 @@ fn line_row(
     selected: bool,
     theme: &TuiTheme,
 ) -> gpui_kit::gpui::AnyElement {
-    let bytes = tab.file_reader.get_line_zero_copy(line_idx);
+    let owned_line_bytes = tab.file_reader.get_line(line_idx);
+    let bytes: &[u8] = &owned_line_bytes;
     let text = String::from_utf8_lossy(bytes).into_owned();
     // `w_full()` matters beyond general tidiness: without it the row
     // shrink-wraps to its text content, so a selection `.bg()` only
@@ -98,12 +99,18 @@ fn line_row(
         if let Some(fg) = ratatui_color_to_gpui(theme.visual_select_fg) {
             row = row.text_color(fg);
         }
-    } else if let Some(color) = resolve_line_color(
-        bytes,
-        tab.log_manager.get_filters(),
-        tab.log_manager.get_group_styles(),
-    ) {
-        row = row.text_color(color);
+    } else {
+        let (fg, bg) = resolve_line_colors(
+            bytes,
+            tab.log_manager.get_filters(),
+            tab.log_manager.get_group_styles(),
+        );
+        if let Some(bg) = bg {
+            row = row.bg(bg);
+        }
+        if let Some(fg) = fg {
+            row = row.text_color(fg);
+        }
     }
     row.into_any_element()
 }
@@ -122,6 +129,33 @@ mod tests {
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, None).await;
         TabState::new(reader, log_manager, "test.log".to_string())
+    }
+
+    /// A tab backed by `Storage::Paged` (how real large files load), to
+    /// guard against `line_row` reaching for `get_line_zero_copy`, which
+    /// panics for this storage kind — reproduces the panic reported when
+    /// opening a file large enough to trigger paged loading.
+    async fn paged_tab() -> TabState {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(b"a\nb\nc\n").unwrap();
+        f.flush().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        let canonical = Arc::new(std::fs::canonicalize(&path).unwrap());
+        let reader = FileReader::try_new_paged(&path, canonical)
+            .unwrap()
+            .expect("plain text file should build Storage::Paged");
+        assert!(reader.is_paged());
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let log_manager = LogManager::new(db, None).await;
+        TabState::new(reader, log_manager, "test.log".to_string())
+    }
+
+    #[tokio::test]
+    async fn line_row_does_not_panic_for_paged_storage() {
+        let tab = paged_tab().await;
+        let theme = TuiTheme::default();
+        let _ = line_row(&tab, 0, false, &theme);
     }
 
     #[tokio::test]
