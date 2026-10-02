@@ -1,3 +1,4 @@
+pub mod command_palette;
 pub mod field_facets;
 pub mod filter_pane;
 pub mod group_pane;
@@ -16,7 +17,8 @@ use gpui_kit::gpui::{Context, Window, div, px};
 const APP_TITLE_HEIGHT: f32 = 32.0;
 
 pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoElement {
-    div()
+    let viewport = window.viewport_size();
+    let mut root = div()
         .flex()
         .size_full()
         .child(nav_rail::nav_rail(&app.state, cx))
@@ -44,7 +46,11 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
                 .child(search_bar::search_bar(&app.state, cx))
                 .child(body(app, window, cx))
                 .child(status_bar::status_bar(app.state.active_tab(), cx)),
-        )
+        );
+    if let Some(palette) = command_palette::command_palette(&app.state, viewport, cx) {
+        root = root.child(palette);
+    }
+    root
 }
 
 fn body(app: &mut App, _window: &mut Window, cx: &mut Context<App>) -> impl IntoElement {

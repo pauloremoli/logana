@@ -32,6 +32,7 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
     bar.child(
         Button::new("open-file")
             .icon(Icon::new(IconName::Plus))
+            .tooltip("Open file")
             .on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
                 app.dispatch(Message::OpenFileDialog, window, cx);
             })),
@@ -53,6 +54,7 @@ fn tab_label(idx: usize, title: String, active: bool, cx: &mut Context<App>) -> 
         .child(Icon::new(IconName::FileText))
         .child(
             Button::new(("tab-select", idx))
+                .tooltip(format!("Switch to {title}"))
                 .label(title)
                 .on_click(
                     cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
@@ -63,6 +65,7 @@ fn tab_label(idx: usize, title: String, active: bool, cx: &mut Context<App>) -> 
         .child(
             Button::new(("tab-close", idx))
                 .icon(Icon::new(IconName::X))
+                .tooltip("Close tab")
                 .on_click(
                     cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
                         app.dispatch(Message::TabClosed(idx), window, cx);

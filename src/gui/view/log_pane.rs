@@ -6,6 +6,7 @@ use crate::parser::LogLevel;
 use crate::theme::Theme as TuiTheme;
 use crate::ui::TabState;
 use gpui_kit::base::{VirtualListScrollHandle, v_virtual_list};
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{AnyElement, Context, FontWeight, Rgba, Size, div, px};
 use std::rc::Rc;
@@ -45,36 +46,43 @@ pub fn log_pane(
         .size_full()
         .child(header_row())
         .child(
-            v_virtual_list(
-                view,
-                "log-pane",
-                item_sizes,
-                move |app: &mut App, range, _window, _cx| {
-                    let Some(tab) = app.state.tabs.get(tab_idx) else {
-                        return Vec::new();
-                    };
-                    let selection = visual_line_selection(tab);
-                    range
-                        .filter_map(|pos| {
-                            tab.filter
-                                .visible_indices
-                                .get_opt(pos)
-                                .map(|line_idx| (pos, line_idx))
-                        })
-                        .map(|(pos, line_idx)| {
-                            line_row(
-                                tab,
-                                line_idx,
-                                selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&pos)),
-                                pos == tab.scroll.scroll_offset,
-                                &app.state.theme,
-                            )
-                        })
-                        .collect()
-                },
-            )
-            .track_scroll(log_scroll)
-            .flex_1(),
+            div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.))
+                .child(
+                    v_virtual_list(
+                        view,
+                        "log-pane",
+                        item_sizes,
+                        move |app: &mut App, range, _window, _cx| {
+                            let Some(tab) = app.state.tabs.get(tab_idx) else {
+                                return Vec::new();
+                            };
+                            let selection = visual_line_selection(tab);
+                            range
+                                .filter_map(|pos| {
+                                    tab.filter
+                                        .visible_indices
+                                        .get_opt(pos)
+                                        .map(|line_idx| (pos, line_idx))
+                                })
+                                .map(|(pos, line_idx)| {
+                                    line_row(
+                                        tab,
+                                        line_idx,
+                                        selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&pos)),
+                                        pos == tab.scroll.scroll_offset,
+                                        &app.state.theme,
+                                    )
+                                })
+                                .collect()
+                        },
+                    )
+                    .track_scroll(log_scroll)
+                    .size_full(),
+                )
+                .vertical_scrollbar(log_scroll),
         )
 }
 

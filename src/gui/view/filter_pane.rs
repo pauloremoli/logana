@@ -37,6 +37,7 @@ pub fn filter_pane(
             .child(
                 Button::new("clear-all-filters")
                     .label("Clear all")
+                    .tooltip("Remove every active filter")
                     .on_click(
                         cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
                             app.dispatch(Message::ClearAllFilters(tab_idx), window, cx);
@@ -100,6 +101,7 @@ fn filter_row(
         .child(
             Button::new(("filter-remove", id))
                 .icon(Icon::new(IconName::X))
+                .tooltip("Remove filter")
                 .on_click(
                     cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
                         app.dispatch(Message::FilterRemoved(tab_idx, id), window, cx);

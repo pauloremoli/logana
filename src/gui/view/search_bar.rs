@@ -32,32 +32,46 @@ pub fn search_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
         .overflow_hidden()
         .border_b_1()
         .border_color(cx.theme().border)
-        .child(search_input(state))
+        .child(search_input(state, cx))
         .child(time_range_control(state, cx))
         .child(filter_count_badge(state))
         .child(live_indicator(state, cx))
 }
 
 /// Shows the `/` (forward) or `?` (backward) search prompt and its live
-/// query while `SearchMode` is active; a static placeholder otherwise.
-/// Typing, matching, and navigation are all handled by the TUI's real
-/// `SearchMode`/`Search` — this only reflects its `render_state`.
-fn search_input(state: &GuiState) -> impl IntoElement {
-    let text = match state
+/// query while `SearchMode` is active; the placeholder otherwise (Command
+/// mode has its own floating overlay — see `command_palette` — rather
+/// than sharing this slot). Styled to look like a real text input field
+/// (bordered, rounded, its own background) even though it isn't a
+/// focusable native input: typing is handled entirely by the TUI's real
+/// `SearchMode`, same as every other mode, via the root's capture-phase
+/// key handler — this just reflects its `render_state`.
+fn search_input(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
+    let (text, is_placeholder) = match state
         .active_tab()
         .map(|tab| tab.interaction.mode.render_state())
     {
         Some(ModeRenderState::Search { query, forward, .. }) => {
             let prompt = if forward { "/" } else { "?" };
-            format!("{prompt}{query}")
+            (format!("{prompt}{query}"), false)
         }
-        // Command mode (`:filter ERROR`, etc.) shares this one input
-        // slot too, rather than a separate command-bar row — the mockup
-        // has a single search/command input, not two.
-        Some(ModeRenderState::Command { input, .. }) => format!(":{input}"),
-        _ => PLACEHOLDER.to_string(),
+        _ => (PLACEHOLDER.to_string(), true),
     };
-    div().flex().flex_1().overflow_hidden().child(text)
+    let mut input = div()
+        .flex()
+        .flex_1()
+        .h(px(24.))
+        .items_center()
+        .px(px(8.))
+        .rounded(px(6.))
+        .bg(cx.theme().input)
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .child(text);
+    if is_placeholder {
+        input = input.text_color(cx.theme().muted_foreground);
+    }
+    input
 }
 
 fn time_range_control(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
@@ -147,6 +161,7 @@ fn live_indicator(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
             Button::new("stream-toggle")
                 .icon(Icon::new(icon))
                 .disabled(!has_watch)
+                .tooltip(if tab.stream.paused { "Resume" } else { "Pause" })
                 .on_click(
                     cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
                         app.dispatch(Message::StreamToggled(tab_idx), window, cx);

@@ -60,6 +60,16 @@ pub fn status_bar_right_text(info: &StatusBarInfo) -> String {
     }
 }
 
+/// The detected schema's name (`LogFormatParser::name`), or a plain-text
+/// label for a tab with no detected format — never invented, since an
+/// unstructured file genuinely has no schema.
+pub fn status_bar_schema_text(tab: &TabState) -> String {
+    match &tab.display.format {
+        Some(format) => format.name().to_string(),
+        None => "Plain text".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +153,18 @@ mod tests {
         tab.filter.visible_indices = crate::ui::VisibleLines::Filtered(vec![]);
         let info = status_bar_info(&tab);
         assert_eq!(status_bar_right_text(&info), "Ln -, Col 1");
+    }
+
+    #[tokio::test]
+    async fn schema_text_falls_back_without_a_detected_format() {
+        let tab = tab_with_lines(&["a", "b"]).await;
+        assert_eq!(status_bar_schema_text(&tab), "Plain text");
+    }
+
+    #[tokio::test]
+    async fn schema_text_shows_the_detected_format_name() {
+        let mut tab = tab_with_lines(&["a", "b"]).await;
+        tab.display.format = Some(std::sync::Arc::new(crate::parser::ClfParser));
+        assert_eq!(status_bar_schema_text(&tab), "clf");
     }
 }

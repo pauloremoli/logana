@@ -94,6 +94,7 @@ fn group_row(
         .child(
             Button::new(format!("group-delete-{name}"))
                 .label("Delete")
+                .tooltip(format!("Delete group {name}"))
                 .on_click(
                     cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
                         app.dispatch(

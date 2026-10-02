@@ -134,6 +134,7 @@ fn sidebar_header(active: SidebarTab, cx: &mut Context<App>) -> impl IntoElement
         .child(
             Button::new("sidebar-close")
                 .icon(Icon::new(IconName::X))
+                .tooltip("Hide sidebar")
                 .on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
                     app.dispatch(Message::SidebarToggled, window, cx);
                 })),
@@ -150,6 +151,7 @@ fn sidebar_tab_button(
     let mut button = Button::new(label)
         .icon(Icon::new(icon))
         .label(label)
+        .tooltip(label)
         .on_click(
             cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
                 app.dispatch(Message::SidebarTabSelected(tab), window, cx);
