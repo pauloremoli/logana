@@ -10,6 +10,7 @@ pub mod sidebar;
 pub mod status_bar;
 pub mod tab_bar;
 pub mod theme_picker_overlay;
+pub mod value_colors_overlay;
 
 use crate::gui::app::App;
 use crate::gui::state::NavPage;
@@ -64,6 +65,9 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
         root = root.child(overlay);
     }
     if let Some(overlay) = theme_picker_overlay::theme_picker_overlay(&app.state, viewport, cx) {
+        root = root.child(overlay);
+    }
+    if let Some(overlay) = value_colors_overlay::value_colors_overlay(&app.state, viewport, cx) {
         root = root.child(overlay);
     }
     root

@@ -14,6 +14,9 @@ use crate::input::{KeyCode, KeyModifiers};
 use crate::mode::command_mode::CommandMode;
 use crate::mode::normal_mode::NormalMode;
 use crate::mode::theme_picker_mode::ThemePickerMode;
+use crate::mode::value_colors_mode::{
+    ValueColorEntry, ValueColorGroup as VCGroup, ValueColorsMode,
+};
 use crate::ui::{KeyResult, TabState, VisibleLines};
 use clap::Parser;
 use std::path::PathBuf;
@@ -354,6 +357,83 @@ fn open_theme_picker(state: &mut GuiState) {
     }
 }
 
+/// Mirrors the TUI's `App::cmd_value_colors`/`cmd_level_colors` (`src/ui/
+/// commands/stream.rs`, `src/ui/commands/display.rs`): builds the
+/// category groups from `state.theme.value_colors`/the fixed level list,
+/// snapshots which keys are currently disabled, and enters
+/// `ValueColorsMode` on the active tab. Needs `&mut GuiState` (reads
+/// `state.theme`), same reason `open_theme_picker` isn't folded into
+/// `apply_display_command`. No-ops for any other command — callers must
+/// already know `command` is one of these two (see `handle_command_string`'s
+/// `matches!` guard) before calling.
+fn open_value_colors_picker(state: &mut GuiState, command: &Commands) {
+    let (groups, disabled): (Vec<VCGroup>, std::collections::HashSet<String>) = match command {
+        Commands::ValueColors => {
+            let disabled = state.theme.value_colors.disabled.clone();
+            let process_representative = state.theme.process_colors.first().copied();
+            let groups = state
+                .theme
+                .value_colors
+                .grouped_categories(process_representative)
+                .into_iter()
+                .map(|g| VCGroup {
+                    label: g.label.to_string(),
+                    children: g
+                        .children
+                        .into_iter()
+                        .map(|(key, label, color)| ValueColorEntry {
+                            key: key.to_string(),
+                            label: label.to_string(),
+                            color,
+                            enabled: !disabled.contains(key),
+                        })
+                        .collect(),
+                })
+                .collect();
+            (groups, disabled)
+        }
+        Commands::LevelColors => {
+            let Some(tab) = state.tabs.get(state.active_tab) else {
+                return;
+            };
+            let disabled = tab.display.level_colors_disabled.clone();
+            let theme = &state.theme;
+            let levels: [(&str, &str, ratatui::style::Color); 7] = [
+                ("trace", "TRACE", theme.trace_fg),
+                ("debug", "DEBUG", theme.debug_fg),
+                ("info", "INFO", theme.info_fg),
+                ("notice", "NOTICE", theme.notice_fg),
+                ("warning", "WARNING", theme.warning_fg),
+                ("error", "ERROR", theme.error_fg),
+                ("fatal", "FATAL", theme.fatal_fg),
+            ];
+            let groups = vec![VCGroup {
+                label: "Log levels".to_string(),
+                children: levels
+                    .into_iter()
+                    .map(|(key, label, color)| ValueColorEntry {
+                        key: key.to_string(),
+                        label: label.to_string(),
+                        color,
+                        enabled: !disabled.contains(key),
+                    })
+                    .collect(),
+            }];
+            (groups, disabled)
+        }
+        _ => return,
+    };
+    let is_level_colors = matches!(command, Commands::LevelColors);
+    let Some(tab) = state.active_tab_mut() else {
+        return;
+    };
+    tab.interaction.mode = Box::new(if is_level_colors {
+        ValueColorsMode::new_level_colors(groups, disabled)
+    } else {
+        ValueColorsMode::new(groups, disabled)
+    });
+}
+
 fn toggle_display(state: &mut GuiState, f: impl FnOnce(&mut crate::ui::DisplayConfig)) {
     if let Some(tab) = state.active_tab_mut() {
         f(&mut tab.display);
@@ -404,6 +484,10 @@ fn handle_command_string(state: &mut GuiState, cmd: String) -> Effect {
     };
     if matches!(command, Commands::Theme) {
         open_theme_picker(state);
+        return Effect::None;
+    }
+    if matches!(command, Commands::ValueColors | Commands::LevelColors) {
+        open_value_colors_picker(state, &command);
         return Effect::None;
     }
     if let Some(tab) = state.tabs.get_mut(tab_idx)
@@ -1707,6 +1791,55 @@ mod tests {
             state.tabs[0].interaction.mode.render_state(),
             crate::mode::app_mode::ModeRenderState::ThemePicker { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn value_colors_command_opens_the_value_colors_picker_populated() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let effect = handle_command_string(&mut state, "value-colors".to_string());
+        assert!(matches!(effect, Effect::None));
+        match state.tabs[0].interaction.mode.render_state() {
+            crate::mode::app_mode::ModeRenderState::ValueColors { groups, .. } => {
+                assert!(!groups.is_empty());
+                assert!(groups.iter().any(|g| !g.children.is_empty()));
+            }
+            other => panic!("expected ValueColors, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn level_colors_command_opens_the_level_colors_picker_with_seven_levels() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let effect = handle_command_string(&mut state, "level-colors".to_string());
+        assert!(matches!(effect, Effect::None));
+        match state.tabs[0].interaction.mode.render_state() {
+            crate::mode::app_mode::ModeRenderState::LevelColors { groups, .. } => {
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0].children.len(), 7);
+            }
+            other => panic!("expected LevelColors, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn level_colors_command_reflects_already_disabled_levels() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.tabs[0]
+            .display
+            .level_colors_disabled
+            .insert("warning".to_string());
+        handle_command_string(&mut state, "level-colors".to_string());
+        match state.tabs[0].interaction.mode.render_state() {
+            crate::mode::app_mode::ModeRenderState::LevelColors { groups, .. } => {
+                let warning = groups[0]
+                    .children
+                    .iter()
+                    .find(|e| e.key == "warning")
+                    .expect("warning entry should exist");
+                assert!(!warning.enabled);
+            }
+            other => panic!("expected LevelColors, got {other:?}"),
+        }
     }
 
     #[tokio::test]

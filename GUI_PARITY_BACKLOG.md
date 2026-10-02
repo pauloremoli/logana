@@ -17,8 +17,8 @@ with "not yet supported in the GUI":
 
 - [ ] Persistence: `Save`, `SaveFilters`, `LoadFilters`, `ImportFilters`,
       `Export`, `ExportMarked`
-- [ ] Theming/coloring: `SetTheme`, `LevelColors`, `ValueColors`, `SetColor`
-      (`Theme`, opening the picker, is wired — see below)
+- [ ] Theming/coloring: `SetTheme`, `SetColor` (`Theme`/`ValueColors`/
+      `LevelColors` — opening each picker — are wired, see below)
 - [ ] Field layout: `HideField`, `ShowField`, `ShowAllFields`,
       `SelectFields` (needs structured/JSON field display, which the GUI
       doesn't have yet)
@@ -51,7 +51,6 @@ the `Box<dyn Mode>` boundary) but nothing draws their popup yet:
 - [ ] `file_switcher_mode`
 - [ ] `merge_select_mode`
 - [ ] `select_fields_mode`
-- [ ] `value_colors_mode`
 - [ ] `visual_char_mode` — only visual **line** selection is highlighted in
       `log_pane.rs`; char-wise visual selection has no rendering.
       Architectural snag, not just unstarted: `anchor_col`/`cursor_col` are
@@ -84,7 +83,7 @@ Even once the modes above are rendered, there's no effect yet for:
 - Command palette overlay (`:` commands), search bar (click to enter
   `SearchMode`), time-range dropdown, `?` keybindings-help overlay,
   `:theme` picker (live preview, apply on Enter, revert on Esc — not
-  persisted, see above)
+  persisted, see above), `:value-colors`/`:level-colors` pickers
 - Resizable, content-auto-fit log table columns; Time/Level columns hidden
   for unstructured files
 - Visual-line selection highlighting; a separate cursor-row highlight for
