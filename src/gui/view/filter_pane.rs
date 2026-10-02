@@ -83,6 +83,8 @@ fn filter_row(
     }
     div()
         .flex()
+        .flex_wrap()
+        .items_center()
         .gap_2()
         .child(if selected { "> " } else { "  " })
         .child(

@@ -53,6 +53,9 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
     if let Some(palette) = command_palette::command_palette(&app.state, viewport, cx) {
         root = root.child(palette);
     }
+    if let Some(overlay) = search_bar::time_range_overlay(&app.state, viewport, cx) {
+        root = root.child(overlay);
+    }
     root
 }
 

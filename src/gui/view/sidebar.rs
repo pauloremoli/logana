@@ -4,6 +4,7 @@ use super::group_pane::{self, GroupManagementView};
 use crate::gui::app::App;
 use crate::gui::message::Message;
 use crate::gui::state::SidebarTab;
+use crate::input::{KeyCode, KeyModifiers};
 use crate::mode::app_mode::ModeRenderState;
 use crate::ui::TabState;
 use gpui_kit::assets::IconName;
@@ -29,6 +30,8 @@ pub fn sidebar(
     let filter_defs = tab.log_manager.get_filters();
     let group_defs = tab.log_manager.get_group_styles();
     let render_state = tab.interaction.mode.render_state();
+    let already_filter_mgmt = matches!(&render_state, ModeRenderState::FilterManagement { .. });
+    let already_group_mgmt = matches!(&render_state, ModeRenderState::GroupManagement { .. });
 
     let filter_management = match &render_state {
         ModeRenderState::FilterManagement {
@@ -64,7 +67,12 @@ pub fn sidebar(
         .p_2()
         .border_l_1()
         .border_color(cx.theme().border)
-        .child(sidebar_header(sidebar_tab, cx));
+        .child(sidebar_header(
+            sidebar_tab,
+            already_filter_mgmt,
+            already_group_mgmt,
+            cx,
+        ));
     col = match sidebar_tab {
         SidebarTab::Filters => {
             let col = col.child(filter_pane::filter_pane(
@@ -104,8 +112,17 @@ pub fn sidebar(
 /// Tab switcher (Filters/**Groups** — Groups replaces the mockup's
 /// Annotations tab, no annotations UI exists yet) plus a close button
 /// reusing the same `show_sidebar` toggle the keyboard-driven
-/// `KeyResult::ToggleSidebar` already flips.
-fn sidebar_header(active: SidebarTab, cx: &mut Context<App>) -> impl IntoElement {
+/// `KeyResult::ToggleSidebar` already flips. `already_filter_mgmt`/
+/// `already_group_mgmt` report whether the real `FilterManagementMode`/
+/// `GroupManagementMode` is already engaged, so each tab button knows
+/// whether clicking it also needs to enter that mode for real (see
+/// `sidebar_tab_button`'s doc comment).
+fn sidebar_header(
+    active: SidebarTab,
+    already_filter_mgmt: bool,
+    already_group_mgmt: bool,
+    cx: &mut Context<App>,
+) -> impl IntoElement {
     div()
         .flex()
         .items_center()
@@ -117,17 +134,27 @@ fn sidebar_header(active: SidebarTab, cx: &mut Context<App>) -> impl IntoElement
                 .flex()
                 .gap_2()
                 .child(sidebar_tab_button(
-                    IconName::Funnel,
-                    "Filters",
-                    SidebarTab::Filters,
-                    active == SidebarTab::Filters,
+                    SidebarTabButtonArgs {
+                        icon: IconName::Funnel,
+                        label: "Filters",
+                        tab: SidebarTab::Filters,
+                        active: active == SidebarTab::Filters,
+                        already_in_mgmt_mode: already_filter_mgmt,
+                        mode_key: KeyCode::Char('f'),
+                        mode_modifiers: KeyModifiers::NONE,
+                    },
                     cx,
                 ))
                 .child(sidebar_tab_button(
-                    IconName::Group,
-                    "Groups",
-                    SidebarTab::Groups,
-                    active == SidebarTab::Groups,
+                    SidebarTabButtonArgs {
+                        icon: IconName::Group,
+                        label: "Groups",
+                        tab: SidebarTab::Groups,
+                        active: active == SidebarTab::Groups,
+                        already_in_mgmt_mode: already_group_mgmt,
+                        mode_key: KeyCode::Char('g'),
+                        mode_modifiers: KeyModifiers::CONTROL,
+                    },
                     cx,
                 )),
         )
@@ -141,13 +168,39 @@ fn sidebar_header(active: SidebarTab, cx: &mut Context<App>) -> impl IntoElement
         )
 }
 
-fn sidebar_tab_button(
+/// Bundles `sidebar_tab_button`'s per-tab config — kept as one struct
+/// instead of individual parameters to stay under clippy's
+/// `too_many_arguments` threshold.
+struct SidebarTabButtonArgs {
     icon: IconName,
     label: &'static str,
     tab: SidebarTab,
     active: bool,
-    cx: &mut Context<App>,
-) -> impl IntoElement {
+    already_in_mgmt_mode: bool,
+    mode_key: KeyCode,
+    mode_modifiers: KeyModifiers,
+}
+
+/// Switches which pane is visible (`Message::SidebarTabSelected`, a pure
+/// GUI display toggle) and, when the real `Mode` state machine isn't
+/// already in the matching management mode, also dispatches the same
+/// keypress `NormalMode`'s `filter_mode`/`group_mode` bindings handle
+/// (`f` / `Ctrl+g`) — exactly like the search bar's click-to-search fix —
+/// so the sidebar's selection cursor and keyboard navigation (`j`/`k`,
+/// `dd`, etc.) actually engage instead of just showing a static list.
+/// Skipped when already active, since routing another `f`/`Ctrl+g`
+/// through `FilterManagementMode`/`GroupManagementMode` itself could type
+/// into its live search instead of re-entering it.
+fn sidebar_tab_button(args: SidebarTabButtonArgs, cx: &mut Context<App>) -> impl IntoElement {
+    let SidebarTabButtonArgs {
+        icon,
+        label,
+        tab,
+        active,
+        already_in_mgmt_mode,
+        mode_key,
+        mode_modifiers,
+    } = args;
     let mut button = Button::new(label)
         .icon(Icon::new(icon))
         .label(label)
@@ -155,6 +208,9 @@ fn sidebar_tab_button(
         .on_click(
             cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
                 app.dispatch(Message::SidebarTabSelected(tab), window, cx);
+                if !already_in_mgmt_mode {
+                    app.dispatch(Message::KeyPressed(mode_key, mode_modifiers), window, cx);
+                }
             }),
         );
     if active {

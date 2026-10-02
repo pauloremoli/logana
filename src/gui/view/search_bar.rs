@@ -3,19 +3,27 @@ use crate::gui::message::Message;
 use crate::gui::state::GuiState;
 use crate::gui::time_range::{ALL_PRESETS, preset_label};
 use crate::gui::update::is_tab_live;
+use crate::gui::view::tab_bar::TAB_BAR_HEIGHT;
 use crate::input::{KeyCode, KeyModifiers};
 use crate::mode::app_mode::ModeRenderState;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::ActiveTheme;
-use gpui_kit::component::Icon;
 use gpui_kit::component::badge::Badge;
 use gpui_kit::component::button::Button;
+use gpui_kit::component::{ActiveTheme, Icon, TITLE_BAR_HEIGHT};
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{Context, Window, div, px};
+use gpui_kit::gpui::{
+    AnyElement, Context, Pixels, Size, Window, anchored, deferred, div, point, px,
+};
 
-const SEARCH_BAR_HEIGHT: f32 = 32.0;
+pub(crate) const SEARCH_BAR_HEIGHT: f32 = 32.0;
 const PLACEHOLDER: &str = "Search logs... (regex, field:value, or free text)";
+/// Width of the time-range dropdown's floating panel, and the right-edge
+/// inset used to roughly line it up under `time_range_control`'s toggle —
+/// an approximation, not real bounds tracking (see `time_range_overlay`'s
+/// doc comment for why).
+const TIME_RANGE_PANEL_WIDTH: f32 = 180.0;
+const TIME_RANGE_RIGHT_INSET: f32 = 96.0;
 
 /// The search/filter bar row: the search input, a time-range dropdown
 /// (drives the real `:date-filter` command), the active-filter count, and
@@ -92,8 +100,7 @@ fn search_input(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
 }
 
 fn time_range_control(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
-    let mut control = div().flex().flex_col();
-    let toggle = div()
+    div()
         .id("time-range-toggle")
         .flex()
         .items_center()
@@ -104,26 +111,73 @@ fn time_range_control(state: &GuiState, cx: &mut Context<App>) -> impl IntoEleme
         .child(Icon::new(IconName::ChevronDown))
         .on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
             app.dispatch(Message::TimeRangeToggled, window, cx);
-        }));
-    control = control.child(toggle);
-    if state.time_range_open {
-        let mut list = div().flex().flex_col();
-        for preset in ALL_PRESETS {
-            list = list.child(
-                div()
-                    .id(preset_label(preset))
-                    .overflow_hidden()
-                    .child(preset_label(preset))
-                    .on_click(
-                        cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
-                            app.dispatch(Message::TimeRangeSelected(preset), window, cx);
-                        }),
-                    ),
-            );
-        }
-        control = control.child(list);
+        }))
+}
+
+/// The time-range dropdown's option list, as a true floating overlay —
+/// `deferred(anchored())` paints it in a later pass so it escapes the
+/// search bar's `overflow_hidden()` instead of being clipped/squashed
+/// inline (the bug a screenshot caught: the list used to render inline
+/// inside the search bar's fixed-height row and overlapped the other
+/// controls). Positioned with a fixed top offset (title bar + tab bar +
+/// search bar heights) and a right inset, approximating the toggle
+/// button's location rather than tracking its real bounds — gpui doesn't
+/// give element bounds back to a plain render function, only through
+/// bounds-tracking APIs (`on_children_prepainted` et al.) this codebase
+/// doesn't use elsewhere yet. Good enough for a right-side toggle in a
+/// fixed-height bar; revisit with real bounds tracking if the search bar
+/// layout grows more dynamic.
+pub fn time_range_overlay(
+    state: &GuiState,
+    viewport: Size<Pixels>,
+    cx: &mut Context<App>,
+) -> Option<AnyElement> {
+    if !state.time_range_open {
+        return None;
     }
-    control
+    let top_offset = f32::from(TITLE_BAR_HEIGHT) + TAB_BAR_HEIGHT + SEARCH_BAR_HEIGHT;
+    let mut list = div()
+        .w(px(TIME_RANGE_PANEL_WIDTH))
+        .flex()
+        .flex_col()
+        .rounded(px(8.))
+        .bg(cx.theme().background)
+        .border_1()
+        .border_color(cx.theme().border)
+        .shadow_md()
+        .p(px(4.));
+    for preset in ALL_PRESETS {
+        list = list.child(
+            div()
+                .id(preset_label(preset))
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(4.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .hover(|style| style.bg(cx.theme().accent))
+                .child(preset_label(preset))
+                .on_click(
+                    cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
+                        app.dispatch(Message::TimeRangeSelected(preset), window, cx);
+                    }),
+                ),
+        );
+    }
+    Some(
+        deferred(
+            anchored().position(point(px(0.), px(0.))).child(
+                div()
+                    .w(viewport.width)
+                    .flex()
+                    .justify_end()
+                    .pt(px(top_offset))
+                    .pr(px(TIME_RANGE_RIGHT_INSET))
+                    .child(list),
+            ),
+        )
+        .into_any_element(),
+    )
 }
 
 fn filter_count_badge(state: &GuiState) -> impl IntoElement {

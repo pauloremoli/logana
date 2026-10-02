@@ -8,7 +8,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div, px};
 
-const TAB_BAR_HEIGHT: f32 = 36.0;
+pub(crate) const TAB_BAR_HEIGHT: f32 = 36.0;
 const TAB_HEIGHT: f32 = 28.0;
 
 pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
