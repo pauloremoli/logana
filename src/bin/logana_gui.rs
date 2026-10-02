@@ -1,6 +1,6 @@
-use gpui_kit::component::GlobalState;
+use gpui_kit::component::{GlobalState, TitleBar};
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{KeyBinding, Menu, MenuItem, WindowOptions};
+use gpui_kit::gpui::{KeyBinding, Menu, MenuItem};
 use logana::db::{Database, default_db_path};
 use logana::gui::app::{App, OpenFile, Quit};
 use logana::gui::runtime;
@@ -37,7 +37,14 @@ fn main() {
                     ])
                     .owned(),
             ]);
-            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+            // `TitleBar::window_options()` requests client-side decorations
+            // (a custom titlebar the app draws and drags itself) so
+            // `component::TitleBar` below can render real minimize/
+            // maximize/close controls instead of relying on the window
+            // manager's — the window falls back to server-side decorations
+            // on its own when the platform can't honor that, in which case
+            // `TitleBar` detects it and skips drawing duplicate controls.
+            gpui_kit::open_window(TitleBar::window_options(), cx, |window, cx| {
                 let app = cx.new(|cx| App::new(Arc::clone(&db), theme.clone(), cx));
                 // Give the root element initial keyboard focus so key capture
                 // starts working immediately, without requiring a click into

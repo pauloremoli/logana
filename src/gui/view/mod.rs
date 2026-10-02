@@ -11,41 +11,44 @@ pub mod tab_bar;
 
 use crate::gui::app::App;
 use crate::gui::state::NavPage;
+use gpui_kit::component::TitleBar;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div, px};
-
-const APP_TITLE_HEIGHT: f32 = 32.0;
 
 pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoElement {
     let viewport = window.viewport_size();
     let mut root = div()
         .flex()
+        .flex_col()
         .size_full()
-        .child(nav_rail::nav_rail(&app.state, cx))
+        // Draws the real minimize/maximize/close controls (platform-gated
+        // internally — native traffic lights on macOS, skipped entirely
+        // under server-side decorations) and owns window dragging; see
+        // `TitleBar::window_options()` in `logana_gui.rs`'s window setup.
+        .child(TitleBar::new().child("logana"))
         .child(
             div()
                 .flex()
-                .flex_col()
                 .flex_1()
-                .min_w(px(0.))
+                .min_h(px(0.))
+                .child(nav_rail::nav_rail(&app.state, cx))
                 .child(
                     div()
                         .flex()
-                        .items_center()
-                        .px(px(8.))
-                        .h(px(APP_TITLE_HEIGHT))
-                        .overflow_hidden()
-                        .child("logana"),
-                )
-                .child(tab_bar::tab_bar(&app.state, cx))
-                // Matches the mockup's actual order: search/filter bar
-                // sits directly under the tabs, above the table — it used
-                // to stay in the TUI's original bottom-of-screen position
-                // (after `body`), which is why it rendered next to the
-                // status bar instead of up here.
-                .child(search_bar::search_bar(&app.state, cx))
-                .child(body(app, window, cx))
-                .child(status_bar::status_bar(app.state.active_tab(), cx)),
+                        .flex_col()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .child(tab_bar::tab_bar(&app.state, cx))
+                        // Matches the mockup's actual order: search/filter
+                        // bar sits directly under the tabs, above the
+                        // table — it used to stay in the TUI's original
+                        // bottom-of-screen position (after `body`), which
+                        // is why it rendered next to the status bar
+                        // instead of up here.
+                        .child(search_bar::search_bar(&app.state, cx))
+                        .child(body(app, window, cx))
+                        .child(status_bar::status_bar(app.state.active_tab(), cx)),
+                ),
         );
     if let Some(palette) = command_palette::command_palette(&app.state, viewport, cx) {
         root = root.child(palette);
