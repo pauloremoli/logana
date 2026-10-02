@@ -51,7 +51,11 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
                         // instead of up here.
                         .child(search_bar::search_bar(&app.state, cx))
                         .child(body(app, window, cx))
-                        .child(status_bar::status_bar(app.state.active_tab(), cx)),
+                        .child(status_bar::status_bar(
+                            app.state.active_tab(),
+                            app.state.status.as_ref(),
+                            cx,
+                        )),
                 ),
         );
     if let Some(palette) = command_palette::command_palette(&app.state, viewport, cx) {

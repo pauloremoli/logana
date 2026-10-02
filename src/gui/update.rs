@@ -414,6 +414,21 @@ fn apply_schema_command(state: &mut GuiState, name: Option<&str>) {
     }
 }
 
+/// Mirrors the TUI's `App::cmd_path`: reports the active tab's source file
+/// path (or a placeholder for a tab with none, e.g. stdin) via
+/// `state.status` rather than `tab.set_notification` — the GUI's status
+/// bar doesn't read the latter.
+fn report_source_path(state: &mut GuiState) {
+    let Some(tab) = state.active_tab() else {
+        return;
+    };
+    let message = tab
+        .display_source_path()
+        .map(str::to_string)
+        .unwrap_or_else(|| "This tab has no source file (e.g. stdin).".to_string());
+    state.status = Some(StatusMessage::Info(message));
+}
+
 /// Mirrors the TUI's `App::cmd_theme_picker` (`src/ui/commands/
 /// display.rs`): snapshots the current theme (so `KeyResult::RevertTheme`
 /// can restore it on Esc) and enters `ThemePickerMode` on the active tab.
@@ -593,6 +608,10 @@ fn handle_command_string(state: &mut GuiState, cmd: String) -> Effect {
     }
     if let Commands::Schema { name } = &command {
         apply_schema_command(state, name.as_deref());
+        return Effect::None;
+    }
+    if matches!(command, Commands::Path) {
+        report_source_path(state);
         return Effect::None;
     }
     if let Some(tab) = state.tabs.get_mut(tab_idx)
@@ -1672,6 +1691,20 @@ mod tests {
         handle_command_string(&mut state, "schema not-a-real-schema".to_string());
         assert!(state.tabs[0].display.format.is_none());
         assert!(matches!(state.status, Some(StatusMessage::Error(_))));
+    }
+
+    #[tokio::test]
+    async fn path_command_reports_a_status_message() {
+        // state_with_one_tab's log_manager isn't associated with its
+        // FileReader's real path (no production code path leaves a tab in
+        // that state — it's a test-fixture gap, not a real "no source"
+        // tab), so display_source_path() falls back to the no-source-file
+        // placeholder here. The point of this test is only that :path
+        // reaches state.status as Info, not the exact message.
+        let (mut state, _file) = state_with_one_tab().await;
+        let effect = handle_command_string(&mut state, "path".to_string());
+        assert!(matches!(effect, Effect::None));
+        assert!(matches!(state.status, Some(StatusMessage::Info(_))));
     }
 
     #[tokio::test]

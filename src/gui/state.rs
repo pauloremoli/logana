@@ -36,6 +36,10 @@ pub struct GuiState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusMessage {
     Error(String),
+    /// A non-error notification — e.g. `:path`'s current-file-path
+    /// response, which the TUI shows via `tab.set_notification` rather
+    /// than its command-error slot.
+    Info(String),
 }
 
 /// The left nav rail's current page. Only `Logs` has real content today —

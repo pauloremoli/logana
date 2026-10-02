@@ -33,8 +33,10 @@ with "not yet supported in the GUI":
       database (`db.reset_all()`) and touches app-wide fields `GuiState`
       doesn't have (`session.restore_policy`/`restore_file_policy`),
       unlike every other command on this list so far
-- [ ] Misc: `EnableMcp`/`DisableMcp`, `DefaultFilters`, `Run`, `Path`
-      (`SidebarPosition` is wired, see below)
+- [ ] Misc: `EnableMcp`/`DisableMcp`, `DefaultFilters`, `Run` (`Run`
+      spawns a subprocess and streams its output into a new tab — real
+      new Effect plumbing, not a quick win like the rest of this round)
+      (`SidebarPosition`/`Path` are wired, see below)
 
 `Wrap`/`LineNumbers`/`RelativeLineNumbers`/`Collapse`/`Expand` are a
 deliberate simplification vs. the TUI: app-wide settings there (broadcast
@@ -100,7 +102,11 @@ Even once the modes above are rendered, there's no effect yet for:
   way the TUI's does, see above; `Ctrl+P` file-switcher popup; `:tail`
   (toggles `tail_mode` and jumps to the last line once — doesn't yet
   follow newly-arriving lines, since the GUI has no live-tail growth
-  consumption at all)
+  consumption at all), `:path`
+- The status bar now actually renders `state.status` (a toast row above
+  the normal counts/schema/position row, red for `Error`, blue for the
+  new `Info` variant) — several commands above were setting it with
+  nowhere for it to show up until this landed
 - Resizable, content-auto-fit log table columns; Time/Level columns hidden
   for unstructured files
 - Visual-line selection highlighting; a separate cursor-row highlight for
