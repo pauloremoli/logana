@@ -40,4 +40,5 @@ pub struct FileLoaded {
     pub path: PathBuf,
     pub reader: FileReader,
     pub log_manager: LogManager,
+    pub watch: crate::ui::FileWatchState,
 }

@@ -360,6 +360,7 @@ fn push_tab(state: &mut GuiState, loaded: FileLoaded) {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| loaded.path.display().to_string());
     let mut tab = TabState::new(loaded.reader, loaded.log_manager, title);
+    tab.stream.watch = Some(loaded.watch);
     force_recompute(&mut tab);
     state.tabs.push(tab);
     state.active_tab = state.tabs.len() - 1;
@@ -418,16 +419,24 @@ pub async fn load_file(path: PathBuf, db: Arc<Database>) -> Result<FileLoaded, S
     )
     .await
     .map_err(|e| e.to_string())?;
+    let total_bytes = handle.total_bytes;
     let result = handle
         .result_rx
         .await
         .map_err(|_| "file load was cancelled".to_string())?
         .map_err(|e| e.to_string())?;
-    let log_manager = LogManager::new(db, Some(path_str)).await;
+    let log_manager = LogManager::new(db, Some(path_str.clone())).await;
+    // Same watcher the TUI spawns on every real file open (`src/ingestion/
+    // loading.rs`) — makes `tab.stream.watch`/`is_tab_live` real instead of
+    // always `None`. Consuming its ticks to actually refresh the view on
+    // growth is separate, still-unimplemented follow-up work.
+    let watch_rx = FileReader::spawn_file_watcher(path_str.clone(), total_bytes).await;
+    let watch = crate::ui::watch_state_from_file(watch_rx, path_str);
     Ok(FileLoaded {
         path,
         reader: result.reader,
         log_manager,
+        watch,
     })
 }
 
@@ -1346,5 +1355,21 @@ mod tests {
         let loaded = load_file(file.path().to_path_buf(), db).await.unwrap();
         assert_eq!(loaded.path, file.path());
         assert!(loaded.log_manager.get_filters().is_empty());
+        assert_eq!(
+            loaded.watch.reader_path.to_str(),
+            file.path().to_str(),
+            "load_file should spawn a real watcher for the opened file"
+        );
+    }
+
+    #[tokio::test]
+    async fn pushing_a_loaded_tab_makes_it_live() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut state = GuiState::new(Arc::clone(&db));
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "hello\nworld\n").unwrap();
+        let loaded = load_file(file.path().to_path_buf(), db).await.unwrap();
+        update(&mut state, Message::FileLoaded(Ok(loaded)));
+        assert!(is_tab_live(&state.tabs[0]));
     }
 }
