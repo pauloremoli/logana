@@ -284,14 +284,25 @@ fn line_row(
         if let Some(fg) = ratatui_color_to_gpui(theme.visual_select_fg) {
             row = row.text_color(fg);
         }
-    }
-    // Matches the TUI's own visual-selection render (see
-    // `test_cursor_line_has_no_cursor_bg` in `src/ui/render.rs`): plain
-    // cursor movement outside of `VisualLineMode` gets no highlighting at
-    // all — bold + underline marks which end of an active selection is
-    // "the cursor", not just "wherever the cursor currently is".
-    if selected && is_cursor_row {
-        row = row.font_weight(FontWeight::BOLD).underline();
+        // Bold + underline marks which end of an active selection is
+        // "the cursor", matching the TUI's own visual-selection render.
+        if is_cursor_row {
+            row = row.font_weight(FontWeight::BOLD).underline();
+        }
+    } else if is_cursor_row {
+        // Outside an active selection, the cursor row still needs its
+        // own visual indicator — a GUI table has no other way to show
+        // "you are here" the way a terminal's native cursor does for the
+        // TUI (see `theme.cursor_bg`/`cursor_fg`'s other GUI-only uses:
+        // popups, the command bar's text cursor). A plain background
+        // tint, not bold+underline, which `selected` above reserves for
+        // marking an actual selection's active end.
+        if let Some(bg) = ratatui_color_to_gpui(theme.cursor_bg) {
+            row = row.bg(bg);
+        }
+        if let Some(fg) = ratatui_color_to_gpui(theme.cursor_fg) {
+            row = row.text_color(fg);
+        }
     }
     row.into_any_element()
 }
@@ -450,6 +461,17 @@ mod tests {
         let tab = paged_tab().await;
         let theme = TuiTheme::default();
         let _ = line_row(&tab, 0, false, false, &theme, ColumnWidths::default());
+    }
+
+    #[tokio::test]
+    async fn line_row_does_not_panic_for_the_plain_cursor_row() {
+        // Outside an active visual-line selection, the cursor row still
+        // gets its own (cursor_bg/cursor_fg) highlight — this just
+        // exercises that path for a panic, since there's no element-tree
+        // introspection in this test module to assert the exact colors.
+        let tab = paged_tab().await;
+        let theme = TuiTheme::default();
+        let _ = line_row(&tab, 0, false, true, &theme, ColumnWidths::default());
     }
 
     #[tokio::test]
