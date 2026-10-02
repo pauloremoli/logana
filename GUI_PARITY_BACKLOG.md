@@ -26,7 +26,8 @@ with "not yet supported in the GUI":
       `row_message_bytes`, never a structured/field-aware rendering), so
       wiring the picker now would be a fully inert popup — skipped until
       there's a reason to read those fields
-- [ ] Sources: `Merge`, `Docker`, `Dlt`, `Otel`, `Schema`
+- [ ] Sources: `Merge`, `Docker`, `Dlt`, `Otel` (`Schema` is wired, see
+      below)
 - [ ] Streaming: `Tail`, `Reset` (`Pause`/`Resume`/`Stop` already work, see
       above)
 - [ ] Misc: `EnableMcp`/`DisableMcp`, `DefaultFilters`, `Run`, `Path`
@@ -91,7 +92,10 @@ Even once the modes above are rendered, there's no effect yet for:
   `:set-theme <name>`, `:set-color` (recolors the filter named by
   `tab.filter.filter_context`, threaded through a new `Effect::
   ExecuteCommand.filter_context` field), `:sidebar-position` (the
-  sidebar actually moves sides, with its border flipping to match)
+  sidebar actually moves sides, with its border flipping to match),
+  `:schema <name>`/`:schema none`/`:schema` (shows the current one via a
+  status message) — doesn't auto-load a format's default filter file the
+  way the TUI's does, see above
 - Resizable, content-auto-fit log table columns; Time/Level columns hidden
   for unstructured files
 - Visual-line selection highlighting; a separate cursor-row highlight for

@@ -358,6 +358,61 @@ fn set_theme_by_name(state: &mut GuiState, theme_name: &str) {
     }
 }
 
+/// Mirrors the TUI's `App::cmd_schema` (`src/ui/commands/display.rs`) for
+/// the active tab: no name shows the current schema (via `state.status`,
+/// same slot the TUI's own command-error path would surface it through);
+/// `"none"` switches to unstructured/raw parsing; any other name resolves
+/// a custom schema (`config::custom_schemas`) or a built-in parser
+/// (`parser::find_builtin_parser`) and applies it. Deliberate
+/// simplification vs. the TUI: doesn't call `apply_default_filters_if_
+/// empty_at` (loading a format's configured default filter file) — that
+/// needs `App::default_filter_files`, a map `GuiState` doesn't have yet;
+/// switching schemas here never auto-loads filters, only the TUI's `:
+/// schema` does.
+fn apply_schema_command(state: &mut GuiState, name: Option<&str>) {
+    let Some(tab) = state.active_tab_mut() else {
+        return;
+    };
+    match name {
+        None => {
+            let schema_name = tab
+                .display
+                .format
+                .as_deref()
+                .map(|f| f.name().to_string())
+                .unwrap_or_else(|| "none".to_string());
+            state.status = Some(StatusMessage::Error(format!(
+                "active schema: {schema_name}"
+            )));
+        }
+        Some("none") => {
+            tab.apply_format(None);
+            force_recompute(tab);
+        }
+        Some(schema_name) => {
+            let custom = crate::config::custom_schemas()
+                .iter()
+                .find(|s| s.name == schema_name)
+                .cloned();
+            let parser: Result<Arc<dyn crate::parser::LogFormatParser>, String> = match custom {
+                Some(cfg) => crate::parser::CustomParser::from_config(&cfg)
+                    .map(|p| Arc::new(p) as Arc<dyn crate::parser::LogFormatParser>)
+                    .map_err(|e| format!("invalid schema '{schema_name}': {e}")),
+                None => crate::parser::find_builtin_parser(schema_name)
+                    .map(Arc::from)
+                    .ok_or_else(|| format!("no schema named '{schema_name}'")),
+            };
+            match parser {
+                Ok(p) => {
+                    tab.apply_format(Some(p));
+                    force_recompute(tab);
+                }
+                Err(e) => state.status = Some(StatusMessage::Error(e)),
+            }
+        }
+    }
+}
+
 /// Mirrors the TUI's `App::cmd_theme_picker` (`src/ui/commands/
 /// display.rs`): snapshots the current theme (so `KeyResult::RevertTheme`
 /// can restore it on Esc) and enters `ThemePickerMode` on the active tab.
@@ -512,6 +567,10 @@ fn handle_command_string(state: &mut GuiState, cmd: String) -> Effect {
     }
     if let Commands::SetTheme { theme_name } = &command {
         set_theme_by_name(state, theme_name);
+        return Effect::None;
+    }
+    if let Commands::Schema { name } = &command {
+        apply_schema_command(state, name.as_deref());
         return Effect::None;
     }
     if let Some(tab) = state.tabs.get_mut(tab_idx)
@@ -1528,6 +1587,45 @@ mod tests {
             state.tabs[0].display.sidebar_side,
             crate::ui::SidebarSide::Right
         );
+    }
+
+    #[tokio::test]
+    async fn schema_command_with_no_name_reports_the_current_schema() {
+        let (mut state, _file) = state_with_one_tab().await;
+        assert!(state.tabs[0].display.format.is_none());
+        let effect = handle_command_string(&mut state, "schema".to_string());
+        assert!(matches!(effect, Effect::None));
+        match state.status {
+            Some(StatusMessage::Error(ref msg)) => assert!(msg.contains("none")),
+            other => panic!("expected a status message, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn schema_command_applies_a_builtin_parser_by_name() {
+        let (mut state, _file) = state_with_one_tab().await;
+        handle_command_string(&mut state, "schema clf".to_string());
+        assert_eq!(
+            state.tabs[0].display.format.as_deref().map(|f| f.name()),
+            Some("clf")
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_command_none_clears_a_previously_set_format() {
+        let (mut state, _file) = state_with_one_tab().await;
+        handle_command_string(&mut state, "schema clf".to_string());
+        assert!(state.tabs[0].display.format.is_some());
+        handle_command_string(&mut state, "schema none".to_string());
+        assert!(state.tabs[0].display.format.is_none());
+    }
+
+    #[tokio::test]
+    async fn schema_command_reports_an_unknown_schema() {
+        let (mut state, _file) = state_with_one_tab().await;
+        handle_command_string(&mut state, "schema not-a-real-schema".to_string());
+        assert!(state.tabs[0].display.format.is_none());
+        assert!(matches!(state.status, Some(StatusMessage::Error(_))));
     }
 
     #[tokio::test]
