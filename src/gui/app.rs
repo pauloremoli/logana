@@ -12,7 +12,7 @@ use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{
-    Context, Entity, FocusHandle, KeyDownEvent, ScrollStrategy, Window, actions, div, px,
+    Context, Entity, FocusHandle, KeyDownEvent, ScrollStrategy, Window, actions, div,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -305,12 +305,6 @@ impl Render for App {
                     app.dispatch(Message::KeyPressed(key, modifiers), window, cx);
                 }
             }))
-            .child(div().h(px(28.)).child(self.menu_bar.clone()))
-            .child(
-                div()
-                    .flex_1()
-                    .p(px(8.))
-                    .child(crate::gui::view::view(self, window, cx)),
-            )
+            .child(crate::gui::view::view(self, window, cx))
     }
 }

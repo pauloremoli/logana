@@ -51,6 +51,10 @@ fn search_input(state: &GuiState) -> impl IntoElement {
             let prompt = if forward { "/" } else { "?" };
             format!("{prompt}{query}")
         }
+        // Command mode (`:filter ERROR`, etc.) shares this one input
+        // slot too, rather than a separate command-bar row — the mockup
+        // has a single search/command input, not two.
+        Some(ModeRenderState::Command { input, .. }) => format!(":{input}"),
         _ => PLACEHOLDER.to_string(),
     };
     div().flex().flex_1().overflow_hidden().child(text)

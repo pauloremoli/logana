@@ -83,7 +83,9 @@ pub fn log_pane(
 fn header_row() -> impl IntoElement {
     div()
         .flex()
-        .h(px(ROW_HEIGHT_PX))
+        .gap_2()
+        .pb(px(4.))
+        .h(px(ROW_HEIGHT_PX + 4.))
         .overflow_hidden()
         .child(fixed_cell(COL_LINE_NO_WIDTH, "#"))
         .child(fixed_cell(COL_TIME_WIDTH, "Time"))
@@ -163,6 +165,7 @@ fn line_row(
 
     let mut row = div()
         .flex()
+        .gap_2()
         .h(px(ROW_HEIGHT_PX))
         .overflow_hidden()
         .child(number_cell)
@@ -207,19 +210,24 @@ fn fixed_cell(width: f32, text: impl Into<gpui_kit::gpui::SharedString>) -> AnyE
 /// blank cell (`LogLevel::Unknown` — always true for an unstructured
 /// file, per `classify_line_level`).
 fn level_cell(level: LogLevel, theme: &TuiTheme) -> AnyElement {
-    // Flattened to one div (bg/text_color on the cell itself, no nested
-    // pill child) rather than a smaller inner badge — a nested, padded,
-    // differently-sized child here was the suspected cause of this cell
-    // visually overlapping the Time cell before it; simplest form first.
     let mut cell = div()
+        .flex()
         .flex_shrink_0()
+        .items_center()
         .w(px(COL_LEVEL_WIDTH))
         .h(px(ROW_HEIGHT_PX))
-        .overflow_hidden()
-        .whitespace_nowrap();
+        .overflow_hidden();
     if let Some((bg, fg)) = level_pill_colors(&level, theme) {
-        cell = cell.bg(bg).text_color(fg);
-        cell = cell.child(format!("{level:?}").to_uppercase());
+        cell = cell.child(
+            div()
+                .flex_shrink_0()
+                .px(px(6.))
+                .rounded(px(4.))
+                .bg(bg)
+                .text_color(fg)
+                .whitespace_nowrap()
+                .child(format!("{level:?}").to_uppercase()),
+        );
     }
     cell.into_any_element()
 }

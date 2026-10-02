@@ -1,9 +1,7 @@
-pub mod command_bar;
 pub mod field_facets;
 pub mod filter_pane;
 pub mod group_pane;
 pub mod log_pane;
-pub mod mode_bar;
 pub mod nav_rail;
 pub mod search_bar;
 pub mod sidebar;
@@ -45,8 +43,6 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
                 // status bar instead of up here.
                 .child(search_bar::search_bar(&app.state, cx))
                 .child(body(app, window, cx))
-                .child(command_bar::command_bar(&app.state))
-                .child(mode_bar::mode_bar(&app.state))
                 .child(status_bar::status_bar(app.state.active_tab(), cx)),
         )
 }
