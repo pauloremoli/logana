@@ -1,6 +1,6 @@
 use crate::filters::{FilterDef, FilterType, GroupDef};
 use crate::gui::app::App;
-use crate::gui::color::{filter_row_color, group_tag_color};
+use crate::gui::color::{filter_row_bg_color, filter_row_color, group_tag_color};
 use crate::gui::message::Message;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::gpui::prelude::*;
@@ -53,8 +53,12 @@ fn filter_row(
 ) -> impl IntoElement {
     let id = def.id;
     let pattern_color = filter_row_color(def, group_defs);
+    let pattern_bg = filter_row_bg_color(def, group_defs);
     let tag_color = group_tag_color(def, group_defs);
     let mut pattern_text = div().child(def.pattern.clone());
+    if let Some(bg) = pattern_bg {
+        pattern_text = pattern_text.bg(bg);
+    }
     if let Some(color) = pattern_color {
         pattern_text = pattern_text.text_color(color);
     }

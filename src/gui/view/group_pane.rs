@@ -1,6 +1,6 @@
 use crate::filters::{FilterDef, GroupDef, group_enabled};
 use crate::gui::app::App;
-use crate::gui::color::group_row_color;
+use crate::gui::color::{group_row_bg_color, group_row_color};
 use crate::gui::message::Message;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::checkbox::Checkbox;
@@ -61,11 +61,13 @@ fn group_row(
 ) -> impl IntoElement {
     let count = member_count(&name, filter_defs);
     let enabled = group_enabled(group_defs, &name);
-    let color = group_defs
-        .iter()
-        .find(|g| g.name == name)
-        .and_then(group_row_color);
+    let group_def = group_defs.iter().find(|g| g.name == name);
+    let color = group_def.and_then(group_row_color);
+    let bg = group_def.and_then(group_row_bg_color);
     let mut label = div().child(format!("{name} ({count})"));
+    if let Some(bg) = bg {
+        label = label.bg(bg);
+    }
     if let Some(color) = color {
         label = label.text_color(color);
     }

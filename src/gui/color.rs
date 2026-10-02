@@ -1,8 +1,21 @@
 use crate::filters::{
-    FilterDecision, FilterDef, GroupDef, build_filter, effective_color_config, group_style,
+    FilterDecision, FilterDef, GroupDef, MatchCollector, build_filter, effective_color_config,
+    group_style,
 };
 use gpui_kit::gpui::Rgba;
 use ratatui::style::Color as RatatuiColor;
+
+/// A log line's resolved highlight: a color plus exactly which byte
+/// ranges of the line it applies to. A line-mode (`-l`) filter produces
+/// one span covering the whole line; the default match-only styling
+/// produces one span per match — `Filter::evaluate` already reports
+/// whichever shape is right (see `resolve_line_style`), so rendering
+/// never needs to special-case `-l` itself.
+pub struct LineStyle {
+    pub fg: Option<Rgba>,
+    pub bg: Option<Rgba>,
+    pub spans: Vec<(usize, usize)>,
+}
 
 /// The foreground color a filter row (or group row) should render with,
 /// resolved the same way the TUI resolves it: the filter's own color, else
@@ -10,6 +23,14 @@ use ratatui::style::Color as RatatuiColor;
 pub fn filter_row_color(def: &FilterDef, group_defs: &[GroupDef]) -> Option<Rgba> {
     let cc = effective_color_config(def, group_defs)?;
     ratatui_color_to_gpui(cc.fg?)
+}
+
+/// The background color a filter row should render with — mirrors
+/// `filter_row_color`'s fallback (the filter's own color, else its
+/// group's) for `bg` instead of `fg`.
+pub fn filter_row_bg_color(def: &FilterDef, group_defs: &[GroupDef]) -> Option<Rgba> {
+    let cc = effective_color_config(def, group_defs)?;
+    ratatui_color_to_gpui(cc.bg?)
 }
 
 /// The color a filter's `[group]` tag renders with: the group's own
@@ -28,21 +49,27 @@ pub fn group_row_color(def: &GroupDef) -> Option<Rgba> {
     ratatui_color_to_gpui(def.color_config.as_ref()?.fg?)
 }
 
-/// Resolves both the foreground and background color a log line should
-/// render with, from the first enabled filter (in list order) that has a
-/// resolved color and whose pattern matches the raw line bytes — fg and
-/// bg always come from the *same* matched filter's `ColorConfig`, not two
-/// independent searches, so a filter styled with only `--bg` still wins
-/// over a later filter that only sets `--fg`, mirroring how the TUI's own
-/// `FilterManager`-built `Style`s combine both from one filter. `(None,
-/// None)` means no styled filter matched — the line renders in the
-/// default text color with no background.
-pub fn resolve_line_colors(
+/// The background color a group row should render with, from its own
+/// predefined style.
+pub fn group_row_bg_color(def: &GroupDef) -> Option<Rgba> {
+    ratatui_color_to_gpui(def.color_config.as_ref()?.bg?)
+}
+
+/// Resolves a log line's full highlight styling — color plus exactly
+/// which byte ranges it covers — from the first enabled filter (in list
+/// order) that has a resolved color and whose pattern matches the raw
+/// line bytes. fg, bg, and the match spans always come from the *same*
+/// matched filter, not independent searches, so a filter styled with
+/// only `--bg` still wins over a later filter that only sets `--fg`,
+/// mirroring how the TUI's own `FilterManager`-built `Style`s combine
+/// fg/bg from one filter. `None` means no styled filter matched — the
+/// line renders in the default text color with no background.
+pub fn resolve_line_style(
     line: &[u8],
     filter_defs: &[FilterDef],
     group_defs: &[GroupDef],
-) -> (Option<Rgba>, Option<Rgba>) {
-    let matched = filter_defs
+) -> Option<LineStyle> {
+    filter_defs
         .iter()
         .filter(|def| def.enabled)
         .find_map(|def| {
@@ -58,28 +85,19 @@ pub fn resolve_line_colors(
                 def.use_regex,
                 def.ignore_case,
             )?;
-            if filter.matches(line) == FilterDecision::Neutral {
+            let mut collector = MatchCollector::new(line);
+            if filter.evaluate(line, &mut collector) == FilterDecision::Neutral {
                 return None;
             }
-            Some(cc)
-        });
-    match matched {
-        Some(cc) => (
-            cc.fg.and_then(ratatui_color_to_gpui),
-            cc.bg.and_then(ratatui_color_to_gpui),
-        ),
-        None => (None, None),
-    }
-}
-
-/// The foreground-only half of [`resolve_line_colors`], for callers that
-/// don't render a background.
-pub fn resolve_line_color(
-    line: &[u8],
-    filter_defs: &[FilterDef],
-    group_defs: &[GroupDef],
-) -> Option<Rgba> {
-    resolve_line_colors(line, filter_defs, group_defs).0
+            if collector.spans.is_empty() {
+                return None;
+            }
+            Some(LineStyle {
+                fg: cc.fg.and_then(ratatui_color_to_gpui),
+                bg: cc.bg.and_then(ratatui_color_to_gpui),
+                spans: collector.spans.iter().map(|s| (s.start, s.end)).collect(),
+            })
+        })
 }
 
 pub fn ratatui_color_to_gpui(color: RatatuiColor) -> Option<Rgba> {
@@ -240,6 +258,46 @@ mod tests {
     }
 
     #[test]
+    fn filter_row_bg_color_uses_own_bg() {
+        let def = FilterDef {
+            id: 1,
+            pattern: "ERROR".to_string(),
+            filter_type: FilterType::Include,
+            enabled: true,
+            color_config: Some(ColorConfig {
+                fg: None,
+                bg: Some(RatatuiColor::Blue),
+                match_only: true,
+            }),
+            use_regex: false,
+            ignore_case: false,
+            group: None,
+        };
+        assert_eq!(
+            filter_row_bg_color(&def, &[]),
+            Some(rgba_from_u8(0, 0, 128))
+        );
+    }
+
+    #[test]
+    fn filter_row_bg_color_falls_back_to_group_bg() {
+        let def = filter_def("ERROR", None, Some("errors"));
+        let group = GroupDef {
+            name: "errors".to_string(),
+            color_config: Some(ColorConfig {
+                fg: None,
+                bg: Some(RatatuiColor::Red),
+                match_only: true,
+            }),
+            enabled: true,
+        };
+        assert_eq!(
+            filter_row_bg_color(&def, &[group]),
+            Some(rgba_from_u8(128, 0, 0))
+        );
+    }
+
+    #[test]
     fn group_row_color_uses_its_own_style() {
         let group = GroupDef {
             name: "errors".to_string(),
@@ -257,6 +315,26 @@ mod tests {
     fn group_row_color_is_none_without_a_style() {
         let group = GroupDef::default();
         assert_eq!(group_row_color(&group), None);
+    }
+
+    #[test]
+    fn group_row_bg_color_uses_its_own_style() {
+        let group = GroupDef {
+            name: "errors".to_string(),
+            color_config: Some(ColorConfig {
+                fg: None,
+                bg: Some(RatatuiColor::Green),
+                match_only: true,
+            }),
+            enabled: true,
+        };
+        assert_eq!(group_row_bg_color(&group), Some(rgba_from_u8(0, 128, 0)));
+    }
+
+    #[test]
+    fn group_row_bg_color_is_none_without_a_style() {
+        let group = GroupDef::default();
+        assert_eq!(group_row_bg_color(&group), None);
     }
 
     fn filter_def_with_colors(
@@ -281,80 +359,101 @@ mod tests {
     }
 
     #[test]
-    fn resolve_line_colors_returns_both_fg_and_bg_from_the_same_filter() {
+    fn resolve_line_style_returns_both_fg_and_bg_from_the_same_filter() {
         let defs = vec![filter_def_with_colors(
             "ERROR",
             Some(RatatuiColor::Red),
             Some(RatatuiColor::Blue),
         )];
-        assert_eq!(
-            resolve_line_colors(b"ERROR: something broke", &defs, &[]),
-            (Some(rgba_from_u8(128, 0, 0)), Some(rgba_from_u8(0, 0, 128)))
-        );
+        let style = resolve_line_style(b"ERROR: something broke", &defs, &[]).unwrap();
+        assert_eq!(style.fg, Some(rgba_from_u8(128, 0, 0)));
+        assert_eq!(style.bg, Some(rgba_from_u8(0, 0, 128)));
     }
 
     #[test]
-    fn resolve_line_colors_supports_a_background_only_filter() {
+    fn resolve_line_style_supports_a_background_only_filter() {
         let defs = vec![filter_def_with_colors(
             "ERROR",
             None,
             Some(RatatuiColor::Blue),
         )];
-        assert_eq!(
-            resolve_line_colors(b"ERROR: something broke", &defs, &[]),
-            (None, Some(rgba_from_u8(0, 0, 128)))
-        );
+        let style = resolve_line_style(b"ERROR: something broke", &defs, &[]).unwrap();
+        assert_eq!(style.fg, None);
+        assert_eq!(style.bg, Some(rgba_from_u8(0, 0, 128)));
     }
 
     #[test]
-    fn resolve_line_colors_is_none_none_when_nothing_matches() {
+    fn resolve_line_style_is_none_when_nothing_matches() {
         let defs = vec![filter_def_with_colors(
             "ERROR",
             Some(RatatuiColor::Red),
             Some(RatatuiColor::Blue),
         )];
-        assert_eq!(
-            resolve_line_colors(b"all good here", &defs, &[]),
-            (None, None)
-        );
+        assert!(resolve_line_style(b"all good here", &defs, &[]).is_none());
     }
 
     #[test]
-    fn resolve_line_color_matches_first_styled_enabled_filter() {
+    fn resolve_line_style_defaults_to_match_only_spans() {
+        // `FilterDef`'s own `color_config`/`FilterOptions` default to
+        // `match_only: true` unless `-l` was passed — the GUI must only
+        // highlight the matched substring, not the whole line, exactly
+        // like the TUI.
         let defs = vec![filter_def("ERROR", Some(RatatuiColor::Red), None)];
-        assert_eq!(
-            resolve_line_color(b"ERROR: something broke", &defs, &[]),
-            Some(rgba_from_u8(128, 0, 0))
-        );
+        let line = b"before ERROR after";
+        let style = resolve_line_style(line, &defs, &[]).unwrap();
+        assert_eq!(style.spans, vec![(7, 12)]);
+        assert_eq!(&line[7..12], b"ERROR");
     }
 
     #[test]
-    fn resolve_line_color_is_none_when_no_filter_matches() {
+    fn resolve_line_style_covers_the_whole_line_for_line_mode_filters() {
+        let def = FilterDef {
+            id: 1,
+            pattern: "ERROR".to_string(),
+            filter_type: FilterType::Include,
+            enabled: true,
+            color_config: Some(ColorConfig {
+                fg: Some(RatatuiColor::Red),
+                bg: None,
+                match_only: false,
+            }),
+            use_regex: false,
+            ignore_case: false,
+            group: None,
+        };
+        let line = b"before ERROR after";
+        let style = resolve_line_style(line, &[def], &[]).unwrap();
+        assert_eq!(style.spans, vec![(0, line.len())]);
+    }
+
+    #[test]
+    fn resolve_line_style_matches_first_styled_enabled_filter() {
         let defs = vec![filter_def("ERROR", Some(RatatuiColor::Red), None)];
-        assert_eq!(resolve_line_color(b"all good here", &defs, &[]), None);
+        let style = resolve_line_style(b"ERROR: something broke", &defs, &[]).unwrap();
+        assert_eq!(style.fg, Some(rgba_from_u8(128, 0, 0)));
     }
 
     #[test]
-    fn resolve_line_color_ignores_disabled_filters() {
+    fn resolve_line_style_is_none_when_no_filter_matches() {
+        let defs = vec![filter_def("ERROR", Some(RatatuiColor::Red), None)];
+        assert!(resolve_line_style(b"all good here", &defs, &[]).is_none());
+    }
+
+    #[test]
+    fn resolve_line_style_ignores_disabled_filters() {
         let mut def = filter_def("ERROR", Some(RatatuiColor::Red), None);
         def.enabled = false;
-        assert_eq!(
-            resolve_line_color(b"ERROR: something broke", &[def], &[]),
-            None
-        );
+        assert!(resolve_line_style(b"ERROR: something broke", &[def], &[]).is_none());
     }
 
     #[test]
-    fn resolve_line_color_ignores_matching_filters_with_no_color() {
+    fn resolve_line_style_ignores_matching_filters_with_no_color() {
         let def = filter_def("ERROR", None, None);
-        assert_eq!(
-            resolve_line_color(b"ERROR: something broke", &[def], &[]),
-            None
-        );
+        assert!(resolve_line_style(b"ERROR: something broke", &[def], &[]).is_none());
     }
 
     #[test]
-    fn resolve_line_color_uses_groups_color_for_matching_member_filter() {
+    fn resolve_line_style_uses_groups_color_for_matching_member_filter() {
         let def = filter_def("ERROR", None, Some("errors"));
         let group = GroupDef {
             name: "errors".to_string(),
@@ -365,10 +464,8 @@ mod tests {
             }),
             enabled: true,
         };
-        assert_eq!(
-            resolve_line_color(b"ERROR: something broke", &[def], &[group]),
-            Some(rgba_from_u8(128, 0, 128))
-        );
+        let style = resolve_line_style(b"ERROR: something broke", &[def], &[group]).unwrap();
+        assert_eq!(style.fg, Some(rgba_from_u8(128, 0, 128)));
     }
 
     #[test]

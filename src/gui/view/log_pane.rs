@@ -1,11 +1,11 @@
 use crate::gui::app::App;
-use crate::gui::color::{ratatui_color_to_gpui, resolve_line_colors};
+use crate::gui::color::{LineStyle, ratatui_color_to_gpui, resolve_line_style};
 use crate::mode::app_mode::ModeRenderState;
 use crate::theme::Theme as TuiTheme;
 use crate::ui::TabState;
 use gpui_kit::base::{VirtualListScrollHandle, v_virtual_list};
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{Context, Size, div, px};
+use gpui_kit::gpui::{AnyElement, Context, Rgba, Size, div, px};
 use std::rc::Rc;
 
 /// Fixed row height, used for every visible log line — the virtual list
@@ -78,41 +78,70 @@ fn visual_line_selection(tab: &TabState) -> Option<(usize, usize)> {
 /// multiple visual lines without the virtual list reserving extra height
 /// for it just makes rows overlap, so overflow is clipped with an ellipsis
 /// instead.
-fn line_row(
-    tab: &TabState,
-    line_idx: usize,
-    selected: bool,
-    theme: &TuiTheme,
-) -> gpui_kit::gpui::AnyElement {
+fn line_row(tab: &TabState, line_idx: usize, selected: bool, theme: &TuiTheme) -> AnyElement {
     let owned_line_bytes = tab.file_reader.get_line(line_idx);
     let bytes: &[u8] = &owned_line_bytes;
-    let text = String::from_utf8_lossy(bytes).into_owned();
-    // `w_full()` matters beyond general tidiness: without it the row
-    // shrink-wraps to its text content, so a selection `.bg()` only
-    // colors a narrow strip behind the characters instead of the whole
-    // row — easy to miss entirely as a "this line is selected" signal.
-    let mut row = div().w_full().truncate().child(text);
     if selected {
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        // `w_full()` matters beyond general tidiness: without it the row
+        // shrink-wraps to its text content, so a selection `.bg()` only
+        // colors a narrow strip behind the characters instead of the
+        // whole row — easy to miss entirely as a "this line is selected"
+        // signal.
+        let mut row = div().w_full().truncate().child(text);
         if let Some(bg) = ratatui_color_to_gpui(theme.visual_select_bg) {
             row = row.bg(bg);
         }
         if let Some(fg) = ratatui_color_to_gpui(theme.visual_select_fg) {
             row = row.text_color(fg);
         }
-    } else {
-        let (fg, bg) = resolve_line_colors(
-            bytes,
-            tab.log_manager.get_filters(),
-            tab.log_manager.get_group_styles(),
-        );
-        if let Some(bg) = bg {
-            row = row.bg(bg);
-        }
-        if let Some(fg) = fg {
-            row = row.text_color(fg);
+        return row.into_any_element();
+    }
+    match resolve_line_style(
+        bytes,
+        tab.log_manager.get_filters(),
+        tab.log_manager.get_group_styles(),
+    ) {
+        Some(style) => styled_line_row(bytes, &style),
+        None => {
+            let text = String::from_utf8_lossy(bytes).into_owned();
+            div().w_full().truncate().child(text).into_any_element()
         }
     }
+}
+
+/// Splits a line into alternating plain/highlighted text segments so
+/// `style`'s color applies only to its spans — one span per match by
+/// default, or the whole line for a line-mode (`-l`) filter — leaving the
+/// rest of the line in the default text color. gpui has no single-element
+/// "highlight this substring" primitive, so this builds one child per
+/// segment instead of styling the row as a whole.
+fn styled_line_row(bytes: &[u8], style: &LineStyle) -> AnyElement {
+    let mut row = div().w_full().overflow_hidden().whitespace_nowrap();
+    let mut pos = 0usize;
+    for &(start, end) in &style.spans {
+        if start > pos {
+            row = row.child(text_segment(&bytes[pos..start], None, None));
+        }
+        row = row.child(text_segment(&bytes[start..end], style.fg, style.bg));
+        pos = end.max(pos);
+    }
+    if pos < bytes.len() {
+        row = row.child(text_segment(&bytes[pos..], None, None));
+    }
     row.into_any_element()
+}
+
+fn text_segment(bytes: &[u8], fg: Option<Rgba>, bg: Option<Rgba>) -> AnyElement {
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    let mut el = div().child(text);
+    if let Some(bg) = bg {
+        el = el.bg(bg);
+    }
+    if let Some(fg) = fg {
+        el = el.text_color(fg);
+    }
+    el.into_any_element()
 }
 
 #[cfg(test)]
