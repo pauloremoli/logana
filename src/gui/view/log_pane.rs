@@ -1,6 +1,8 @@
 use crate::gui::app::App;
 use crate::gui::color::{LineStyle, ratatui_color_to_gpui, resolve_line_style};
+use crate::gui::level::{classify_line_level, level_pill_colors};
 use crate::mode::app_mode::ModeRenderState;
+use crate::parser::LogLevel;
 use crate::theme::Theme as TuiTheme;
 use crate::ui::TabState;
 use gpui_kit::base::{VirtualListScrollHandle, v_virtual_list};
@@ -12,7 +14,15 @@ use std::rc::Rc;
 /// only needs height to lay out rows; width is inferred from content.
 const ROW_HEIGHT_PX: f32 = 20.0;
 
-/// Renders only the currently-visible window of `tab.filter.visible_indices`,
+/// Column widths, shared between the fixed header row and every data row
+/// so they can never drift apart. Message has no fixed width — it's the
+/// only cell allowed to grow (`.flex_1()`).
+const COL_LINE_NO_WIDTH: f32 = 56.0;
+const COL_TIME_WIDTH: f32 = 180.0;
+const COL_LEVEL_WIDTH: f32 = 64.0;
+
+/// Renders the log table: a fixed header row (`#`/Time/Level/Message)
+/// above the currently-visible window of `tab.filter.visible_indices`,
 /// via gpui-component's virtual-scrolling list — no manual viewport math
 /// or rendered-line cap, unlike the discarded iced prototype. `log_scroll`
 /// is `App`'s own handle (not reachable through `cx`, which derefs to
@@ -27,36 +37,56 @@ pub fn log_pane(
     let total = tab.filter.visible_indices.len();
     let item_sizes = Rc::new(vec![Size::new(px(0.0), px(ROW_HEIGHT_PX)); total]);
     let view = cx.entity();
-    v_virtual_list(
-        view,
-        "log-pane",
-        item_sizes,
-        move |app: &mut App, range, _window, _cx| {
-            let Some(tab) = app.state.tabs.get(tab_idx) else {
-                return Vec::new();
-            };
-            let selection = visual_line_selection(tab);
-            range
-                .filter_map(|pos| {
-                    tab.filter
-                        .visible_indices
-                        .get_opt(pos)
-                        .map(|line_idx| (pos, line_idx))
-                })
-                .map(|(pos, line_idx)| {
-                    line_row(
-                        tab,
-                        line_idx,
-                        selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&pos)),
-                        pos == tab.scroll.scroll_offset,
-                        &app.state.theme,
-                    )
-                })
-                .collect()
-        },
-    )
-    .track_scroll(log_scroll)
-    .size_full()
+    div()
+        .flex()
+        .flex_col()
+        .size_full()
+        .child(header_row())
+        .child(
+            v_virtual_list(
+                view,
+                "log-pane",
+                item_sizes,
+                move |app: &mut App, range, _window, _cx| {
+                    let Some(tab) = app.state.tabs.get(tab_idx) else {
+                        return Vec::new();
+                    };
+                    let selection = visual_line_selection(tab);
+                    range
+                        .filter_map(|pos| {
+                            tab.filter
+                                .visible_indices
+                                .get_opt(pos)
+                                .map(|line_idx| (pos, line_idx))
+                        })
+                        .map(|(pos, line_idx)| {
+                            line_row(
+                                tab,
+                                line_idx,
+                                selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&pos)),
+                                pos == tab.scroll.scroll_offset,
+                                &app.state.theme,
+                            )
+                        })
+                        .collect()
+                },
+            )
+            .track_scroll(log_scroll)
+            .flex_1(),
+        )
+}
+
+/// `#`/Time/Level/Message column titles, fixed above the scrolling list —
+/// same width constants as `line_row`'s cells, so columns stay aligned.
+fn header_row() -> impl IntoElement {
+    div()
+        .flex()
+        .h(px(ROW_HEIGHT_PX))
+        .overflow_hidden()
+        .child(fixed_cell(COL_LINE_NO_WIDTH, "#"))
+        .child(fixed_cell(COL_TIME_WIDTH, "Time"))
+        .child(fixed_cell(COL_LEVEL_WIDTH, "Level"))
+        .child(div().flex_1().overflow_hidden().child("Message"))
 }
 
 /// `VisualLineMode`'s selected range, as `(low, high)` visible-position
@@ -74,11 +104,25 @@ fn visual_line_selection(tab: &TabState) -> Option<(usize, usize)> {
     }
 }
 
-/// Each row renders as a single line, matching the TUI's default (`:wrap`
-/// is off until a later phase implements it): wrapping a long line onto
-/// multiple visual lines without the virtual list reserving extra height
-/// for it just makes rows overlap, so overflow is clipped with an ellipsis
-/// instead.
+/// The Time column's text for `bytes` — the detected format's parsed
+/// timestamp, or blank for a tab with no detected format. Pure and
+/// gpui-free so the unstructured-file fallback is unit-testable without
+/// touching rendering.
+fn row_time_text(tab: &TabState, bytes: &[u8]) -> Option<String> {
+    let parser = tab.display.format.as_deref()?;
+    let timestamp = parser.parse_line(bytes).and_then(|parts| parts.timestamp)?;
+    Some(timestamp.to_string())
+}
+
+/// Each row renders as a `#`/Time/Level/Message table row, matching the
+/// TUI's default (`:wrap` is off until a later phase implements it):
+/// wrapping a long line onto multiple visual lines without the virtual
+/// list reserving extra height for it just makes rows overlap, so
+/// overflow is clipped instead. `.flex()` on the outer row is load-
+/// bearing, not cosmetic — a plain `div()` defaults to block layout,
+/// which stacks children (the four cells) vertically instead of flowing
+/// them left to right; see `styled_line_row`'s doc comment for the exact
+/// failure mode that caused in an earlier version of this file.
 fn line_row(
     tab: &TabState,
     line_idx: usize,
@@ -88,39 +132,116 @@ fn line_row(
 ) -> AnyElement {
     let owned_line_bytes = tab.file_reader.get_line(line_idx);
     let bytes: &[u8] = &owned_line_bytes;
+
+    let number_cell = fixed_cell(COL_LINE_NO_WIDTH, (line_idx + 1).to_string());
+    let time_cell = fixed_cell(
+        COL_TIME_WIDTH,
+        row_time_text(tab, bytes).unwrap_or_default(),
+    );
+    // Selection highlighting (below) already colors the whole row, so a
+    // selected row skips the level pill and match-only highlighting and
+    // just shows plain text in every cell — same as the TUI's visual
+    // selection, which doesn't layer filter colors under the selection
+    // tint either.
+    let level_cell = if selected {
+        fixed_cell(COL_LEVEL_WIDTH, "")
+    } else {
+        level_cell(classify_line_level(tab, bytes), theme)
+    };
+    let message_cell = if selected {
+        div()
+            .flex_1()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .child(String::from_utf8_lossy(bytes).into_owned())
+            .into_any_element()
+    } else {
+        message_cell(tab, bytes)
+    };
+
+    let mut row = div()
+        .flex()
+        .h(px(ROW_HEIGHT_PX))
+        .overflow_hidden()
+        .child(number_cell)
+        .child(time_cell)
+        .child(level_cell)
+        .child(message_cell);
+
     if selected {
-        let text = String::from_utf8_lossy(bytes).into_owned();
-        // `w_full()` matters beyond general tidiness: without it the row
-        // shrink-wraps to its text content, so a selection `.bg()` only
-        // colors a narrow strip behind the characters instead of the
-        // whole row — easy to miss entirely as a "this line is selected"
-        // signal.
-        let mut row = div().w_full().truncate().child(text);
         if let Some(bg) = ratatui_color_to_gpui(theme.visual_select_bg) {
             row = row.bg(bg);
         }
         if let Some(fg) = ratatui_color_to_gpui(theme.visual_select_fg) {
             row = row.text_color(fg);
         }
-        // Matches the TUI's own visual-selection render: every selected
-        // row gets the bg/fg above, but only the one at the cursor
-        // (`tab.scroll.scroll_offset`, one end of the selected range)
-        // also gets bold + underline, marking which end is "active".
-        if is_cursor_row {
-            row = row.font_weight(FontWeight::BOLD).underline();
-        }
-        return row.into_any_element();
     }
+    // Matches the TUI's own visual-selection render: every selected row
+    // gets the bg/fg above, but only the one at the cursor (`tab.scroll.
+    // scroll_offset`, one end of the selected range) also gets bold +
+    // underline, marking which end is "active".
+    if is_cursor_row {
+        row = row.font_weight(FontWeight::BOLD).underline();
+    }
+    row.into_any_element()
+}
+
+/// A fixed-width, single-line text cell — `#`, Time, and the header row's
+/// titles all use this. `.flex_shrink_0()` keeps it at exactly `width`
+/// regardless of its own or siblings' content (a long Message must never
+/// squeeze this column), matching `text_segment`'s existing rationale.
+fn fixed_cell(width: f32, text: impl Into<gpui_kit::gpui::SharedString>) -> AnyElement {
+    div()
+        .flex_shrink_0()
+        .w(px(width))
+        .h(px(ROW_HEIGHT_PX))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .child(text.into())
+        .into_any_element()
+}
+
+/// The Level column: a small colored pill for a classified level, or a
+/// blank cell (`LogLevel::Unknown` — always true for an unstructured
+/// file, per `classify_line_level`).
+fn level_cell(level: LogLevel, theme: &TuiTheme) -> AnyElement {
+    let mut cell = div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .w(px(COL_LEVEL_WIDTH))
+        .h(px(ROW_HEIGHT_PX))
+        .overflow_hidden();
+    if let Some((bg, fg)) = level_pill_colors(&level, theme) {
+        cell = cell.child(
+            div()
+                .flex_shrink_0()
+                .px(px(4.))
+                .bg(bg)
+                .text_color(fg)
+                .child(format!("{level:?}").to_uppercase()),
+        );
+    }
+    cell.into_any_element()
+}
+
+/// The Message column: match-only (or line-mode) highlight spans via
+/// `resolve_line_style`, same logic `styled_line_row` already had, just
+/// nested one cell deeper (`.flex_1()` instead of `.w_full()`) instead of
+/// being the whole row.
+fn message_cell(tab: &TabState, bytes: &[u8]) -> AnyElement {
     match resolve_line_style(
         bytes,
         tab.log_manager.get_filters(),
         tab.log_manager.get_group_styles(),
     ) {
-        Some(style) => styled_line_row(bytes, &style),
-        None => {
-            let text = String::from_utf8_lossy(bytes).into_owned();
-            div().w_full().truncate().child(text).into_any_element()
-        }
+        Some(style) => styled_message_cell(bytes, &style),
+        None => div()
+            .flex_1()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .child(String::from_utf8_lossy(bytes).into_owned())
+            .into_any_element(),
     }
 }
 
@@ -129,19 +250,19 @@ fn line_row(
 /// default, or the whole line for a line-mode (`-l`) filter — leaving the
 /// rest of the line in the default text color. gpui has no single-element
 /// "highlight this substring" primitive, so this builds one child per
-/// segment instead of styling the row as a whole.
+/// segment instead of styling the cell as a whole.
 ///
 /// `.flex()` is load-bearing here, not cosmetic: a plain `div()` defaults
-/// to block layout, which stacks children vertically one per line — the
-/// first version of this function omitted it, and every styled row
+/// to block layout, which stacks children vertically one per line — an
+/// earlier version of this function omitted it, and every styled row
 /// rendered several line-heights tall and bled into the rows below it in
 /// the virtual list (each row's slot is a fixed `ROW_HEIGHT_PX`). `.flex()`
 /// (default direction row) lays the segments out inline instead; the
 /// explicit `.h()` + `.overflow_hidden()` are a second, independent
-/// safety net capping the row at its slot height regardless.
-fn styled_line_row(bytes: &[u8], style: &LineStyle) -> AnyElement {
-    let mut row = div()
-        .w_full()
+/// safety net capping the cell at its slot height regardless.
+fn styled_message_cell(bytes: &[u8], style: &LineStyle) -> AnyElement {
+    let mut cell = div()
+        .flex_1()
         .h(px(ROW_HEIGHT_PX))
         .flex()
         .overflow_hidden()
@@ -149,20 +270,20 @@ fn styled_line_row(bytes: &[u8], style: &LineStyle) -> AnyElement {
     let mut pos = 0usize;
     for &(start, end) in &style.spans {
         if start > pos {
-            row = row.child(text_segment(&bytes[pos..start], None, None));
+            cell = cell.child(text_segment(&bytes[pos..start], None, None));
         }
-        row = row.child(text_segment(&bytes[start..end], style.fg, style.bg));
+        cell = cell.child(text_segment(&bytes[start..end], style.fg, style.bg));
         pos = end.max(pos);
     }
     if pos < bytes.len() {
-        row = row.child(text_segment(&bytes[pos..], None, None));
+        cell = cell.child(text_segment(&bytes[pos..], None, None));
     }
-    row.into_any_element()
+    cell.into_any_element()
 }
 
-/// One inline text segment of a `styled_line_row` — `flex_shrink_0()`
+/// One inline text segment of a `styled_message_cell` — `flex_shrink_0()`
 /// keeps it at its natural content width rather than letting flex squeeze
-/// (and potentially wrap) it to fit, since the row clips overflow instead.
+/// (and potentially wrap) it to fit, since the cell clips overflow instead.
 fn text_segment(bytes: &[u8], fg: Option<Rgba>, bg: Option<Rgba>) -> AnyElement {
     let text = String::from_utf8_lossy(bytes).into_owned();
     let mut el = div().flex_shrink_0().whitespace_nowrap().child(text);
@@ -216,6 +337,13 @@ mod tests {
         let tab = paged_tab().await;
         let theme = TuiTheme::default();
         let _ = line_row(&tab, 0, false, false, &theme);
+    }
+
+    #[tokio::test]
+    async fn row_time_text_is_blank_for_unstructured_files() {
+        let t = tab().await;
+        assert!(t.display.format.is_none());
+        assert_eq!(row_time_text(&t, b"a"), None);
     }
 
     #[tokio::test]
