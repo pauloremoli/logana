@@ -37,7 +37,7 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
                 .child(tab_bar::tab_bar(&app.state, cx))
                 .child(body(app, window, cx))
                 .child(command_bar::command_bar(&app.state))
-                .child(search_bar::search_bar(&app.state))
+                .child(search_bar::search_bar(&app.state, cx))
                 .child(mode_bar::mode_bar(&app.state))
                 .child(status_bar::status_bar(app.state.active_tab())),
         )
