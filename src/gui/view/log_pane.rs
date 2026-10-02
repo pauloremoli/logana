@@ -45,12 +45,13 @@ pub fn log_pane(
 ) -> impl IntoElement {
     let total = tab.filter.visible_indices.len();
     let item_sizes = Rc::new(vec![Size::new(px(0.0), px(ROW_HEIGHT_PX)); total]);
+    let has_format = tab.display.format.is_some();
     let view = cx.entity();
     div()
         .flex()
         .flex_col()
         .size_full()
-        .child(header_row(widths, cx))
+        .child(header_row(widths, has_format, cx))
         .child(
             div()
                 .relative()
@@ -96,21 +97,39 @@ pub fn log_pane(
 /// `#`/Time/Level/Message column titles, fixed above the scrolling list —
 /// same `widths` `line_row`'s cells use, so columns stay aligned. A
 /// resize handle sits after each fixed-width title so dragging it resizes
-/// that column; Message has none (it always fills remaining space).
-fn header_row(widths: ColumnWidths, cx: &mut Context<App>) -> impl IntoElement {
-    div()
+/// that column; Message has none (it always fills remaining space). Time
+/// and Level are omitted entirely for a tab with no detected format
+/// (`has_format`) — an unstructured file has no timestamp or level to
+/// show there, so the columns would just be permanently blank.
+fn header_row(widths: ColumnWidths, has_format: bool, cx: &mut Context<App>) -> impl IntoElement {
+    let mut row = div()
         .flex()
         .items_center()
         .pb(px(4.))
         .h(px(ROW_HEIGHT_PX + 4.))
         .overflow_hidden()
         .child(fixed_cell(widths.line_no, "#"))
-        .child(resize_handle(ResizableColumn::LineNo, cx))
-        .child(fixed_cell(widths.time, "Time"))
-        .child(resize_handle(ResizableColumn::Time, cx))
-        .child(fixed_cell(widths.level, "Level"))
-        .child(resize_handle(ResizableColumn::Level, cx))
-        .child(div().flex_1().overflow_hidden().child("Message"))
+        .child(resize_handle(ResizableColumn::LineNo, cx));
+    if has_format {
+        row = row
+            .child(fixed_cell(widths.time, "Time"))
+            .child(resize_handle(ResizableColumn::Time, cx))
+            .child(fixed_cell(widths.level, "Level"))
+            .child(resize_handle(ResizableColumn::Level, cx));
+    }
+    row.child(div().flex_1().overflow_hidden().child("Message"))
+}
+
+/// A fixed, non-interactive spacer matching `resize_handle`'s width —
+/// used in `line_row` so data rows reserve exactly the same horizontal
+/// space the header's resize handles occupy, keeping columns aligned
+/// without data rows needing (or wanting) their own drag handles.
+fn column_spacer() -> AnyElement {
+    div()
+        .flex_shrink_0()
+        .w(px(RESIZE_HANDLE_WIDTH_PX))
+        .h(px(ROW_HEIGHT_PX))
+        .into_any_element()
 }
 
 /// One column boundary's drag handle: `on_drag` starts gpui's native
@@ -217,19 +236,9 @@ fn line_row(
 ) -> AnyElement {
     let owned_line_bytes = tab.file_reader.get_line(line_idx);
     let bytes: &[u8] = &owned_line_bytes;
+    let has_format = tab.display.format.is_some();
 
     let number_cell = fixed_cell(widths.line_no, (line_idx + 1).to_string());
-    let time_cell = fixed_cell(widths.time, row_time_text(tab, bytes).unwrap_or_default());
-    // Selection highlighting (below) already colors the whole row, so a
-    // selected row skips the level pill and match-only highlighting and
-    // just shows plain text in every cell — same as the TUI's visual
-    // selection, which doesn't layer filter colors under the selection
-    // tint either.
-    let level_cell = if selected {
-        fixed_cell(widths.level, "")
-    } else {
-        level_cell(classify_line_level(tab, bytes), theme, widths.level)
-    };
     let message_bytes = row_message_bytes(tab, bytes);
     let message_cell = if selected {
         div()
@@ -244,13 +253,29 @@ fn line_row(
 
     let mut row = div()
         .flex()
-        .gap_2()
         .h(px(ROW_HEIGHT_PX))
         .overflow_hidden()
         .child(number_cell)
-        .child(time_cell)
-        .child(level_cell)
-        .child(message_cell);
+        .child(column_spacer());
+    if has_format {
+        let time_cell = fixed_cell(widths.time, row_time_text(tab, bytes).unwrap_or_default());
+        // Selection highlighting (below) already colors the whole row,
+        // so a selected row skips the level pill and match-only
+        // highlighting and just shows plain text in every cell — same
+        // as the TUI's visual selection, which doesn't layer filter
+        // colors under the selection tint either.
+        let level_cell = if selected {
+            fixed_cell(widths.level, "")
+        } else {
+            level_cell(classify_line_level(tab, bytes), theme, widths.level)
+        };
+        row = row
+            .child(time_cell)
+            .child(column_spacer())
+            .child(level_cell)
+            .child(column_spacer());
+    }
+    row = row.child(message_cell);
 
     if selected {
         if let Some(bg) = ratatui_color_to_gpui(theme.visual_select_bg) {
