@@ -9,6 +9,7 @@ pub mod search_bar;
 pub mod sidebar;
 pub mod status_bar;
 pub mod tab_bar;
+pub mod theme_picker_overlay;
 
 use crate::gui::app::App;
 use crate::gui::state::NavPage;
@@ -60,6 +61,9 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
     if let Some(overlay) =
         keybindings_help_overlay::keybindings_help_overlay(&app.state, viewport, cx)
     {
+        root = root.child(overlay);
+    }
+    if let Some(overlay) = theme_picker_overlay::theme_picker_overlay(&app.state, viewport, cx) {
         root = root.child(overlay);
     }
     root

@@ -17,8 +17,8 @@ with "not yet supported in the GUI":
 
 - [ ] Persistence: `Save`, `SaveFilters`, `LoadFilters`, `ImportFilters`,
       `Export`, `ExportMarked`
-- [ ] Theming/coloring: `SetTheme`, `Theme`, `LevelColors`, `ValueColors`,
-      `SetColor`
+- [ ] Theming/coloring: `SetTheme`, `LevelColors`, `ValueColors`, `SetColor`
+      (`Theme`, opening the picker, is wired — see below)
 - [ ] Field layout: `HideField`, `ShowField`, `ShowAllFields`,
       `SelectFields` (needs structured/JSON field display, which the GUI
       doesn't have yet)
@@ -51,10 +51,19 @@ the `Box<dyn Mode>` boundary) but nothing draws their popup yet:
 - [ ] `file_switcher_mode`
 - [ ] `merge_select_mode`
 - [ ] `select_fields_mode`
-- [ ] `theme_picker_mode`
 - [ ] `value_colors_mode`
 - [ ] `visual_char_mode` — only visual **line** selection is highlighted in
-      `log_pane.rs`; char-wise visual selection has no rendering
+      `log_pane.rs`; char-wise visual selection has no rendering.
+      Architectural snag, not just unstarted: `anchor_col`/`cursor_col` are
+      char indices into `visual_char_mode::display_line_text(tab)`, the
+      TUI's own single-line reconstruction (timestamp+level+message
+      combined per `field_layout`) — not the same text as any one GUI
+      column, so the `(lo, hi)` range can't be sliced directly onto the
+      Message cell's text the way `row_message_bytes` works. Needs either
+      a coordinate re-derivation onto the Message column's own text, or
+      rendering the selected row's Message cell from
+      `display_line_text(tab)` instead of `row_message_bytes` while the
+      selection is active on it.
 
 ## Effect plumbing
 
@@ -73,7 +82,9 @@ Even once the modes above are rendered, there's no effect yet for:
 - Tab switch/close (mouse + keyboard)
 - Filter/group toggle (mouse + keyboard)
 - Command palette overlay (`:` commands), search bar (click to enter
-  `SearchMode`), time-range dropdown, `?` keybindings-help overlay
+  `SearchMode`), time-range dropdown, `?` keybindings-help overlay,
+  `:theme` picker (live preview, apply on Enter, revert on Esc — not
+  persisted, see above)
 - Resizable, content-auto-fit log table columns; Time/Level columns hidden
   for unstructured files
 - Visual-line selection highlighting; a separate cursor-row highlight for

@@ -13,6 +13,7 @@ use crate::ingestion::FileReader;
 use crate::input::{KeyCode, KeyModifiers};
 use crate::mode::command_mode::CommandMode;
 use crate::mode::normal_mode::NormalMode;
+use crate::mode::theme_picker_mode::ThemePickerMode;
 use crate::ui::{KeyResult, TabState, VisibleLines};
 use clap::Parser;
 use std::path::PathBuf;
@@ -309,9 +310,48 @@ fn apply_key_result(
                 state.active_tab = idx;
             }
         }
+        KeyResult::PreviewTheme(name) | KeyResult::ConfirmTheme(name) => {
+            apply_theme_by_name(state, &name);
+        }
+        KeyResult::RevertTheme(original) => state.theme = *original,
         _ => {}
     }
     Effect::None
+}
+
+/// Loads and applies a theme by name, mirroring the TUI's
+/// `apply_theme_preview`/`cmd_set_theme` (`src/ui/commands/display.rs`) —
+/// `Theme::from_file` is a synchronous file read, so (like
+/// `apply_display_command`) this applies directly in the reducer rather
+/// than through an async `Effect`. Silently no-ops on a load failure, same
+/// as `apply_theme_preview` (the picker stays open either way, so there's
+/// nothing to show an error about yet). Doesn't persist to
+/// `AppSettingsStore` — the same deliberate, documented simplification as
+/// `apply_display_command`.
+fn apply_theme_by_name(state: &mut GuiState, theme_name: &str) {
+    let theme_filename = format!("{}.json", theme_name.to_lowercase());
+    if let Ok(theme) = crate::theme::Theme::from_file(&theme_filename) {
+        state.theme = theme;
+    }
+}
+
+/// Mirrors the TUI's `App::cmd_theme_picker` (`src/ui/commands/
+/// display.rs`): snapshots the current theme (so `KeyResult::RevertTheme`
+/// can restore it on Esc) and enters `ThemePickerMode` on the active tab.
+/// Needs `&mut GuiState` rather than just `&mut TabState` — unlike
+/// `apply_stream_command`/`apply_display_command` — since it reads
+/// `state.theme`, so it's checked separately in `handle_command_string`
+/// rather than folded into those.
+fn open_theme_picker(state: &mut GuiState) {
+    let entries = crate::theme::Theme::list_available_themes();
+    if entries.is_empty() {
+        state.status = Some(StatusMessage::Error("No themes available".to_string()));
+        return;
+    }
+    let original_theme = state.theme.clone();
+    if let Some(tab) = state.active_tab_mut() {
+        tab.interaction.mode = Box::new(ThemePickerMode::new(entries, original_theme));
+    }
 }
 
 fn toggle_display(state: &mut GuiState, f: impl FnOnce(&mut crate::ui::DisplayConfig)) {
@@ -362,6 +402,10 @@ fn handle_command_string(state: &mut GuiState, cmd: String) -> Effect {
             return Effect::None;
         }
     };
+    if matches!(command, Commands::Theme) {
+        open_theme_picker(state);
+        return Effect::None;
+    }
     if let Some(tab) = state.tabs.get_mut(tab_idx)
         && (apply_stream_command(tab, &command) || apply_display_command(tab, &command))
     {
@@ -1652,6 +1696,57 @@ mod tests {
             state.tabs[0].interaction.mode.render_state(),
             crate::mode::app_mode::ModeRenderState::FilterManagement { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn theme_command_opens_the_theme_picker() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let effect = handle_command_string(&mut state, "theme".to_string());
+        assert!(matches!(effect, Effect::None));
+        assert!(matches!(
+            state.tabs[0].interaction.mode.render_state(),
+            crate::mode::app_mode::ModeRenderState::ThemePicker { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn preview_theme_applies_a_known_bundled_theme() {
+        use crate::ui::KeyResult;
+        let (mut state, _file) = state_with_one_tab().await;
+        let before = state.theme.clone();
+        let entries = crate::theme::Theme::list_available_themes();
+        let other = entries
+            .iter()
+            .find(|name| {
+                crate::theme::Theme::from_file(format!("{}.json", name.to_lowercase()))
+                    .is_ok_and(|t| t != before)
+            })
+            .expect("at least one bundled theme should differ from the default")
+            .clone();
+        let effect = apply_key_result(
+            &mut state,
+            KeyResult::PreviewTheme(other),
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        );
+        assert!(matches!(effect, Effect::None));
+        assert_ne!(state.theme, before);
+    }
+
+    #[tokio::test]
+    async fn revert_theme_restores_the_original() {
+        use crate::ui::KeyResult;
+        let (mut state, _file) = state_with_one_tab().await;
+        let original = state.theme.clone();
+        state.theme = crate::theme::Theme::from_file("dracula.json").unwrap_or(state.theme);
+        let effect = apply_key_result(
+            &mut state,
+            KeyResult::RevertTheme(Box::new(original.clone())),
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        );
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(state.theme, original);
     }
 
     /// Reproduces the real panic this guarded against: a `#[tokio::test]`
