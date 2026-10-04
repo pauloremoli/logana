@@ -1,4 +1,5 @@
 pub mod action_editor;
+pub mod bookmarks;
 pub mod command_palette;
 pub mod field_facets;
 pub mod filter_pane;
@@ -61,6 +62,9 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
 }
 
 fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoElement {
+    if app.state.nav_page == NavPage::Bookmarks {
+        return bookmarks::page(app, cx).into_any_element();
+    }
     if app.state.nav_page != NavPage::Logs {
         return div()
             .flex_1()

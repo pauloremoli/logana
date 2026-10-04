@@ -33,7 +33,7 @@ GUI-only builds must not acquire terminal dependencies.
 
 ## Missing parity features
 
-- [ ] Bookmark management page: list, jump, toggle/remove, and clear bookmarks.
+- [x] Bookmark management page: list, jump, toggle/remove, and clear bookmarks.
 - [ ] Annotation editor and page: attach notes to source rows, edit/delete, jump.
 - [ ] Save current logs and marked logs using native save dialogs.
 - [ ] Save/load/append/import filter files using native dialogs.
