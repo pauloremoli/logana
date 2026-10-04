@@ -1,115 +1,71 @@
 # GUI Parity Backlog
 
-Tracks what's still missing in the GPUI frontend (`src/gui`) relative to the
-TUI (`src/mode`, `src/ui`). Check items off as they land; add new ones as
-gaps are found. Last reviewed: 2026-10-02 (gpui-rewrite branch).
+Reviewed against the native GPUI frontend on 2026-10-05. Checked items describe
+working GUI behavior, not merely shared TUI code. Features remain additive;
+GUI-only builds must not acquire terminal dependencies.
 
-## Commands not wired up
+## Implemented
 
-`execute_command` (`src/gui/update.rs`) implements `Filter`, `Exclude`,
-`Highlight`, `ClearFilters`, `DisableFilters`, `EnableFilters`,
-`ToggleGroup`, `Group`, `DateFilter`. `Pause`/`Resume`/`Stop`
-(`apply_stream_command`) and `Wrap`/`LineNumbers`/`RelativeLineNumbers`/
-`ShowKeys`/`HideKeys`/`Raw`/`Collapse`/`Expand` (`apply_display_command`)
-are intercepted in `handle_command_string` before `execute_command`, since
-neither touches `LogManager`. Everything else in `Commands` still errors
-with "not yet supported in the GUI":
+- [x] Open files using a native dialog and background preview/full loading.
+- [x] Switch and close tabs with the mouse.
+- [x] Native Actions menu lists available actions, without the last executed command.
+- [x] Native filter and group editors: conditions, styles, membership, toggles,
+      ordering, deletion, and database persistence.
+- [x] Search, next/previous matches, time-range filters, and field-value facets.
+- [x] Choose, hide, and reorder displayed columns; resize and fit column widths.
+- [x] Choose schemas and inspect/copy the source path.
+- [x] Theme preview, cancel, apply, and persisted theme choice.
+- [x] Value/level color controls and theme-aware rendering.
+- [x] Display controls: wrapping, absolute/relative line numbers, keys, raw view,
+      collapse/expand, sidebar visibility and position (currently tab-local).
+- [x] Pause/resume/stop file watching and toggle follow mode. Incoming file
+      growth is not yet consumed; see the streaming gap below.
+- [x] Mouse row selection and Shift-click ranges; cursor and row backgrounds.
+- [x] Mouse text selection across columns/rows, forward/reverse, wrapped text,
+      Unicode, edge scrolling, and virtualized rows outside the viewport.
+- [x] Ctrl+C / Cmd+C and context-menu copying of selected displayed text.
+- [x] Copy displayed row in visible column order; copy the clicked raw log entry
+      including hidden fields and original syntax.
+- [x] Full-width bookmarked row backgrounds, including wrapped continuations;
+      row/cursor selection takes precedence and text highlights paint above it.
+- [x] Notifications and focus handling.
+- [x] Separate default TUI, GUI-only, combined, and core/schema feature builds.
 
-- [ ] Persistence: `Save`, `SaveFilters`, `LoadFilters`, `ImportFilters`,
-      `Export`, `ExportMarked`
-- [ ] Field layout: `HideField`, `ShowField`, `ShowAllFields`,
-      `SelectFields` — unlike the rest of this list, `SelectFieldsMode`
-      itself needs no new GUI plumbing (it mutates `tab.display.
-      field_layout`/`hidden_fields` directly in `Mode::handle_key`, same
-      as `FilterManagementMode`), but nothing in the GUI's log table
-      reads either field yet (`log_pane.rs`'s Message cell always shows
-      `row_message_bytes`, never a structured/field-aware rendering), so
-      wiring the picker now would be a fully inert popup — skipped until
-      there's a reason to read those fields
-- [ ] Sources: `Merge`, `Docker`, `Dlt`, `Otel` (`Schema` is wired, see
-      below)
-- [ ] `Reset` (`Pause`/`Resume`/`Stop`/`Tail` already work, see below) —
-      deliberately skipped, not just unstarted: it wipes the whole SQLite
-      database (`db.reset_all()`) and touches app-wide fields `GuiState`
-      doesn't have (`session.restore_policy`/`restore_file_policy`),
-      unlike every other command on this list so far
-- [ ] Misc: `EnableMcp`/`DisableMcp`, `DefaultFilters`, `Run` (`Run`
-      spawns a subprocess and streams its output into a new tab — real
-      new Effect plumbing, not a quick win like the rest of this round)
-      (`SidebarPosition`/`Path` are wired, see below)
+## Missing parity features
 
-`Wrap`/`LineNumbers`/`RelativeLineNumbers`/`Collapse`/`Expand` are a
-deliberate simplification vs. the TUI: app-wide settings there (broadcast
-to every open tab, persisted to `AppSettingsStore`), active-tab-only and
-not persisted in the GUI, since `GuiState` doesn't load persisted display
-settings on startup either. `ShowKeys`/`HideKeys`/`Raw` already matched
-this shape in the TUI itself.
+- [ ] Bookmark management page: list, jump, toggle/remove, and clear bookmarks.
+- [ ] Annotation editor and page: attach notes to source rows, edit/delete, jump.
+- [ ] Save current logs and marked logs using native save dialogs.
+- [ ] Save/load/append/import filter files using native dialogs.
+- [ ] Template exports with editable footer fields and output dialogs.
+- [ ] Consume live file growth, preserve filters and source indices, follow the
+      newest visible row, and handle truncation/rotation and pause/resume.
+- [ ] Persist and restore display settings, per-file context, and sessions with
+      the existing restore policies.
+- [ ] Keyboard navigation, tab shortcuts, bookmark shortcuts, file switching,
+      and discoverable shortcut help. Legacy `KeyPressed` is currently ignored.
+- [ ] Default-filter configuration and automatic schema-default loading.
+- [ ] Merge-file picker and merged-source lifecycle.
+- [ ] Archive-entry picker and extraction workflow.
+- [ ] Docker container selection and log streaming.
+- [ ] DLT source selection and streaming.
+- [ ] OTEL receiver configuration and streaming.
+- [ ] Run subprocess output in a log tab with stop/pause lifecycle.
+- [ ] Enable/disable MCP with the existing server lifecycle.
+- [ ] Reset settings/database with explicit scope and restore-policy handling.
 
-## Modes with no GUI rendering
+## Additional GUI pages
 
-`view::mod.rs` only renders `tab_bar`, `log_pane`, `sidebar`
-(filter/group panes), `command_bar`, `search_bar`, `mode_bar`. These TUI
-modes have working `Mode::handle_key` logic (shared automatically through
-the `Box<dyn Mode>` boundary) but nothing draws their popup yet:
+- [ ] Searches: define behavior for saved searches; the TUI has no equivalent
+      saved-search page, so this is a GUI enhancement rather than parity.
+- [ ] Settings: expose persisted application options in a native page.
 
-- [ ] `archive_picker_mode`
-- [ ] `comment_mode`
-- [ ] `default_filters_mode`
-- [ ] `dlt_select_mode`
-- [ ] `docker_select_mode`
-- [ ] `export_footer_mode`
-- [ ] `merge_select_mode`
-- [ ] `select_fields_mode`
-- [ ] `visual_char_mode` — only visual **line** selection is highlighted in
-      `log_pane.rs`; char-wise visual selection has no rendering.
-      Architectural snag, not just unstarted: `anchor_col`/`cursor_col` are
-      char indices into `visual_char_mode::display_line_text(tab)`, the
-      TUI's own single-line reconstruction (timestamp+level+message
-      combined per `field_layout`) — not the same text as any one GUI
-      column, so the `(lo, hi)` range can't be sliced directly onto the
-      Message cell's text the way `row_message_bytes` works. Needs either
-      a coordinate re-derivation onto the Message column's own text, or
-      rendering the selected row's Message cell from
-      `display_line_text(tab)` instead of `row_message_bytes` while the
-      selection is active on it.
+## Validation
 
-## Effect plumbing
+Mouse selection and raw copying have focused Unicode, wrapping, hidden-column,
+virtualization, and original-byte tests plus native GPUI interaction tests.
+Bookmark background painting has light/dark and selection-precedence tests.
+Default TUI, GUI-only, combined, and no-feature library/schema checks pass.
+Strict GUI Clippy currently reports unrelated existing editor/update lints.
 
-`src/gui/effect.rs`'s `Effect` enum only covers `Quit`, `OpenFileDialog`,
-`LoadFile`, `ToggleFilter`, `ToggleGroup`, `RemoveGroup`, `ExecuteCommand`.
-Even once the modes above are rendered, there's no effect yet for:
-
-- [ ] Save-file dialogs (filters, marked lines, export)
-- [ ] Source-picker dialogs (merge file picker, docker container picker,
-      archive entry picker)
-
-## Already working (don't re-litigate)
-
-- File open: dialog + background two-phase preview/full load, shared with
-  `App::open_file`
-- Tab switch/close (mouse + keyboard)
-- Filter/group toggle (mouse + keyboard)
-- Command palette overlay (`:` commands), search bar (click to enter
-  `SearchMode`), time-range dropdown, `?` keybindings-help overlay,
-  `:theme` picker (live preview, apply on Enter, revert on Esc — not
-  persisted, see above), `:value-colors`/`:level-colors` pickers,
-  `:set-theme <name>`, `:set-color` (recolors the filter named by
-  `tab.filter.filter_context`, threaded through a new `Effect::
-  ExecuteCommand.filter_context` field), `:sidebar-position` (the
-  sidebar actually moves sides, with its border flipping to match),
-  `:schema <name>`/`:schema none`/`:schema` (shows the current one via a
-  status message) — doesn't auto-load a format's default filter file the
-  way the TUI's does, see above; `Ctrl+P` file-switcher popup; `:tail`
-  (toggles `tail_mode` and jumps to the last line once — doesn't yet
-  follow newly-arriving lines, since the GUI has no live-tail growth
-  consumption at all), `:path`
-- The status bar now actually renders `state.status` (a toast row above
-  the normal counts/schema/position row, red for `Error`, blue for the
-  new `Info` variant) — several commands above were setting it with
-  nowhere for it to show up until this landed
-- Resizable, content-auto-fit log table columns; Time/Level columns hidden
-  for unstructured files
-- Visual-line selection highlighting; a separate cursor-row highlight for
-  plain navigation outside an active selection
-- Theme-aware rendering
-- Focus handling (window stays reliably focused for key capture)
+Update the relevant checkbox and validation evidence in each feature commit.
