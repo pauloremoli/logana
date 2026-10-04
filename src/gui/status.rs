@@ -1,4 +1,4 @@
-use crate::ui::TabState;
+use crate::shared::TabState;
 
 /// The active tab's counts/position, for the bottom status bar — pure data,
 /// resolved once per render so the view layer never touches `TabState`
@@ -97,7 +97,7 @@ mod tests {
     #[tokio::test]
     async fn filtered_lines_are_counted() {
         let mut tab = tab_with_lines(&["a", "b", "c"]).await;
-        tab.filter.visible_indices = crate::ui::VisibleLines::Filtered(vec![0, 2]);
+        tab.filter.visible_indices = crate::shared::VisibleLines::Filtered(vec![0, 2]);
         let info = status_bar_info(&tab);
         assert_eq!(info.total, 3);
         assert_eq!(info.showing, 2);
@@ -124,7 +124,7 @@ mod tests {
     #[tokio::test]
     async fn empty_visible_set_has_no_position() {
         let mut tab = tab_with_lines(&["a", "b", "c"]).await;
-        tab.filter.visible_indices = crate::ui::VisibleLines::Filtered(vec![]);
+        tab.filter.visible_indices = crate::shared::VisibleLines::Filtered(vec![]);
         let info = status_bar_info(&tab);
         assert_eq!(info.current_line_1based, None);
         assert_eq!(info.percent, None);
@@ -150,7 +150,7 @@ mod tests {
     #[tokio::test]
     async fn right_text_falls_back_when_nothing_is_visible() {
         let mut tab = tab_with_lines(&["a", "b"]).await;
-        tab.filter.visible_indices = crate::ui::VisibleLines::Filtered(vec![]);
+        tab.filter.visible_indices = crate::shared::VisibleLines::Filtered(vec![]);
         let info = status_bar_info(&tab);
         assert_eq!(status_bar_right_text(&info), "Ln -, Col 1");
     }

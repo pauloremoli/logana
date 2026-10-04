@@ -1,5 +1,6 @@
+use crate::style::Color;
 use aho_corasick::AhoCorasick;
-use ratatui::style::Color;
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
@@ -69,6 +70,7 @@ pub trait Filter: Send + Sync {
 
 /// Lossily convert a byte slice to an owned `String`.
 #[inline]
+#[cfg(feature = "tui")]
 fn slice_to_string(bytes: &[u8]) -> String {
     std::str::from_utf8(bytes).unwrap_or("").to_string()
 }
@@ -126,7 +128,8 @@ fn line_bytes_at<'a>(data: &'a [u8], line_starts: &[usize], global: usize) -> &'
 /// For each boundary interval, `fg` and `bg` are composed independently: each attribute
 /// is taken from the highest-priority active span that has that attribute set.  This lets
 /// a level filter (fg only) and a text filter (bg only) both apply to the same segment.
-pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -> Line<'a> {
+#[cfg(feature = "tui")]
+pub fn render_line<'a>(col: &MatchCollector, styles: &[crate::style::Style]) -> Line<'a> {
     if col.spans.is_empty() {
         return Line::from(slice_to_string(col.line));
     }
@@ -145,6 +148,7 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[ratatui::style::Style]) -
 
 /// Filter collector spans to valid (non-empty, in-bounds) tuples.
 #[inline]
+#[cfg(feature = "tui")]
 fn collect_valid_spans(col: &MatchCollector, line_len: usize) -> Vec<(usize, usize, u32, StyleId)> {
     col.spans
         .iter()
@@ -155,6 +159,7 @@ fn collect_valid_spans(col: &MatchCollector, line_len: usize) -> Vec<(usize, usi
 
 /// Collect unique sorted boundary points from valid spans plus line extents.
 #[inline]
+#[cfg(feature = "tui")]
 fn collect_boundaries(valid: &[(usize, usize, u32, StyleId)], line_len: usize) -> Vec<usize> {
     let mut boundaries = Vec::with_capacity(valid.len() * 2 + 2);
     boundaries.push(0);
@@ -170,15 +175,15 @@ fn collect_boundaries(valid: &[(usize, usize, u32, StyleId)], line_len: usize) -
 
 /// Sweep-line pass: for each boundary interval compose fg/bg from the active
 /// spans and merge adjacent intervals with the same style.
+#[cfg(feature = "tui")]
 fn sweep_styled_events(
     valid: &[(usize, usize, u32, StyleId)],
     boundaries: &[usize],
-    styles: &[ratatui::style::Style],
-) -> Vec<(usize, usize, ratatui::style::Style)> {
+    styles: &[crate::style::Style],
+) -> Vec<(usize, usize, crate::style::Style)> {
     let mut active: Vec<(u32, usize, StyleId)> = Vec::new();
     let mut span_idx = 0usize;
-    let mut events: Vec<(usize, usize, ratatui::style::Style)> =
-        Vec::with_capacity(boundaries.len());
+    let mut events: Vec<(usize, usize, crate::style::Style)> = Vec::with_capacity(boundaries.len());
 
     for w in boundaries.windows(2) {
         let (seg_s, seg_e) = (w[0], w[1]);
@@ -211,10 +216,11 @@ fn sweep_styled_events(
 }
 
 /// Build a ratatui [`Line`] from styled events, filling unstyled gaps with raw text.
+#[cfg(feature = "tui")]
 fn events_to_line<'a>(
     line: &[u8],
     line_len: usize,
-    events: &[(usize, usize, ratatui::style::Style)],
+    events: &[(usize, usize, crate::style::Style)],
 ) -> Line<'a> {
     let mut spans: Vec<Span<'a>> = Vec::new();
     let mut pos = 0usize;
@@ -244,18 +250,19 @@ fn events_to_line<'a>(
     Line::from(spans)
 }
 
-/// Compose a single [`ratatui::style::Style`] from a set of active spans.
+/// Compose a single [`crate::style::Style`] from a set of active spans.
 ///
 /// `fg` is taken from the span with the highest priority that has `fg` set;
 /// `bg` from the span with the highest priority that has `bg` set.
 #[inline]
+#[cfg(feature = "tui")]
 fn compose_segment_style(
     active: &[(u32, usize, StyleId)],
-    styles: &[ratatui::style::Style],
-) -> ratatui::style::Style {
-    let mut best_fg: Option<ratatui::style::Color> = None;
+    styles: &[crate::style::Style],
+) -> crate::style::Style {
+    let mut best_fg: Option<crate::style::Color> = None;
     let mut best_fg_priority: u32 = 0;
-    let mut best_bg: Option<ratatui::style::Color> = None;
+    let mut best_bg: Option<crate::style::Color> = None;
     let mut best_bg_priority: u32 = 0;
 
     for &(priority, _, style_id) in active {
@@ -274,7 +281,7 @@ fn compose_segment_style(
         }
     }
 
-    let mut composed = ratatui::style::Style::default();
+    let mut composed = crate::style::Style::default();
     if let Some(fg) = best_fg {
         composed = composed.fg(fg);
     }
@@ -1384,7 +1391,7 @@ mod tests {
     #[test]
     fn test_group_style_returns_config_for_matching_name() {
         let cc = ColorConfig {
-            fg: Some(ratatui::style::Color::Red),
+            fg: Some(crate::style::Color::Red),
             bg: None,
             match_only: true,
         };
@@ -1405,14 +1412,14 @@ mod tests {
     #[test]
     fn test_effective_color_config_filter_own_config_wins_over_group() {
         let filter_cc = ColorConfig {
-            fg: Some(ratatui::style::Color::Red),
+            fg: Some(crate::style::Color::Red),
             bg: None,
             match_only: true,
         };
         let filter = make_filter_def(Some(filter_cc.clone()), Some("g"));
         let group_cc = ColorConfig {
-            fg: Some(ratatui::style::Color::Blue),
-            bg: Some(ratatui::style::Color::Black),
+            fg: Some(crate::style::Color::Blue),
+            bg: Some(crate::style::Color::Black),
             match_only: false,
         };
         let groups = vec![GroupDef {
@@ -1427,7 +1434,7 @@ mod tests {
     fn test_effective_color_config_falls_back_to_group_style_when_filter_has_none() {
         let filter = make_filter_def(None, Some("g"));
         let group_cc = ColorConfig {
-            fg: Some(ratatui::style::Color::Blue),
+            fg: Some(crate::style::Color::Blue),
             bg: None,
             match_only: true,
         };
@@ -1463,7 +1470,7 @@ mod tests {
         let groups = vec![GroupDef {
             name: "other".to_string(),
             color_config: Some(ColorConfig {
-                fg: Some(ratatui::style::Color::Red),
+                fg: Some(crate::style::Color::Red),
                 bg: None,
                 match_only: true,
             }),
@@ -1729,20 +1736,22 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_render_line_no_spans() {
         let line = b"plain text";
         let col = MatchCollector::new(line);
-        let styles: Vec<ratatui::style::Style> = vec![];
+        let styles: Vec<crate::style::Style> = vec![];
         let rendered = render_line(&col, &styles);
         let text: String = rendered.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "plain text");
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_render_line_with_span() {
         let line = b"hello world";
         let mut col = MatchCollector::new(line);
-        let style = ratatui::style::Style::default().fg(ratatui::style::Color::Red);
+        let style = crate::style::Style::default().fg(crate::style::Color::Red);
         let styles = vec![style];
         col.push(6, 11, 0); // "world"
         let rendered = render_line(&col, &styles);
@@ -1761,11 +1770,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_render_line_overlapping_spans_priority() {
         // Two spans cover the same region. Higher priority must win.
         let line = b"hello world";
-        let style_lo = ratatui::style::Style::default().fg(ratatui::style::Color::Blue);
-        let style_hi = ratatui::style::Style::default().fg(ratatui::style::Color::Red);
+        let style_lo = crate::style::Style::default().fg(crate::style::Color::Blue);
+        let style_hi = crate::style::Style::default().fg(crate::style::Color::Red);
         let styles = vec![style_lo, style_hi];
 
         let mut col = MatchCollector::new(line);
@@ -1782,15 +1792,16 @@ mod tests {
         assert!(hello_span.is_some());
         assert_eq!(
             hello_span.unwrap().style.fg,
-            Some(ratatui::style::Color::Red)
+            Some(crate::style::Color::Red.into())
         );
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_render_line_adjacent_same_style_merged() {
         // Two adjacent spans with the same style should be merged into one.
         let line = b"abcdef";
-        let style = ratatui::style::Style::default().fg(ratatui::style::Color::Green);
+        let style = crate::style::Style::default().fg(crate::style::Color::Green);
         let styles = vec![style];
 
         let mut col = MatchCollector::new(line);
@@ -1808,11 +1819,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_render_line_composes_fg_and_bg_from_different_spans() {
         // One span sets fg, another sets bg on the same segment — both must apply.
         let line = b"hello world";
-        let style_fg = ratatui::style::Style::default().fg(ratatui::style::Color::Yellow);
-        let style_bg = ratatui::style::Style::default().bg(ratatui::style::Color::DarkGray);
+        let style_fg = crate::style::Style::default().fg(crate::style::Color::Yellow);
+        let style_bg = crate::style::Style::default().bg(crate::style::Color::DarkGray);
         let styles = vec![style_fg, style_bg];
 
         let mut col = MatchCollector::new(line);
@@ -1828,16 +1840,17 @@ mod tests {
             .find(|s| s.content.as_ref() == "hello");
         assert!(hello_span.is_some());
         let span = hello_span.unwrap();
-        assert_eq!(span.style.fg, Some(ratatui::style::Color::Yellow));
-        assert_eq!(span.style.bg, Some(ratatui::style::Color::DarkGray));
+        assert_eq!(span.style.fg, Some(crate::style::Color::Yellow.into()));
+        assert_eq!(span.style.bg, Some(crate::style::Color::DarkGray.into()));
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_render_line_higher_priority_fg_wins_over_lower() {
         // Two spans both set fg; the higher-priority one must win for fg.
         let line = b"hello";
-        let style_lo = ratatui::style::Style::default().fg(ratatui::style::Color::Blue);
-        let style_hi = ratatui::style::Style::default().fg(ratatui::style::Color::Red);
+        let style_lo = crate::style::Style::default().fg(crate::style::Color::Blue);
+        let style_hi = crate::style::Style::default().fg(crate::style::Color::Red);
         let styles = vec![style_lo, style_hi];
 
         let mut col = MatchCollector::new(line);
@@ -1852,15 +1865,19 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == "hello");
         assert!(span.is_some());
-        assert_eq!(span.unwrap().style.fg, Some(ratatui::style::Color::Red));
+        assert_eq!(
+            span.unwrap().style.fg,
+            Some(crate::style::Color::Red.into())
+        );
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_render_line_higher_priority_bg_wins_independent_of_fg() {
         // High-priority span sets bg; low-priority span sets fg — both apply independently.
         let line = b"hello";
-        let style_lo = ratatui::style::Style::default().fg(ratatui::style::Color::Cyan);
-        let style_hi = ratatui::style::Style::default().bg(ratatui::style::Color::Red);
+        let style_lo = crate::style::Style::default().fg(crate::style::Color::Cyan);
+        let style_hi = crate::style::Style::default().bg(crate::style::Color::Red);
         let styles = vec![style_lo, style_hi];
 
         let mut col = MatchCollector::new(line);
@@ -1875,8 +1892,14 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == "hello");
         assert!(span.is_some());
-        assert_eq!(span.unwrap().style.fg, Some(ratatui::style::Color::Cyan));
-        assert_eq!(span.unwrap().style.bg, Some(ratatui::style::Color::Red));
+        assert_eq!(
+            span.unwrap().style.fg,
+            Some(crate::style::Color::Cyan.into())
+        );
+        assert_eq!(
+            span.unwrap().style.bg,
+            Some(crate::style::Color::Red.into())
+        );
     }
 
     #[test]

@@ -1,14 +1,20 @@
 use crate::config::Keybindings;
 use crate::filters::{ColorConfig, FilterType};
 use crate::input::{KeyCode, KeyModifiers};
-use crate::mode::app_mode::{Mode, ModeRenderState, status_entry};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+use crate::mode::app_mode::{Mode, ModeRenderState};
 use crate::mode::command_mode::CommandMode;
 use crate::mode::normal_mode::NormalMode;
-use crate::theme::{Theme, color_to_string};
-use crate::ui::KeyResult;
-use crate::ui::TabState;
+use crate::shared::KeyResult;
+use crate::shared::TabState;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
+use crate::theme::color_to_string;
 use async_trait::async_trait;
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 #[derive(Debug)]
@@ -222,7 +228,7 @@ impl FilterManagementMode {
     /// Indices (into the full filter list) of entries matching the current
     /// search query — everything, when not searching or the query is empty.
     fn narrowed_indices(&self, tab: &TabState) -> Vec<usize> {
-        crate::ui::widgets::sidebar::narrowed_filter_indices(
+        crate::shared::sidebar::narrowed_filter_indices(
             tab.log_manager.get_filters(),
             &tab.filter.match_counts,
             &self.search,
@@ -574,6 +580,7 @@ impl Mode for FilterManagementMode {
         (self, KeyResult::Ignored)
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[FILTER]  ",
@@ -730,6 +737,7 @@ impl Mode for FilterEditMode {
         }
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[FILTER EDIT]  ",
@@ -754,7 +762,7 @@ mod tests {
     use crate::db::LogManager;
     use crate::filters::FilterOptions;
     use crate::ingestion::FileReader;
-    use crate::ui::{KeyResult, TabState};
+    use crate::shared::{KeyResult, TabState};
     use std::sync::Arc;
 
     async fn make_tab(lines: &[&str]) -> TabState {
@@ -1621,6 +1629,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_mode_bar_content_shows_configured_search_shortcut() {
         let m = filter_mode(0);
         let mut kb = Keybindings::default();

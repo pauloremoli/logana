@@ -1,30 +1,16 @@
 use crate::gui::app::App;
-use crate::gui::state::StatusMessage;
 use crate::gui::status::{
     status_bar_info, status_bar_left_text, status_bar_right_text, status_bar_schema_text,
 };
-use crate::ui::TabState;
+use crate::shared::TabState;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{Context, div, px, rgb};
+use gpui_kit::gpui::{Context, div, px};
 
-const STATUS_ROW_HEIGHT: f32 = 24.0;
+const STATUS_ROW_HEIGHT: f32 = 40.0;
 
-/// The bottom status bar: an optional error toast row above the real
-/// status row (total/showing/filtered counts on the left, the detected
-/// schema name in the middle, cursor position on the right). The toast
-/// shows `state.status` — set by several command interceptions
-/// (`:set-theme`/`:schema`/etc. on a bad name) that previously had
-/// nowhere to actually display it; nothing currently clears `state.status`
-/// back to `None`; it just stays until the next status-setting event
-/// overwrites it. `.flex()`/`.h()`/`.overflow_hidden()` are load-bearing
-/// here, not cosmetic — see `log_pane.rs`'s `styled_line_row` doc comment
-/// for why a flat row like this must always set them.
-pub fn status_bar(
-    tab: Option<&TabState>,
-    status: Option<&StatusMessage>,
-    cx: &mut Context<App>,
-) -> impl IntoElement {
+/// Log counts, schema, cursor position, and active filtering progress.
+pub fn status_bar(tab: Option<&TabState>, cx: &mut Context<App>) -> impl IntoElement {
     let (left, schema, right) = match tab {
         Some(tab) => {
             let info = status_bar_info(tab);
@@ -37,23 +23,25 @@ pub fn status_bar(
         None => (String::new(), String::new(), String::new()),
     };
     let mut col = div().flex().flex_col();
-    if let Some((message, bg, fg)) = status.map(|s| match s {
-        StatusMessage::Error(message) => (message, rgb(0x3a1d1d), rgb(0xff6b6b)),
-        StatusMessage::Info(message) => (message, rgb(0x1d2a3a), rgb(0x6bb3ff)),
-    }) {
+    if let Some(handle) = tab.and_then(|tab| tab.filter.handle.as_ref()) {
+        let progress = handle.displayed_progress.clamp(0.0, 1.0);
         col = col.child(
             div()
                 .flex()
-                .items_center()
-                .h(px(STATUS_ROW_HEIGHT))
-                .px(px(8.))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .bg(bg)
-                .text_color(fg)
-                .border_t_1()
-                .border_color(cx.theme().border)
-                .child(message.clone()),
+                .flex_col()
+                .gap_1()
+                .px(px(16.))
+                .py(px(4.))
+                .bg(cx.theme().status_bar)
+                .child(format!("Applying filters… {:.0}%", progress * 100.0))
+                .child(
+                    div().h(px(3.)).w_full().bg(cx.theme().secondary).child(
+                        div()
+                            .h_full()
+                            .w(gpui_kit::gpui::relative(progress as f32))
+                            .bg(cx.theme().primary),
+                    ),
+                ),
         );
     }
     col.child(
@@ -63,11 +51,14 @@ pub fn status_bar(
             .items_center()
             .gap_4()
             .h(px(STATUS_ROW_HEIGHT))
-            .px(px(8.))
+            .bg(cx.theme().status_bar)
+            .px(px(16.))
             .overflow_hidden()
             .border_t_1()
             .border_color(cx.theme().border)
-            .child(left)
+            .text_size(px(12.))
+            .text_color(cx.theme().muted_foreground)
+            .child(left.replace("   ", "   |   "))
             .child(schema)
             .child(right),
     )

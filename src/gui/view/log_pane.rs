@@ -1,15 +1,17 @@
 use crate::gui::app::App;
-use crate::gui::color::{LineStyle, ratatui_color_to_gpui, resolve_line_style};
-use crate::gui::column_widths::{ColumnWidths, ResizableColumn};
+use crate::gui::color::{LineStyle, color_to_gpui, resolve_line_style};
+use crate::gui::column_widths::{ResizableColumn, TableWidths};
 use crate::gui::level::{classify_line_level, level_pill_colors};
 use crate::gui::message::Message;
-use crate::mode::app_mode::ModeRenderState;
 use crate::parser::LogLevel;
+use crate::shared::TabState;
 use crate::theme::Theme as TuiTheme;
-use crate::ui::TabState;
 use gpui_kit::base::{VirtualListScrollHandle, v_virtual_list};
 use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::Sizable;
+use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::tag::Tag;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{
     AnyElement, Context, DragMoveEvent, Empty, FontWeight, MouseButton, Rgba, Size, div, px,
@@ -18,9 +20,9 @@ use std::rc::Rc;
 
 /// Fixed row height, used for every visible log line — the virtual list
 /// only needs height to lay out rows; width is inferred from content.
-/// 24px (not a bare 1:1 text-line height) deliberately leaves a few
+/// 30px deliberately leaves a few
 /// pixels of breathing room above/below each row's text.
-const ROW_HEIGHT_PX: f32 = 24.0;
+const ROW_HEIGHT_PX: f32 = 30.0;
 /// Width of the draggable strip between two fixed columns — thin enough
 /// to stay out of the way, wide enough to be a comfortable mouse target.
 const RESIZE_HANDLE_WIDTH_PX: f32 = 6.0;
@@ -36,88 +38,334 @@ const RESIZE_HANDLE_WIDTH_PX: f32 = 6.0;
 /// `widths` is `GuiState::column_widths` — auto-fit to content whenever a
 /// file loads, overridden per-column by dragging a header handle; see
 /// `gui::column_widths` for both.
+pub struct LayoutCache {
+    key: (
+        crate::shared::TabId,
+        u64,
+        u64,
+        usize,
+        usize,
+        TableWidths,
+        u32,
+        Vec<String>,
+        bool,
+        bool,
+        bool,
+    ),
+    sizes: Rc<Vec<Size<gpui_kit::gpui::Pixels>>>,
+}
+pub fn item_sizes(
+    cache: &mut Option<LayoutCache>,
+    tab: &TabState,
+    widths: &TableWidths,
+    fields: &[String],
+    message_width: f32,
+) -> Rc<Vec<Size<gpui_kit::gpui::Pixels>>> {
+    let columns = visible_columns(tab, fields);
+    let total = tab.filter.visible_indices.len();
+    let key = (
+        tab.id,
+        tab.cache.parse_gen,
+        tab.cache.render_gen,
+        tab.file_reader.line_count(),
+        total,
+        widths.clone(),
+        message_width.to_bits(),
+        columns.clone(),
+        tab.display.wrap,
+        tab.display.show_keys,
+        tab.display.raw_mode,
+    );
+    if let Some(cache) = cache {
+        if cache.key == key {
+            return cache.sizes.clone();
+        }
+    }
+    let sizes = Rc::new(if tab.display.wrap {
+        tab.filter
+            .visible_indices
+            .iter()
+            .map(|line| {
+                Size::new(
+                    px(0.),
+                    px(wrapped_height(tab, line, &columns, widths, message_width)),
+                )
+            })
+            .collect()
+    } else {
+        vec![Size::new(px(0.), px(ROW_HEIGHT_PX)); total]
+    });
+    *cache = Some(LayoutCache {
+        key,
+        sizes: sizes.clone(),
+    });
+    sizes
+}
 pub fn log_pane(
     tab_idx: usize,
     tab: &TabState,
-    widths: ColumnWidths,
+    widths: &TableWidths,
     log_scroll: &VirtualListScrollHandle,
+    fields: &[String],
+    item_sizes: Rc<Vec<Size<gpui_kit::gpui::Pixels>>>,
+    message_width: f32,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
-    let total = tab.filter.visible_indices.len();
-    let item_sizes = Rc::new(vec![Size::new(px(0.0), px(ROW_HEIGHT_PX)); total]);
-    let has_format = tab.display.format.is_some();
+    let columns = visible_columns(tab, fields);
+    let table_width = if tab.display.show_line_numbers {
+        widths.line_no + 6.
+    } else {
+        0.
+    } + columns
+        .iter()
+        .map(|field| column_width(field, widths, message_width) + 6.)
+        .sum::<f32>();
+    let row_fields = columns.clone();
+    let row_widths = widths.clone();
     let view = cx.entity();
-    div()
+    let table = div()
         .flex()
         .flex_col()
-        .size_full()
-        .child(header_row(widths, has_format, cx))
+        .w(px(table_width + 2.))
+        .min_w(gpui_kit::gpui::relative(1.))
+        .h_full()
+        .font_family("monospace")
+        .text_size(px(12.))
+        .border_1()
+        .border_color(cx.theme().border)
+        .rounded(px(6.))
+        .overflow_hidden()
+        .child(header_row(
+            widths,
+            &columns,
+            tab.display.show_line_numbers,
+            message_width,
+            cx,
+        ))
         .child(
-            div()
-                .relative()
-                .flex_1()
-                .min_h(px(0.))
-                .child(
-                    v_virtual_list(
-                        view,
-                        "log-pane",
-                        item_sizes,
-                        move |app: &mut App, range, _window, _cx| {
-                            let Some(tab) = app.state.tabs.get(tab_idx) else {
-                                return Vec::new();
-                            };
-                            let selection = visual_line_selection(tab);
-                            range
-                                .filter_map(|pos| {
-                                    tab.filter
-                                        .visible_indices
-                                        .get_opt(pos)
-                                        .map(|line_idx| (pos, line_idx))
-                                })
-                                .map(|(pos, line_idx)| {
-                                    line_row(
+            div().relative().flex_1().min_h(px(0.)).child(
+                v_virtual_list(
+                    view,
+                    "log-pane",
+                    item_sizes,
+                    move |app: &mut App, range, _window, cx| {
+                        let Some(tab) = app.state.tabs.get(tab_idx) else {
+                            return Vec::new();
+                        };
+                        let selection = app
+                            .state
+                            .log_selection
+                            .filter(|(id, _, _)| *id == tab.id)
+                            .map(|(_, a, b)| (a.min(b), a.max(b), b));
+                        range
+                            .filter_map(|pos| {
+                                tab.filter
+                                    .visible_indices
+                                    .get_opt(pos)
+                                    .map(|line_idx| (pos, line_idx))
+                            })
+                            .map(|(pos, line_idx)| {
+                                let output =
+                                    String::from_utf8_lossy(&tab.file_reader.get_line(line_idx))
+                                        .into_owned();
+                                let entity = cx.entity();
+                                div()
+                                    .id(("log-row", pos))
+                                    .child(line_row(
                                         tab,
                                         line_idx,
-                                        selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&pos)),
-                                        pos == tab.scroll.scroll_offset,
+                                        selection.is_some_and(|(a, b, _)| (a..=b).contains(&pos)),
+                                        selection
+                                            .map(|(_, _, cursor)| pos == cursor)
+                                            .unwrap_or(pos == tab.scroll.scroll_offset),
                                         &app.state.theme,
-                                        widths,
-                                    )
-                                })
-                                .collect()
-                        },
-                    )
-                    .track_scroll(log_scroll)
-                    .size_full(),
+                                        &row_widths,
+                                        &row_fields,
+                                        message_width,
+                                    ))
+                                    .on_click(cx.listener(
+                                        move |app,
+                                              event: &gpui_kit::gpui::ClickEvent,
+                                              window,
+                                              cx| {
+                                            app.dispatch(
+                                                Message::SelectLog(pos, event.modifiers().shift),
+                                                window,
+                                                cx,
+                                            )
+                                        },
+                                    ))
+                                    .context_menu(move |menu, _, _| {
+                                        let output = output.clone();
+                                        let entity = entity.clone();
+                                        menu.item(
+                                            gpui_kit::component::menu::PopupMenuItem::new(
+                                                "Copy log line",
+                                            )
+                                            .on_click(
+                                                move |_, _, cx| {
+                                                    cx.write_to_clipboard(
+                                                        gpui_kit::gpui::ClipboardItem::new_string(
+                                                            output.clone(),
+                                                        ),
+                                                    )
+                                                },
+                                            ),
+                                        )
+                                        .item(
+                                            gpui_kit::component::menu::PopupMenuItem::new(
+                                                "Add filter",
+                                            )
+                                            .on_click(
+                                                move |_, window, cx| {
+                                                    entity.update(cx, |app, cx| {
+                                                        app.dispatch(
+                                                            Message::GuiAction(
+                                                                crate::gui::actions::Action::Filter,
+                                                            ),
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    })
+                                                },
+                                            ),
+                                        )
+                                    })
+                                    .into_any_element()
+                            })
+                            .collect()
+                    },
                 )
+                .track_scroll(log_scroll)
+                .size_full(),
+            ),
+        );
+    // Keep the vertical scrollbar on the visible pane, outside the wide
+    // horizontally scrolled table. Otherwise it moves off-screen with columns.
+    div()
+        .relative()
+        .size_full()
+        .min_w(px(0.))
+        .min_h(px(0.))
+        .overflow_hidden()
+        .child(
+            div()
+                .id("log-table-horizontal-scroll")
+                .size_full()
+                .overflow_x_scrollbar()
+                .child(table),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(px(ROW_HEIGHT_PX + 4.))
+                .bottom_0()
+                .left_0()
+                .right_0()
                 .vertical_scrollbar(log_scroll),
         )
 }
 
-/// `#`/Time/Level/Message column titles, fixed above the scrolling list —
-/// same `widths` `line_row`'s cells use, so columns stay aligned. A
-/// resize handle sits after each fixed-width title so dragging it resizes
-/// that column; Message has none (it always fills remaining space). Time
-/// and Level are omitted entirely for a tab with no detected format
-/// (`has_format`) — an unstructured file has no timestamp or level to
-/// show there, so the columns would just be permanently blank.
-fn header_row(widths: ColumnWidths, has_format: bool, cx: &mut Context<App>) -> impl IntoElement {
+/// All fields are visible by default; command preferences control visibility and order.
+pub(crate) fn visible_columns(tab: &TabState, fields: &[String]) -> Vec<String> {
+    if tab.display.raw_mode {
+        return vec!["message".into()];
+    }
+    let mut ordered = tab.display.field_layout.columns.clone().unwrap_or_default();
+    for field in fields {
+        if !ordered.contains(field) {
+            ordered.push(field.clone());
+        }
+    }
+    if tab.display.format.is_none() && !ordered.iter().any(|field| field == "message") {
+        ordered.push("message".to_string());
+    }
+    ordered.retain(|field| {
+        !tab.display.hidden_fields.contains(field)
+            && (fields.contains(field) || (field == "message" && tab.display.format.is_none()))
+    });
+    ordered
+}
+/// Fill the viewport after reserving every visible fixed column and separator.
+/// Keep a usable minimum in narrow windows, where the table scrolls horizontally.
+pub fn message_width(
+    tab: &TabState,
+    fields: &[String],
+    widths: &TableWidths,
+    available: f32,
+) -> f32 {
+    let columns = visible_columns(tab, fields);
+    let messages = columns
+        .iter()
+        .filter(|field| matches!(field.as_str(), "message" | "msg"))
+        .count();
+    if messages == 0 {
+        return 160.;
+    }
+    let fixed = columns
+        .iter()
+        .filter(|field| !matches!(field.as_str(), "message" | "msg"))
+        .map(|field| column_width(field, widths, 0.))
+        .sum::<f32>();
+    let numbers = if tab.display.show_line_numbers {
+        widths.line_no + RESIZE_HANDLE_WIDTH_PX
+    } else {
+        0.
+    };
+    ((available - 2. - numbers - fixed - columns.len() as f32 * RESIZE_HANDLE_WIDTH_PX)
+        / messages as f32)
+        .max(160.)
+}
+fn column_width(field: &str, widths: &TableWidths, message_width: f32) -> f32 {
+    match field {
+        "timestamp" | "time" | "ts" => widths.time,
+        "level" | "lvl" => widths.level,
+        "message" | "msg" => message_width,
+        _ => widths
+            .fields
+            .get(field)
+            .copied()
+            .unwrap_or(field.len() as f32 * 7.2 + 16.),
+    }
+}
+fn header_row(
+    widths: &TableWidths,
+    fields: &[String],
+    show_numbers: bool,
+    message_width: f32,
+    cx: &mut Context<App>,
+) -> impl IntoElement {
     let mut row = div()
         .flex()
         .items_center()
-        .pb(px(4.))
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .text_color(cx.theme().muted_foreground)
         .h(px(ROW_HEIGHT_PX + 4.))
-        .overflow_hidden()
-        .child(fixed_cell(widths.line_no, "#"))
-        .child(resize_handle(ResizableColumn::LineNo, cx));
-    if has_format {
+        .overflow_hidden();
+    if show_numbers {
         row = row
-            .child(fixed_cell(widths.time, "Time"))
-            .child(resize_handle(ResizableColumn::Time, cx))
-            .child(fixed_cell(widths.level, "Level"))
-            .child(resize_handle(ResizableColumn::Level, cx));
+            .child(fixed_cell(widths.line_no, "#"))
+            .child(resize_handle(ResizableColumn::LineNo, cx));
     }
-    row.child(div().flex_1().overflow_hidden().child("Message"))
+    for field in fields {
+        let label = match field.as_str() {
+            "timestamp" => "Time",
+            "level" => "Level",
+            "message" => "Message",
+            _ => field,
+        };
+        row = row.child(fixed_cell(
+            column_width(field, widths, message_width),
+            label.to_string(),
+        ));
+        row = match field.as_str() {
+            "timestamp" | "time" | "ts" => row.child(resize_handle(ResizableColumn::Time, cx)),
+            "level" | "lvl" => row.child(resize_handle(ResizableColumn::Level, cx)),
+            _ => row.child(column_spacer()),
+        };
+    }
+    row
 }
 
 /// A fixed, non-interactive spacer matching `resize_handle`'s width —
@@ -177,15 +425,6 @@ fn resize_handle(column: ResizableColumn, cx: &mut Context<App>) -> AnyElement {
 /// scroll_offset` (the cursor) are both positions in the same visible-
 /// index space the virtual list addresses rows by, so no translation is
 /// needed beyond ordering the two endpoints.
-fn visual_line_selection(tab: &TabState) -> Option<(usize, usize)> {
-    match tab.interaction.mode.render_state() {
-        ModeRenderState::VisualLine { anchor } => {
-            let cursor = tab.scroll.scroll_offset;
-            Some((anchor.min(cursor), anchor.max(cursor)))
-        }
-        _ => None,
-    }
-}
 
 /// The Time column's text for `bytes` — the detected format's parsed
 /// timestamp, or blank for a tab with no detected format. Pure and
@@ -207,6 +446,9 @@ fn row_time_text(tab: &TabState, bytes: &[u8]) -> Option<String> {
 /// `ui::tab_state::merged_message_range` already uses for the same
 /// invariant, rather than reparsing or copying.
 fn row_message_bytes<'a>(tab: &TabState, bytes: &'a [u8]) -> &'a [u8] {
+    if tab.display.raw_mode {
+        return bytes;
+    }
     let Some(parser) = tab.display.format.as_deref() else {
         return bytes;
     };
@@ -226,64 +468,225 @@ fn row_message_bytes<'a>(tab: &TabState, bytes: &'a [u8]) -> &'a [u8] {
 /// which stacks children (the four cells) vertically instead of flowing
 /// them left to right; see `styled_line_row`'s doc comment for the exact
 /// failure mode that caused in an earlier version of this file.
+fn wrap_text(text: &str, width: f32) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+    let limit = (width / 7.2).floor().max(1.) as usize;
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        if c == '\n' {
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+            continue;
+        }
+        let size = c.width().unwrap_or(0);
+        if used + size > limit && !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+        }
+        line.push(c);
+        used += size;
+    }
+    lines.push(line);
+    lines
+}
+fn wrapped_height(
+    tab: &TabState,
+    line: usize,
+    fields: &[String],
+    widths: &TableWidths,
+    message_width: f32,
+) -> f32 {
+    let bytes = tab.file_reader.get_line(line);
+    let parts = tab
+        .display
+        .format
+        .as_ref()
+        .and_then(|p| p.parse_line(&bytes));
+    let count = fields
+        .iter()
+        .map(|field| {
+            let text = if matches!(field.as_str(), "message" | "msg") {
+                String::from_utf8_lossy(row_message_bytes(tab, &bytes)).into_owned()
+            } else {
+                let value = parts
+                    .as_ref()
+                    .and_then(|p| crate::filters::resolve_field(field, p))
+                    .unwrap_or("");
+                if tab.display.show_keys {
+                    format!("{field}={value}")
+                } else {
+                    value.to_string()
+                }
+            };
+            wrap_text(
+                &text,
+                (column_width(field, widths, message_width) - 16.).max(8.),
+            )
+            .len()
+        })
+        .max()
+        .unwrap_or(1);
+    ROW_HEIGHT_PX * count as f32
+}
+#[allow(clippy::too_many_arguments)]
 fn line_row(
     tab: &TabState,
     line_idx: usize,
     selected: bool,
     is_cursor_row: bool,
     theme: &TuiTheme,
-    widths: ColumnWidths,
+    widths: &TableWidths,
+    fields: &[String],
+    message_width: f32,
 ) -> AnyElement {
+    let palette = crate::gui::theme::GuiPalette::from_theme(theme);
+    let rgb = |(r, g, b): (u8, u8, u8)| {
+        gpui_kit::gpui::rgb((r as u32) << 16 | (g as u32) << 8 | b as u32)
+    };
     let owned_line_bytes = tab.file_reader.get_line(line_idx);
     let bytes: &[u8] = &owned_line_bytes;
-    let has_format = tab.display.format.is_some();
 
-    let number_cell = fixed_cell(widths.line_no, (line_idx + 1).to_string());
-    let message_bytes = row_message_bytes(tab, bytes);
-    let message_cell = if selected {
-        div()
-            .flex_1()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .child(String::from_utf8_lossy(message_bytes).into_owned())
-            .into_any_element()
-    } else {
-        message_cell(tab, message_bytes)
-    };
-
+    let number_cell = fixed_cell(
+        widths.line_no,
+        format!(
+            "{}{}",
+            if tab.mark_manager.is_marked(line_idx) {
+                "◆"
+            } else {
+                " "
+            },
+            if tab.display.relative_line_numbers {
+                let selected = tab
+                    .filter
+                    .visible_indices
+                    .get_opt(tab.scroll.scroll_offset)
+                    .unwrap_or(line_idx);
+                if selected == line_idx {
+                    line_idx + 1
+                } else {
+                    line_idx.abs_diff(selected)
+                }
+            } else {
+                line_idx + 1
+            }
+        ),
+    );
     let mut row = div()
         .flex()
-        .h(px(ROW_HEIGHT_PX))
-        .overflow_hidden()
-        .child(number_cell)
-        .child(column_spacer());
-    if has_format {
-        let time_cell = fixed_cell(widths.time, row_time_text(tab, bytes).unwrap_or_default());
-        // Selection highlighting (below) already colors the whole row,
-        // so a selected row skips the level pill and match-only
-        // highlighting and just shows plain text in every cell — same
-        // as the TUI's visual selection, which doesn't layer filter
-        // colors under the selection tint either.
-        let level_cell = if selected {
-            fixed_cell(widths.level, "")
+        .h(px(if tab.display.wrap {
+            wrapped_height(tab, line_idx, fields, widths, message_width)
         } else {
-            level_cell(classify_line_level(tab, bytes), theme, widths.level)
-        };
-        row = row
-            .child(time_cell)
-            .child(column_spacer())
-            .child(level_cell)
-            .child(column_spacer());
+            ROW_HEIGHT_PX
+        }))
+        .items_start()
+        .border_b_1()
+        .border_color(rgb(palette.border));
+    if tab.display.show_line_numbers {
+        row = row.child(number_cell).child(column_spacer());
     }
-    row = row.child(message_cell);
+    let parts = tab
+        .display
+        .format
+        .as_ref()
+        .and_then(|parser| parser.parse_line(bytes));
+    for field in fields {
+        let width = column_width(field, widths, message_width);
+        let cell = match field.as_str() {
+            "timestamp" | "time" | "ts" => {
+                fixed_cell(width, row_time_text(tab, bytes).unwrap_or_default())
+            }
+            "level" | "lvl" if !selected => {
+                let level = classify_line_level(tab, bytes);
+                let key = match level {
+                    crate::parser::LogLevel::Trace => "trace",
+                    crate::parser::LogLevel::Debug => "debug",
+                    crate::parser::LogLevel::Info => "info",
+                    crate::parser::LogLevel::Notice => "notice",
+                    crate::parser::LogLevel::Warning => "warning",
+                    crate::parser::LogLevel::Error => "error",
+                    crate::parser::LogLevel::Fatal => "fatal",
+                    _ => "",
+                };
+                if tab.display.level_colors_disabled.contains(key) {
+                    fixed_cell(width, key.to_uppercase())
+                } else {
+                    level_cell(level, theme, width)
+                }
+            }
+            "message" | "msg" => {
+                let message = row_message_bytes(tab, bytes);
+                let content = if tab.display.wrap {
+                    let mut wrapped = div().flex().flex_col();
+                    for chunk in wrap_text(&String::from_utf8_lossy(message), (width - 16.).max(8.))
+                    {
+                        wrapped = wrapped.child(div().h(px(ROW_HEIGHT_PX)).child(message_cell(
+                            tab,
+                            chunk.as_bytes(),
+                            theme,
+                        )));
+                    }
+                    wrapped.into_any_element()
+                } else if selected {
+                    div()
+                        .child(String::from_utf8_lossy(message).into_owned())
+                        .into_any_element()
+                } else {
+                    message_cell(tab, message, theme)
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_shrink_0()
+                    .w(px(width))
+                    .overflow_hidden()
+                    .child(content)
+                    .into_any_element()
+            }
+            _ => {
+                let value = if field == "source" {
+                    tab.file_reader
+                        .merged_entries()
+                        .and_then(|entries| entries.get(line_idx))
+                        .and_then(|entry| {
+                            tab.merged
+                                .as_ref()
+                                .and_then(|merged| merged.source_labels.get(entry.source_idx))
+                        })
+                        .map(String::as_str)
+                        .unwrap_or("")
+                } else {
+                    parts
+                        .as_ref()
+                        .and_then(|parts| crate::filters::resolve_field(field, parts))
+                        .unwrap_or("")
+                };
+                let value = if tab.display.show_keys && !value.is_empty() {
+                    format!("{field}={value}")
+                } else {
+                    value.to_string()
+                };
+                if tab.display.wrap {
+                    div()
+                        .flex_shrink_0()
+                        .w(px(width))
+                        .pl(px(8.))
+                        .line_height(px(ROW_HEIGHT_PX))
+                        .child(wrap_text(&value, (width - 16.).max(8.)).join("\n"))
+                        .into_any_element()
+                } else {
+                    fixed_cell(width, value)
+                }
+            }
+        };
+        row = row.child(cell).child(column_spacer());
+    }
 
     if selected {
-        if let Some(bg) = ratatui_color_to_gpui(theme.visual_select_bg) {
-            row = row.bg(bg);
-        }
-        if let Some(fg) = ratatui_color_to_gpui(theme.visual_select_fg) {
-            row = row.text_color(fg);
-        }
+        row = row
+            .bg(rgb(palette.selected))
+            .text_color(rgb(palette.foreground));
         // Bold + underline marks which end of an active selection is
         // "the cursor", matching the TUI's own visual-selection render.
         if is_cursor_row {
@@ -297,12 +700,9 @@ fn line_row(
         // popups, the command bar's text cursor). A plain background
         // tint, not bold+underline, which `selected` above reserves for
         // marking an actual selection's active end.
-        if let Some(bg) = ratatui_color_to_gpui(theme.cursor_bg) {
-            row = row.bg(bg);
-        }
-        if let Some(fg) = ratatui_color_to_gpui(theme.cursor_fg) {
-            row = row.text_color(fg);
-        }
+        row = row
+            .bg(rgb(palette.selected))
+            .text_color(rgb(palette.foreground));
     }
     row.into_any_element()
 }
@@ -316,6 +716,9 @@ fn fixed_cell(width: f32, text: impl Into<gpui_kit::gpui::SharedString>) -> AnyE
         .flex_shrink_0()
         .w(px(width))
         .h(px(ROW_HEIGHT_PX))
+        .flex()
+        .items_center()
+        .pl(px(8.))
         .overflow_hidden()
         .whitespace_nowrap()
         .child(text.into())
@@ -335,15 +738,14 @@ fn level_cell(level: LogLevel, theme: &TuiTheme, width: f32) -> AnyElement {
         .overflow_hidden();
     if let Some((bg, fg)) = level_pill_colors(&level, theme) {
         cell = cell.child(
-            div()
-                .flex_shrink_0()
-                .px(px(6.))
-                .py(px(1.))
-                .rounded(px(6.))
-                .bg(bg)
-                .text_color(fg)
-                .whitespace_nowrap()
-                .child(format!("{level:?}").to_uppercase()),
+            Tag::custom(bg.into(), fg.into(), bg.into())
+                .small()
+                .rounded(px(5.))
+                .child(if level == LogLevel::Warning {
+                    "WARN".to_string()
+                } else {
+                    format!("{level:?}").to_uppercase()
+                }),
         );
     }
     cell.into_any_element()
@@ -353,20 +755,62 @@ fn level_cell(level: LogLevel, theme: &TuiTheme, width: f32) -> AnyElement {
 /// `resolve_line_style`, same logic `styled_line_row` already had, just
 /// nested one cell deeper (`.flex_1()` instead of `.w_full()`) instead of
 /// being the whole row.
-fn message_cell(tab: &TabState, bytes: &[u8]) -> AnyElement {
+fn message_cell(tab: &TabState, bytes: &[u8], theme: &TuiTheme) -> AnyElement {
     match resolve_line_style(
         bytes,
         tab.log_manager.get_filters(),
         tab.log_manager.get_group_styles(),
     ) {
         Some(style) => styled_message_cell(bytes, &style),
-        None => div()
-            .flex_1()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .child(String::from_utf8_lossy(bytes).into_owned())
-            .into_any_element(),
+        None => value_message_cell(bytes, theme),
     }
+}
+
+/// Reuse the TUI's value detection and theme colors. Explicit filter
+/// highlights take precedence over these automatic syntax accents.
+fn value_message_cell(bytes: &[u8], theme: &TuiTheme) -> AnyElement {
+    use crate::shared::value_colors::*;
+    let text = String::from_utf8_lossy(bytes);
+    let spans = collect_value_color_spans(&text, &theme.value_colors);
+    let colors = &theme.value_colors;
+    let mut cell = div()
+        .flex()
+        .items_center()
+        .flex_1()
+        .min_w(px(0.))
+        .overflow_hidden()
+        .whitespace_nowrap();
+    let mut position = 0;
+    for (start, end, style) in spans {
+        if start > position {
+            cell = cell.child(text_segment(text[position..start].as_bytes(), None, None));
+        }
+        let color = match style {
+            VALUE_STYLE_HTTP_GET => colors.http_get,
+            VALUE_STYLE_HTTP_POST => colors.http_post,
+            VALUE_STYLE_HTTP_PUT => colors.http_put,
+            VALUE_STYLE_HTTP_DELETE => colors.http_delete,
+            VALUE_STYLE_HTTP_PATCH => colors.http_patch,
+            VALUE_STYLE_HTTP_OTHER => colors.http_other,
+            VALUE_STYLE_STATUS_2XX => colors.status_2xx,
+            VALUE_STYLE_STATUS_3XX => colors.status_3xx,
+            VALUE_STYLE_STATUS_4XX => colors.status_4xx,
+            VALUE_STYLE_STATUS_5XX => colors.status_5xx,
+            VALUE_STYLE_IP => colors.ip_address,
+            VALUE_STYLE_UUID => colors.uuid,
+            _ => theme.text,
+        };
+        cell = cell.child(text_segment(
+            text[start..end].as_bytes(),
+            color_to_gpui(color),
+            None,
+        ));
+        position = end;
+    }
+    if position < text.len() {
+        cell = cell.child(text_segment(text[position..].as_bytes(), None, None));
+    }
+    cell.into_any_element()
 }
 
 /// Splits a line into alternating plain/highlighted text segments so
@@ -389,6 +833,7 @@ fn styled_message_cell(bytes: &[u8], style: &LineStyle) -> AnyElement {
         .flex_1()
         .h(px(ROW_HEIGHT_PX))
         .flex()
+        .items_center()
         .overflow_hidden()
         .whitespace_nowrap();
     let mut pos = 0usize;
@@ -424,9 +869,8 @@ fn text_segment(bytes: &[u8], fg: Option<Rgba>, bg: Option<Rgba>) -> AnyElement 
 mod tests {
     use super::*;
     use crate::db::{Database, LogManager};
+    use crate::gui::column_widths::ColumnWidths;
     use crate::ingestion::FileReader;
-    use crate::mode::normal_mode::NormalMode;
-    use crate::mode::visual_mode::VisualLineMode;
     use std::sync::Arc;
 
     async fn tab() -> TabState {
@@ -434,6 +878,46 @@ mod tests {
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, None).await;
         TabState::new(reader, log_manager, "test.log".to_string())
+    }
+
+    #[tokio::test]
+    async fn message_column_fills_remaining_space_and_tracks_visible_columns() {
+        let mut tab = tab().await;
+        tab.display.raw_mode = true;
+        tab.display.show_line_numbers = false;
+        let widths = TableWidths::from(ColumnWidths::default());
+        assert_eq!(message_width(&tab, &[], &widths, 1200.), 1192.);
+        assert_eq!(message_width(&tab, &[], &widths, 800.), 792.);
+        tab.display.show_line_numbers = true;
+        assert_eq!(
+            message_width(&tab, &[], &widths, 1200.),
+            1186. - widths.line_no
+        );
+        assert_eq!(message_width(&tab, &[], &widths, 80.), 160.);
+    }
+
+    #[tokio::test]
+    async fn resizing_recalculates_wrapped_row_heights() {
+        let mut tab = tab().await;
+        tab.file_reader =
+            FileReader::from_bytes(format!("{}\n", "x".repeat(120)).repeat(5).into_bytes());
+        tab.display.raw_mode = true;
+        tab.display.wrap = true;
+        let mut cache = None;
+        let widths = TableWidths::from(ColumnWidths::default());
+        let narrow = item_sizes(&mut cache, &tab, &widths, &[], 600.);
+        let wide = item_sizes(&mut cache, &tab, &widths, &[], 1000.);
+        assert!(!Rc::ptr_eq(&narrow, &wide));
+        assert_eq!(
+            wrapped_height(&tab, 0, &["message".into()], &widths, 600.),
+            ROW_HEIGHT_PX * 2.
+        );
+        assert_eq!(
+            wrapped_height(&tab, 0, &["message".into()], &widths, 1000.),
+            ROW_HEIGHT_PX
+        );
+        let same = item_sizes(&mut cache, &tab, &widths, &[], 1000.);
+        assert!(Rc::ptr_eq(&wide, &same));
     }
 
     /// A tab backed by `Storage::Paged` (how real large files load), to
@@ -460,7 +944,16 @@ mod tests {
     async fn line_row_does_not_panic_for_paged_storage() {
         let tab = paged_tab().await;
         let theme = TuiTheme::default();
-        let _ = line_row(&tab, 0, false, false, &theme, ColumnWidths::default());
+        let _ = line_row(
+            &tab,
+            0,
+            false,
+            false,
+            &theme,
+            &TableWidths::from(ColumnWidths::default()),
+            &[],
+            600.,
+        );
     }
 
     #[tokio::test]
@@ -471,7 +964,16 @@ mod tests {
         // introspection in this test module to assert the exact colors.
         let tab = paged_tab().await;
         let theme = TuiTheme::default();
-        let _ = line_row(&tab, 0, false, true, &theme, ColumnWidths::default());
+        let _ = line_row(
+            &tab,
+            0,
+            false,
+            true,
+            &theme,
+            &TableWidths::from(ColumnWidths::default()),
+            &[],
+            600.,
+        );
     }
 
     #[tokio::test]
@@ -500,38 +1002,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_selection_outside_visual_line_mode() {
-        let mut t = tab().await;
-        t.interaction.mode = Box::new(NormalMode::default());
-        assert_eq!(visual_line_selection(&t), None);
+    async fn all_fields_default_to_visible_and_commands_can_hide_and_reorder() {
+        let mut tab = tab().await;
+        tab.display.format = Some(Arc::new(crate::parser::SyslogParser::default()));
+        let bytes = b"<134>Oct 11 22:14:15 myhost sshd[1234]: Accepted password";
+        let fields = tab
+            .display
+            .format
+            .as_ref()
+            .unwrap()
+            .collect_field_names(&[bytes.as_slice()]);
+        assert_eq!(visible_columns(&tab, &fields), fields);
+        assert!(fields.contains(&"target".to_string()));
+        tab.display.hidden_fields.insert("target".to_string());
+        assert!(!visible_columns(&tab, &fields).contains(&"target".to_string()));
+        tab.display.field_layout.columns =
+            Some(vec!["message".to_string(), "timestamp".to_string()]);
+        assert_eq!(visible_columns(&tab, &fields)[0], "message");
     }
 
-    #[tokio::test]
-    async fn selection_spans_anchor_to_cursor_in_either_direction() {
-        let mut t = tab().await;
-        t.scroll.scroll_offset = 3;
-        t.interaction.mode = Box::new(VisualLineMode {
-            anchor: 1,
-            count: None,
-        });
-        assert_eq!(visual_line_selection(&t), Some((1, 3)));
-
-        t.scroll.scroll_offset = 0;
-        t.interaction.mode = Box::new(VisualLineMode {
-            anchor: 4,
-            count: None,
-        });
-        assert_eq!(visual_line_selection(&t), Some((0, 4)));
+    #[test]
+    fn wrapping_preserves_unicode_and_allocates_multiple_visual_lines() {
+        assert_eq!(wrap_text("東京abc", 22.), vec!["東", "京a", "bc"]);
+        assert_eq!(wrap_text("a\nb", 100.), vec!["a", "b"]);
     }
-
     #[tokio::test]
-    async fn selection_is_a_single_line_when_anchor_equals_cursor() {
+    async fn raw_display_bypasses_parser_and_columns() {
         let mut t = tab().await;
-        t.scroll.scroll_offset = 2;
-        t.interaction.mode = Box::new(VisualLineMode {
-            anchor: 2,
-            count: None,
-        });
-        assert_eq!(visual_line_selection(&t), Some((2, 2)));
+        t.display.raw_mode = true;
+        assert_eq!(visible_columns(&t, &["level".into()]), vec!["message"]);
+        assert_eq!(row_message_bytes(&t, b"raw text"), b"raw text");
+    }
+    #[tokio::test]
+    async fn unstructured_and_merged_field_lists_keep_the_raw_message_column() {
+        let tab = tab().await;
+        assert_eq!(visible_columns(&tab, &[]), vec!["message"]);
+        assert_eq!(
+            visible_columns(&tab, &["source".to_string()]),
+            vec!["source", "message"]
+        );
     }
 }

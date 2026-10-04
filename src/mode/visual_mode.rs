@@ -1,15 +1,21 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
 use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
 use crate::{
-    config::Keybindings,
-    mode::app_mode::{Mode, ModeRenderState, status_entry},
+    mode::app_mode::{Mode, ModeRenderState},
     mode::comment_mode::CommentMode,
     mode::normal_mode::NormalMode,
     mode::search_mode::SearchMode,
-    theme::Theme,
-    ui::{KeyResult, TabState},
+    shared::{KeyResult, TabState},
 };
 use async_trait::async_trait;
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 #[derive(Debug)]
@@ -183,6 +189,7 @@ impl Mode for VisualLineMode {
         (self, KeyResult::Ignored)
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let label = match self.count {
             Some(n) => format!("[VISUAL] {}  ", n),
@@ -248,7 +255,7 @@ mod tests {
     use crate::db::LogManager;
     use crate::ingestion::FileReader;
     use crate::mode::app_mode::ModeRenderState;
-    use crate::ui::TabState;
+    use crate::shared::TabState;
     use std::sync::Arc;
 
     async fn make_tab(lines: &[&str]) -> TabState {
@@ -386,6 +393,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_mode_bar_content_contains_yank() {
         let mode = VisualLineMode {
             anchor: 0,

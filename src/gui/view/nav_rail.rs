@@ -7,10 +7,10 @@ use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div, px};
 
-const NAV_ITEM_HEIGHT: f32 = 36.0;
+const NAV_ITEM_HEIGHT: f32 = 40.0;
 // Wide enough for icon + the longest label ("Annotations") + a count
 // badge to all sit on one line without truncating.
-const NAV_RAIL_WIDTH: f32 = 168.0;
+pub(super) const NAV_RAIL_WIDTH: f32 = 168.0;
 
 /// The active tab's bookmark count, for the nav rail's `Bookmarks` badge —
 /// scoped to the active tab, same as every other per-tab panel (filters,
@@ -30,9 +30,10 @@ pub fn nav_rail(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
         .flex()
         .flex_col()
         .gap_1()
-        .py(px(8.))
+        .py(px(16.))
         .w(px(NAV_RAIL_WIDTH))
         .h_full()
+        .bg(cx.theme().sidebar)
         .overflow_hidden()
         .border_r_1()
         .border_color(cx.theme().border)
@@ -57,7 +58,12 @@ pub fn nav_rail(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
             "Annotations",
             NavPage::Annotations,
             state.nav_page == NavPage::Annotations,
-            None,
+            Some(
+                state
+                    .active_tab()
+                    .map(|tab| tab.comment_manager.get().len())
+                    .unwrap_or(0),
+            ),
             cx,
         ))
         .child(nav_item(
@@ -98,11 +104,14 @@ fn nav_item(
         .flex()
         .items_center()
         .gap_2()
-        .mx(px(4.))
+        .mx(px(8.))
         .px(px(8.))
         .rounded(px(6.))
         .h(px(NAV_ITEM_HEIGHT))
         .overflow_hidden()
+        .text_color(cx.theme().muted_foreground)
+        .cursor_pointer()
+        .hover(|style| style.bg(cx.theme().accent))
         .child(Icon::new(icon))
         .child(div().flex_1().min_w(px(0.)).truncate().child(label))
         .on_click(
@@ -114,7 +123,9 @@ fn nav_item(
         item = item.child(Badge::new().count(count));
     }
     if active {
-        item = item.bg(cx.theme().accent);
+        item = item
+            .bg(cx.theme().accent)
+            .text_color(cx.theme().accent_foreground);
     }
     item
 }
@@ -139,7 +150,7 @@ mod tests {
         let mut state = GuiState::new(db);
         let reader = FileReader::from_bytes(b"a\nb\nc\n".to_vec());
         let log_manager = crate::db::LogManager::new(Arc::clone(&state.db), None).await;
-        let mut tab = crate::ui::TabState::new(reader, log_manager, "test.log".to_string());
+        let mut tab = crate::shared::TabState::new(reader, log_manager, "test.log".to_string());
         tab.mark_manager.toggle(0);
         tab.mark_manager.toggle(2);
         state.tabs.push(tab);

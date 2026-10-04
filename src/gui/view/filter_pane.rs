@@ -3,29 +3,18 @@ use crate::gui::app::App;
 use crate::gui::color::{filter_row_bg_color, filter_row_color, group_tag_color};
 use crate::gui::message::Message;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::Icon;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::Sizable;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{Context, Window, div};
+use gpui_kit::gpui::{Context, Empty, Window, div, px};
 
-/// `FilterManagementMode`'s live state, needed to render the sidebar's
-/// selection cursor and live search narrowing while that mode is active.
-pub struct FilterManagementView {
-    pub selected_index: usize,
-    pub search: String,
-    pub searching: bool,
-}
-
-/// The active tab's filter list — a passive display (managed via the `:`
-/// command bar and each row's own checkbox) unless `management` is
-/// `Some`, in which case it also shows `FilterManagementMode`'s selection
-/// cursor and search narrowing.
+/// Native filter controls: add, edit, enable, remove, and drag to reorder.
 pub fn filter_pane(
     tab_idx: usize,
     filter_defs: &[FilterDef],
     group_defs: &[GroupDef],
-    management: Option<&FilterManagementView>,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let mut col = div().flex().flex_col().gap_2().child(
@@ -36,6 +25,7 @@ pub fn filter_pane(
             .child(format!("Active Filters ({})", filter_defs.len()))
             .child(
                 Button::new("clear-all-filters")
+                    .ghost()
                     .label("Clear all")
                     .tooltip("Remove every active filter")
                     .on_click(
@@ -45,20 +35,44 @@ pub fn filter_pane(
                     ),
             ),
     );
-    if let Some(mgmt) = management {
-        col = col.child(if mgmt.searching {
-            format!("/{}", mgmt.search)
-        } else {
-            "[FILTER MODE]".to_string()
-        });
-    }
-    for (idx, def) in filter_defs.iter().enumerate() {
-        let selected = management.is_some_and(|mgmt| mgmt.selected_index == idx);
-        col = col.child(filter_row(tab_idx, def, group_defs, selected, cx));
+    col = col.child(
+        Button::new("add-filter")
+            .ghost()
+            .label("Add filter")
+            .on_click(cx.listener(|app, _, window, cx| {
+                app.dispatch(
+                    Message::GuiAction(crate::gui::actions::Action::Filter),
+                    window,
+                    cx,
+                )
+            })),
+    );
+    for def in filter_defs {
+        col = col.child(filter_row(tab_idx, def, group_defs, false, cx));
     }
     col
 }
 
+pub(crate) fn display_pattern(pattern: &str) -> String {
+    if let Some(expr) = pattern
+        .strip_prefix(crate::filters::FIELD_PREFIX)
+        .and_then(|e| crate::filters::parse_field_filter_expr(e).ok())
+    {
+        let mut parts: Vec<String> = expr
+            .0
+            .into_iter()
+            .map(|(k, v)| format!("{k} equals {v}"))
+            .collect();
+        if let Some(text) = expr.1 {
+            parts.push(format!("text contains {text}"));
+        }
+        parts.join(" · ")
+    } else if let Some(date) = pattern.strip_prefix(crate::filters::DATE_PREFIX) {
+        format!("Time {date}")
+    } else {
+        pattern.into()
+    }
+}
 fn filter_row(
     tab_idx: usize,
     def: &FilterDef,
@@ -70,7 +84,7 @@ fn filter_row(
     let pattern_color = filter_row_color(def, group_defs);
     let pattern_bg = filter_row_bg_color(def, group_defs);
     let tag_color = group_tag_color(def, group_defs);
-    let mut pattern_text = div().child(def.pattern.clone());
+    let mut pattern_text = div().child(display_pattern(&def.pattern));
     if let Some(bg) = pattern_bg {
         pattern_text = pattern_text.bg(bg);
     }
@@ -82,11 +96,35 @@ fn filter_row(
         tag_text = tag_text.text_color(color);
     }
     div()
+        .id(("filter-row", id))
+        .on_drop(
+            cx.listener(move |app: &mut App, drag: &FilterDrag, window, cx| {
+                if drag.tab_idx == tab_idx {
+                    app.dispatch(Message::FilterReordered(tab_idx, drag.id, id), window, cx);
+                }
+            }),
+        )
+        .drag_over::<FilterDrag>(|style, _, _, cx| style.border_color(cx.theme().primary))
         .flex()
         .flex_wrap()
         .items_center()
         .gap_2()
-        .child(if selected { "> " } else { "  " })
+        .p(px(10.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(if selected {
+            cx.theme().primary
+        } else {
+            cx.theme().border
+        })
+        .bg(cx.theme().secondary)
+        .child(
+            div()
+                .id(("filter-drag", id))
+                .cursor_pointer()
+                .child(Icon::new(IconName::GripVertical))
+                .on_drag(FilterDrag { tab_idx, id }, |_, _, _, cx| cx.new(|_| Empty)),
+        )
         .child(
             Checkbox::new(("filter-toggle", id))
                 .checked(def.enabled)
@@ -96,12 +134,22 @@ fn filter_row(
                     }),
                 ),
         )
+        .child(
+            Button::new(("filter-edit", id))
+                .ghost()
+                .small()
+                .label("Edit")
+                .on_click(cx.listener(move |app, _, window, cx| {
+                    app.dispatch(Message::EditFilter(id), window, cx)
+                })),
+        )
         .child(filter_type_label(&def.filter_type))
         .child(tag_text)
-        .child(pattern_text)
+        .child(div().flex_1().min_w(px(0.)).child(pattern_text))
         .child(ignore_case_tag(def.ignore_case))
         .child(
             Button::new(("filter-remove", id))
+                .ghost()
                 .icon(Icon::new(IconName::X))
                 .tooltip("Remove filter")
                 .on_click(
@@ -110,6 +158,12 @@ fn filter_row(
                     }),
                 ),
         )
+}
+
+#[derive(Clone)]
+struct FilterDrag {
+    tab_idx: usize,
+    id: usize,
 }
 
 /// Abbreviated filter-type label, matching the TUI sidebar's row format.

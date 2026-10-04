@@ -7,20 +7,50 @@ use crate::input::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
 
 pub enum Message {
+    DismissNotification(u64),
+    GuiFinished(u64, Result<String, String>),
+    GuiAction(crate::gui::actions::Action),
+    EditFilter(usize),
+    EditGroup(String),
+    EditorText(usize, String),
+    EditorToggle(usize),
+    EditorKind(crate::filters::FilterType),
+    EditorField(usize),
+    EditorMember(usize),
+    EditorMove(usize, isize),
+    EditorAll(bool),
+    EditorReset,
+    EditorConditionAdd,
+    EditorConditionRemove(usize),
+    EditorPreview(String),
+    EditorApply,
+    EditorNavigate(crate::gui::actions::Action),
+    EditorCancel,
+    GuiCommand(crate::commands::Commands, String),
+    SearchNext(bool),
+    SelectLog(usize, bool),
+    OpenCommands,
+    PaletteEdited(String),
+    PaletteKey(KeyCode, KeyModifiers),
+    PaletteInsert(usize),
+    PaletteSubmit,
+    PaletteClose,
+    PaletteClear,
+    PaletteExecuted(u64, crate::shared::TabId, Result<LogManager, String>),
     OpenFileDialog,
     FileDialogResult(Option<PathBuf>),
     FileLoaded(Result<FileLoaded, String>),
     TabSelected(usize),
     TabClosed(usize),
-    /// Routed into the active tab's real `Mode::handle_key` — see
-    /// `gui::update::dispatch_key`. Command-mode text entry, search
-    /// queries, filter/group-management navigation, and every other
-    /// mode's input all flow through this one variant now, same as the
-    /// TUI's single crossterm key-event entry point.
+    /// Legacy key messages are ignored; native controls own GUI input.
     KeyPressed(KeyCode, KeyModifiers),
+    /// Native input edits reuse the same incremental search engine.
+    SearchEdited(String),
     CommandExecuted(usize, Result<LogManager, String>),
 
     FilterToggled(usize, usize),
+    FilterReordered(usize, usize, usize),
+    FilterPersistenceFailed(String),
     FiltersMutated(usize, LogManager),
 
     GroupToggled(usize, String),
@@ -59,5 +89,5 @@ pub struct FileLoaded {
     pub path: PathBuf,
     pub reader: FileReader,
     pub log_manager: LogManager,
-    pub watch: crate::ui::FileWatchState,
+    pub watch: crate::shared::FileWatchState,
 }

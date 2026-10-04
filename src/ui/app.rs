@@ -954,7 +954,7 @@ mod tests {
             !cc.match_only,
             "match_only should be preserved when -l is not passed"
         );
-        assert_eq!(cc.fg, Some(ratatui::style::Color::Blue));
+        assert_eq!(cc.fg, Some(crate::style::Color::Blue));
     }
 
     #[tokio::test]

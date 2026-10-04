@@ -2,8 +2,8 @@ use crate::filters::{
     FilterDecision, FilterDef, GroupDef, MatchCollector, build_filter, effective_color_config,
     group_style,
 };
+use crate::style::Color;
 use gpui_kit::gpui::Rgba;
-use ratatui::style::Color as RatatuiColor;
 
 /// A log line's resolved highlight: a color plus exactly which byte
 /// ranges of the line it applies to. A line-mode (`-l`) filter produces
@@ -22,7 +22,7 @@ pub struct LineStyle {
 /// its group's, if it has one.
 pub fn filter_row_color(def: &FilterDef, group_defs: &[GroupDef]) -> Option<Rgba> {
     let cc = effective_color_config(def, group_defs)?;
-    ratatui_color_to_gpui(cc.fg?)
+    color_to_gpui(cc.fg?)
 }
 
 /// The background color a filter row should render with — mirrors
@@ -30,7 +30,7 @@ pub fn filter_row_color(def: &FilterDef, group_defs: &[GroupDef]) -> Option<Rgba
 /// group's) for `bg` instead of `fg`.
 pub fn filter_row_bg_color(def: &FilterDef, group_defs: &[GroupDef]) -> Option<Rgba> {
     let cc = effective_color_config(def, group_defs)?;
-    ratatui_color_to_gpui(cc.bg?)
+    color_to_gpui(cc.bg?)
 }
 
 /// The color a filter's `[group]` tag renders with: the group's own
@@ -40,19 +40,19 @@ pub fn filter_row_bg_color(def: &FilterDef, group_defs: &[GroupDef]) -> Option<R
 pub fn group_tag_color(def: &FilterDef, group_defs: &[GroupDef]) -> Option<Rgba> {
     let name = def.group.as_deref()?;
     let cc = group_style(group_defs, name)?;
-    ratatui_color_to_gpui(cc.fg?)
+    color_to_gpui(cc.fg?)
 }
 
 /// The foreground color a group row should render with, from its own
 /// predefined style (groups have no fallback of their own to inherit from).
 pub fn group_row_color(def: &GroupDef) -> Option<Rgba> {
-    ratatui_color_to_gpui(def.color_config.as_ref()?.fg?)
+    color_to_gpui(def.color_config.as_ref()?.fg?)
 }
 
 /// The background color a group row should render with, from its own
 /// predefined style.
 pub fn group_row_bg_color(def: &GroupDef) -> Option<Rgba> {
-    ratatui_color_to_gpui(def.color_config.as_ref()?.bg?)
+    color_to_gpui(def.color_config.as_ref()?.bg?)
 }
 
 /// Resolves a log line's full highlight styling — color plus exactly
@@ -93,34 +93,34 @@ pub fn resolve_line_style(
                 return None;
             }
             Some(LineStyle {
-                fg: cc.fg.and_then(ratatui_color_to_gpui),
-                bg: cc.bg.and_then(ratatui_color_to_gpui),
+                fg: cc.fg.and_then(color_to_gpui),
+                bg: cc.bg.and_then(color_to_gpui),
                 spans: collector.spans.iter().map(|s| (s.start, s.end)).collect(),
             })
         })
 }
 
-pub fn ratatui_color_to_gpui(color: RatatuiColor) -> Option<Rgba> {
+pub fn color_to_gpui(color: Color) -> Option<Rgba> {
     let (r, g, b) = match color {
-        RatatuiColor::Reset => return None,
-        RatatuiColor::Black => (0, 0, 0),
-        RatatuiColor::Red => (128, 0, 0),
-        RatatuiColor::Green => (0, 128, 0),
-        RatatuiColor::Yellow => (128, 128, 0),
-        RatatuiColor::Blue => (0, 0, 128),
-        RatatuiColor::Magenta => (128, 0, 128),
-        RatatuiColor::Cyan => (0, 128, 128),
-        RatatuiColor::Gray => (192, 192, 192),
-        RatatuiColor::DarkGray => (128, 128, 128),
-        RatatuiColor::LightRed => (255, 0, 0),
-        RatatuiColor::LightGreen => (0, 255, 0),
-        RatatuiColor::LightYellow => (255, 255, 0),
-        RatatuiColor::LightBlue => (0, 0, 255),
-        RatatuiColor::LightMagenta => (255, 0, 255),
-        RatatuiColor::LightCyan => (0, 255, 255),
-        RatatuiColor::White => (255, 255, 255),
-        RatatuiColor::Rgb(r, g, b) => (r, g, b),
-        RatatuiColor::Indexed(i) => indexed_to_rgb(i),
+        Color::Reset => return None,
+        Color::Black => (0, 0, 0),
+        Color::Red => (128, 0, 0),
+        Color::Green => (0, 128, 0),
+        Color::Yellow => (128, 128, 0),
+        Color::Blue => (0, 0, 128),
+        Color::Magenta => (128, 0, 128),
+        Color::Cyan => (0, 128, 128),
+        Color::Gray => (192, 192, 192),
+        Color::DarkGray => (128, 128, 128),
+        Color::LightRed => (255, 0, 0),
+        Color::LightGreen => (0, 255, 0),
+        Color::LightYellow => (255, 255, 0),
+        Color::LightBlue => (0, 0, 255),
+        Color::LightMagenta => (255, 0, 255),
+        Color::LightCyan => (0, 255, 255),
+        Color::White => (255, 255, 255),
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Indexed(i) => indexed_to_rgb(i),
     };
     Some(rgba_from_u8(r, g, b))
 }
@@ -180,7 +180,7 @@ mod tests {
     use super::*;
     use crate::filters::{ColorConfig, FilterType};
 
-    fn filter_def(pattern: &str, fg: Option<RatatuiColor>, group: Option<&str>) -> FilterDef {
+    fn filter_def(pattern: &str, fg: Option<Color>, group: Option<&str>) -> FilterDef {
         FilterDef {
             id: 1,
             pattern: pattern.to_string(),
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn filter_row_color_uses_own_color() {
-        let def = filter_def("ERROR", Some(RatatuiColor::Red), None);
+        let def = filter_def("ERROR", Some(Color::Red), None);
         assert_eq!(filter_row_color(&def, &[]), Some(rgba_from_u8(128, 0, 0)));
     }
 
@@ -209,7 +209,7 @@ mod tests {
         let group = GroupDef {
             name: "errors".to_string(),
             color_config: Some(ColorConfig {
-                fg: Some(RatatuiColor::Blue),
+                fg: Some(Color::Blue),
                 bg: None,
                 match_only: true,
             }),
@@ -223,11 +223,11 @@ mod tests {
 
     #[test]
     fn group_tag_color_uses_the_groups_own_style_not_the_filters() {
-        let def = filter_def("ERROR", Some(RatatuiColor::Cyan), Some("errors"));
+        let def = filter_def("ERROR", Some(Color::Cyan), Some("errors"));
         let group = GroupDef {
             name: "errors".to_string(),
             color_config: Some(ColorConfig {
-                fg: Some(RatatuiColor::Blue),
+                fg: Some(Color::Blue),
                 bg: None,
                 match_only: true,
             }),
@@ -266,7 +266,7 @@ mod tests {
             enabled: true,
             color_config: Some(ColorConfig {
                 fg: None,
-                bg: Some(RatatuiColor::Blue),
+                bg: Some(Color::Blue),
                 match_only: true,
             }),
             use_regex: false,
@@ -286,7 +286,7 @@ mod tests {
             name: "errors".to_string(),
             color_config: Some(ColorConfig {
                 fg: None,
-                bg: Some(RatatuiColor::Red),
+                bg: Some(Color::Red),
                 match_only: true,
             }),
             enabled: true,
@@ -302,7 +302,7 @@ mod tests {
         let group = GroupDef {
             name: "errors".to_string(),
             color_config: Some(ColorConfig {
-                fg: Some(RatatuiColor::Green),
+                fg: Some(Color::Green),
                 bg: None,
                 match_only: true,
             }),
@@ -323,7 +323,7 @@ mod tests {
             name: "errors".to_string(),
             color_config: Some(ColorConfig {
                 fg: None,
-                bg: Some(RatatuiColor::Green),
+                bg: Some(Color::Green),
                 match_only: true,
             }),
             enabled: true,
@@ -337,11 +337,7 @@ mod tests {
         assert_eq!(group_row_bg_color(&group), None);
     }
 
-    fn filter_def_with_colors(
-        pattern: &str,
-        fg: Option<RatatuiColor>,
-        bg: Option<RatatuiColor>,
-    ) -> FilterDef {
+    fn filter_def_with_colors(pattern: &str, fg: Option<Color>, bg: Option<Color>) -> FilterDef {
         FilterDef {
             id: 1,
             pattern: pattern.to_string(),
@@ -362,8 +358,8 @@ mod tests {
     fn resolve_line_style_returns_both_fg_and_bg_from_the_same_filter() {
         let defs = vec![filter_def_with_colors(
             "ERROR",
-            Some(RatatuiColor::Red),
-            Some(RatatuiColor::Blue),
+            Some(Color::Red),
+            Some(Color::Blue),
         )];
         let style = resolve_line_style(b"ERROR: something broke", &defs, &[]).unwrap();
         assert_eq!(style.fg, Some(rgba_from_u8(128, 0, 0)));
@@ -372,11 +368,7 @@ mod tests {
 
     #[test]
     fn resolve_line_style_supports_a_background_only_filter() {
-        let defs = vec![filter_def_with_colors(
-            "ERROR",
-            None,
-            Some(RatatuiColor::Blue),
-        )];
+        let defs = vec![filter_def_with_colors("ERROR", None, Some(Color::Blue))];
         let style = resolve_line_style(b"ERROR: something broke", &defs, &[]).unwrap();
         assert_eq!(style.fg, None);
         assert_eq!(style.bg, Some(rgba_from_u8(0, 0, 128)));
@@ -386,8 +378,8 @@ mod tests {
     fn resolve_line_style_is_none_when_nothing_matches() {
         let defs = vec![filter_def_with_colors(
             "ERROR",
-            Some(RatatuiColor::Red),
-            Some(RatatuiColor::Blue),
+            Some(Color::Red),
+            Some(Color::Blue),
         )];
         assert!(resolve_line_style(b"all good here", &defs, &[]).is_none());
     }
@@ -398,7 +390,7 @@ mod tests {
         // `match_only: true` unless `-l` was passed — the GUI must only
         // highlight the matched substring, not the whole line, exactly
         // like the TUI.
-        let defs = vec![filter_def("ERROR", Some(RatatuiColor::Red), None)];
+        let defs = vec![filter_def("ERROR", Some(Color::Red), None)];
         let line = b"before ERROR after";
         let style = resolve_line_style(line, &defs, &[]).unwrap();
         assert_eq!(style.spans, vec![(7, 12)]);
@@ -413,7 +405,7 @@ mod tests {
             filter_type: FilterType::Include,
             enabled: true,
             color_config: Some(ColorConfig {
-                fg: Some(RatatuiColor::Red),
+                fg: Some(Color::Red),
                 bg: None,
                 match_only: false,
             }),
@@ -428,20 +420,20 @@ mod tests {
 
     #[test]
     fn resolve_line_style_matches_first_styled_enabled_filter() {
-        let defs = vec![filter_def("ERROR", Some(RatatuiColor::Red), None)];
+        let defs = vec![filter_def("ERROR", Some(Color::Red), None)];
         let style = resolve_line_style(b"ERROR: something broke", &defs, &[]).unwrap();
         assert_eq!(style.fg, Some(rgba_from_u8(128, 0, 0)));
     }
 
     #[test]
     fn resolve_line_style_is_none_when_no_filter_matches() {
-        let defs = vec![filter_def("ERROR", Some(RatatuiColor::Red), None)];
+        let defs = vec![filter_def("ERROR", Some(Color::Red), None)];
         assert!(resolve_line_style(b"all good here", &defs, &[]).is_none());
     }
 
     #[test]
     fn resolve_line_style_ignores_disabled_filters() {
-        let mut def = filter_def("ERROR", Some(RatatuiColor::Red), None);
+        let mut def = filter_def("ERROR", Some(Color::Red), None);
         def.enabled = false;
         assert!(resolve_line_style(b"ERROR: something broke", &[def], &[]).is_none());
     }
@@ -458,7 +450,7 @@ mod tests {
         let group = GroupDef {
             name: "errors".to_string(),
             color_config: Some(ColorConfig {
-                fg: Some(RatatuiColor::Magenta),
+                fg: Some(Color::Magenta),
                 bg: None,
                 match_only: true,
             }),
@@ -470,32 +462,32 @@ mod tests {
 
     #[test]
     fn reset_has_no_gpui_equivalent() {
-        assert_eq!(ratatui_color_to_gpui(RatatuiColor::Reset), None);
+        assert_eq!(color_to_gpui(Color::Reset), None);
     }
 
     #[test]
     fn named_colors_map_to_standard_xterm_rgb() {
         let cases = [
-            (RatatuiColor::Black, (0, 0, 0)),
-            (RatatuiColor::Red, (128, 0, 0)),
-            (RatatuiColor::Green, (0, 128, 0)),
-            (RatatuiColor::Yellow, (128, 128, 0)),
-            (RatatuiColor::Blue, (0, 0, 128)),
-            (RatatuiColor::Magenta, (128, 0, 128)),
-            (RatatuiColor::Cyan, (0, 128, 128)),
-            (RatatuiColor::Gray, (192, 192, 192)),
-            (RatatuiColor::DarkGray, (128, 128, 128)),
-            (RatatuiColor::LightRed, (255, 0, 0)),
-            (RatatuiColor::LightGreen, (0, 255, 0)),
-            (RatatuiColor::LightYellow, (255, 255, 0)),
-            (RatatuiColor::LightBlue, (0, 0, 255)),
-            (RatatuiColor::LightMagenta, (255, 0, 255)),
-            (RatatuiColor::LightCyan, (0, 255, 255)),
-            (RatatuiColor::White, (255, 255, 255)),
+            (Color::Black, (0, 0, 0)),
+            (Color::Red, (128, 0, 0)),
+            (Color::Green, (0, 128, 0)),
+            (Color::Yellow, (128, 128, 0)),
+            (Color::Blue, (0, 0, 128)),
+            (Color::Magenta, (128, 0, 128)),
+            (Color::Cyan, (0, 128, 128)),
+            (Color::Gray, (192, 192, 192)),
+            (Color::DarkGray, (128, 128, 128)),
+            (Color::LightRed, (255, 0, 0)),
+            (Color::LightGreen, (0, 255, 0)),
+            (Color::LightYellow, (255, 255, 0)),
+            (Color::LightBlue, (0, 0, 255)),
+            (Color::LightMagenta, (255, 0, 255)),
+            (Color::LightCyan, (0, 255, 255)),
+            (Color::White, (255, 255, 255)),
         ];
         for (input, (r, g, b)) in cases {
             assert_eq!(
-                ratatui_color_to_gpui(input),
+                color_to_gpui(input),
                 Some(rgba_from_u8(r, g, b)),
                 "{input:?}"
             );
@@ -505,7 +497,7 @@ mod tests {
     #[test]
     fn rgb_passes_through_unchanged() {
         assert_eq!(
-            ratatui_color_to_gpui(RatatuiColor::Rgb(10, 20, 30)),
+            color_to_gpui(Color::Rgb(10, 20, 30)),
             Some(rgba_from_u8(10, 20, 30))
         );
     }
@@ -513,16 +505,16 @@ mod tests {
     #[test]
     fn indexed_0_to_15_matches_named_ansi_colors() {
         assert_eq!(
-            ratatui_color_to_gpui(RatatuiColor::Indexed(0)),
-            ratatui_color_to_gpui(RatatuiColor::Black)
+            color_to_gpui(Color::Indexed(0)),
+            color_to_gpui(Color::Black)
         );
         assert_eq!(
-            ratatui_color_to_gpui(RatatuiColor::Indexed(9)),
-            ratatui_color_to_gpui(RatatuiColor::LightRed)
+            color_to_gpui(Color::Indexed(9)),
+            color_to_gpui(Color::LightRed)
         );
         assert_eq!(
-            ratatui_color_to_gpui(RatatuiColor::Indexed(15)),
-            ratatui_color_to_gpui(RatatuiColor::White)
+            color_to_gpui(Color::Indexed(15)),
+            color_to_gpui(Color::White)
         );
     }
 
@@ -530,12 +522,12 @@ mod tests {
     fn indexed_6x6x6_cube_matches_xterm_palette() {
         // Index 196 is the well-known "bright red" in the xterm 256-color cube.
         assert_eq!(
-            ratatui_color_to_gpui(RatatuiColor::Indexed(196)),
+            color_to_gpui(Color::Indexed(196)),
             Some(rgba_from_u8(255, 0, 0))
         );
         // Index 21 is pure blue in the cube (r=0, g=0, b=level 5).
         assert_eq!(
-            ratatui_color_to_gpui(RatatuiColor::Indexed(21)),
+            color_to_gpui(Color::Indexed(21)),
             Some(rgba_from_u8(0, 0, 255))
         );
     }
@@ -543,11 +535,11 @@ mod tests {
     #[test]
     fn indexed_232_to_255_is_grayscale_ramp() {
         assert_eq!(
-            ratatui_color_to_gpui(RatatuiColor::Indexed(232)),
+            color_to_gpui(Color::Indexed(232)),
             Some(rgba_from_u8(8, 8, 8))
         );
         assert_eq!(
-            ratatui_color_to_gpui(RatatuiColor::Indexed(255)),
+            color_to_gpui(Color::Indexed(255)),
             Some(rgba_from_u8(238, 238, 238))
         );
     }

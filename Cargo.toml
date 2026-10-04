@@ -23,8 +23,8 @@ anyhow = { version = "1.0", default-features = false, features = ["std"] }
 libc = { version = "0.2", default-features = false }
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
 regex = { version = "1.10", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
-ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
-crossterm = "0.29"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"], optional = true }
+crossterm = { version = "0.29", optional = true }
 unicode-width = { version = "0.2", default-features = false, features = ["cjk"] }
 serde = { version = "1.0", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
@@ -41,7 +41,8 @@ memchr = { version = "2", default-features = false, features = ["std"] }
 aho-corasick = { version = "1", default-features = false, features = ["std", "perf-literal"] }
 rayon = "1"
 time = { version = "0.3", default-features = false, features = ["std"] }
-arboard = "3"
+arboard = { version = "3", optional = true }
+bitflags = "2"
 tempfile = "3.10"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 zip = { version = "8", default-features = false, features = ["deflate"] }
@@ -75,10 +76,12 @@ harness = false
 [[bench]]
 name = "render_pipeline"
 harness = false
+required-features = ["tui"]
 
 [[bench]]
 name = "headless"
 harness = false
+required-features = ["tui"]
 
 [[bench]]
 name = "paged_file"
@@ -93,9 +96,17 @@ inherits = "release"
 lto = "thin"
 
 [features]
+default = ["tui"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:arboard"]
 gui = ["dep:gpui-kit", "dep:futures"]
+gui-test = ["gui", "gpui-kit/test-support"]
 
 [[bin]]
 name = "logana-gui"
 path = "src/bin/logana_gui.rs"
 required-features = ["gui"]
+
+[[bin]]
+name = "logana"
+path = "src/main.rs"
+required-features = ["tui"]

@@ -1,9 +1,9 @@
+use crate::style::{Color, Modifier, Style};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ratatui::{
     prelude::*,
-    style::Modifier,
     widgets::{
         Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
     },
@@ -501,17 +501,7 @@ fn populate_parse_cache(
     }
 }
 
-/// Classifies a raw captured `level` value via `parser`'s own mapping (e.g. a
-/// custom schema's error/warning value overrides) when a parser is
-/// available, otherwise via the built-in `LogLevel::parse_level` keywords.
-pub(crate) fn classify_level(
-    parser: Option<&dyn crate::parser::LogFormatParser>,
-    raw: &str,
-) -> LogLevel {
-    parser
-        .map(|p| p.classify_level(raw))
-        .unwrap_or_else(|| LogLevel::parse_level(raw))
-}
+pub(crate) use crate::parser::classify_level;
 
 fn stable_hash(s: &str) -> usize {
     s.bytes().fold(5381usize, |acc, b| {
@@ -2402,8 +2392,8 @@ mod tests {
             show_borders: false,
             show_tab_bar: false,
             wrap: false,
-            theme_border: ratatui::style::Color::White,
-            theme_border_title: ratatui::style::Color::White,
+            theme_border: crate::style::Color::White,
+            theme_border_title: crate::style::Color::White,
             extraction_progress: Some(0.5),
             archive_name: "logs.tar.gz".to_string(),
         };

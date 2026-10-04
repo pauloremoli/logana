@@ -1,25 +1,34 @@
 use crate::db::Database;
 use crate::gui::column_widths::ColumnWidths;
 use crate::gui::time_range::TimeRangePreset;
+use crate::shared::TabState;
 use crate::theme::Theme as TuiTheme;
-use crate::ui::TabState;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct GuiState {
+    pub editor: Option<crate::gui::actions::Editor>,
+    pub log_selection: Option<(crate::shared::TabId, usize, usize)>,
+    pub field_discovery: Option<(
+        crate::shared::TabId,
+        u64,
+        usize,
+        crate::commands::auto_complete::FieldIndex,
+    )>,
+    pub palette: crate::gui::palette::Palette,
     pub db: Arc<Database>,
     pub tabs: Vec<TabState>,
     pub active_tab: usize,
     pub status: Option<StatusMessage>,
+    pub notification_revision: u64,
     pub theme: TuiTheme,
     pub nav_page: NavPage,
     pub time_range_open: bool,
     pub time_range_preset: TimeRangePreset,
     pub sidebar_tab: SidebarTab,
     /// Per-field expand/collapse state for the sidebar's "Available
-    /// Filters" facet categories — missing/absent means collapsed, so a
-    /// newly-seen field starts collapsed without needing to be
-    /// pre-populated.
+    /// Filters" facet categories — level/target/service start expanded; other newly-seen fields
+    /// start collapsed. A search temporarily expands matching categories.
     pub facet_expanded: HashMap<String, bool>,
     /// The log table's current column widths — re-fit to content whenever
     /// a file loads (`gui::column_widths::fit_column_widths`), overridden
@@ -67,10 +76,15 @@ pub enum SidebarTab {
 impl GuiState {
     pub fn new(db: Arc<Database>) -> Self {
         Self {
+            palette: Default::default(),
+            editor: None,
+            log_selection: None,
+            field_discovery: None,
             db,
             tabs: Vec::new(),
             active_tab: 0,
             status: None,
+            notification_revision: 0,
             theme: TuiTheme::default(),
             nav_page: NavPage::default(),
             time_range_open: false,
@@ -79,6 +93,17 @@ impl GuiState {
             facet_expanded: HashMap::new(),
             column_widths: ColumnWidths::default(),
             column_resize_last_x: None,
+        }
+    }
+
+    pub fn notify(&mut self, status: StatusMessage) {
+        self.notification_revision = self.notification_revision.wrapping_add(1);
+        self.status = Some(status);
+    }
+
+    pub fn dismiss_notification(&mut self, revision: u64) {
+        if revision == self.notification_revision {
+            self.status = None;
         }
     }
 
@@ -112,7 +137,7 @@ mod tests {
     async fn with_theme_overrides_the_default_theme() {
         let db = Arc::new(Database::in_memory().await.unwrap());
         let theme = TuiTheme {
-            root_bg: ratatui::style::Color::Blue,
+            root_bg: crate::style::Color::Blue,
             ..TuiTheme::default()
         };
         let state = GuiState::new(db).with_theme(theme.clone());

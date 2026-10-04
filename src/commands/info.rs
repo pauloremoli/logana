@@ -1,3 +1,4 @@
+#[derive(Debug)]
 pub struct CommandInfo {
     pub name: &'static str,
     pub usage: &'static str,

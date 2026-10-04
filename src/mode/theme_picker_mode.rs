@@ -1,14 +1,19 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
 use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+use crate::theme::Theme;
 use crate::{
     commands::auto_complete::fuzzy_match,
-    config::Keybindings,
-    mode::app_mode::{Mode, ModeRenderState, status_entry},
+    mode::app_mode::{Mode, ModeRenderState},
     mode::normal_mode::NormalMode,
-    theme::Theme,
-    ui::{KeyResult, TabState},
+    shared::{KeyResult, TabState},
 };
 use async_trait::async_trait;
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 /// Theme picker popup (`:theme`) listing every available theme, narrowed by
@@ -146,6 +151,7 @@ impl Mode for ThemePickerMode {
         }
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, _kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[THEME]  ",
@@ -331,6 +337,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_mode_bar_content_contains_theme_label() {
         let mode = ThemePickerMode::new(entries(&["dracula"]), Theme::default());
         let kb = Keybindings::default();

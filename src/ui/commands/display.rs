@@ -97,7 +97,7 @@ impl App {
             ValueColorEntry, ValueColorGroup as VCGroup, ValueColorsMode,
         };
         let disabled = &self.tabs[self.active_tab].display.level_colors_disabled;
-        let levels: Vec<(&str, &str, ratatui::style::Color)> = vec![
+        let levels: Vec<(&str, &str, crate::style::Color)> = vec![
             ("trace", "TRACE", self.theme.trace_fg),
             ("debug", "DEBUG", self.theme.debug_fg),
             ("info", "INFO", self.theme.info_fg),

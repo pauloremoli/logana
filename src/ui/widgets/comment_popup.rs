@@ -1,6 +1,6 @@
+use crate::style::{Modifier, Style};
 use ratatui::{
     prelude::*,
-    style::Modifier,
     widgets::{Block, Borders, Paragraph},
 };
 

@@ -1,47 +1,24 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
 use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
 use crate::{
     commands::FILE_PATH_COMMANDS,
-    commands::auto_complete::{
-        FieldCompletion, complete_color, complete_field_name, complete_field_value,
-        complete_file_path, complete_flags, extract_color_partial, extract_field_partial,
-        extract_flag_partial, extract_group_partial, find_command_completions, fuzzy_match,
-        shell_split,
-    },
-    config::Keybindings,
     mode::{
-        app_mode::{Mode, ModeRenderState, status_entry},
+        app_mode::{Mode, ModeRenderState},
         filter_mode::FilterManagementMode,
         normal_mode::NormalMode,
     },
-    theme::Theme,
-    ui::{KeyResult, TabState},
+    shared::{KeyResult, TabState},
 };
 use async_trait::async_trait;
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
-
-/// If the input is `export ... -t <partial>` or `--template <partial>`,
-/// returns the partial template name for completion.
-fn extract_template_partial(input: &str) -> Option<&str> {
-    let trimmed = input.trim();
-    if !trimmed.starts_with("export") {
-        return None;
-    }
-    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-    if tokens.len() < 2 {
-        return None;
-    }
-    let last = tokens[tokens.len() - 1];
-    let second_last = tokens[tokens.len() - 2];
-
-    if second_last == "-t" || second_last == "--template" {
-        return Some(last);
-    }
-    if (last == "-t" || last == "--template") && input.ends_with(' ') {
-        return Some("");
-    }
-    None
-}
 
 #[derive(Debug)]
 pub struct CommandMode {
@@ -75,14 +52,6 @@ impl CommandMode {
             .any(|cmd| trimmed.starts_with(&format!("{cmd} ")))
     }
 
-    /// If `input` starts with `cmd` followed by a space, returns the rest as the argument partial.
-    fn arg_partial<'a>(input: &'a str, cmd: &str) -> Option<&'a str> {
-        input
-            .strip_prefix(cmd)
-            .and_then(|rest| rest.strip_prefix(' '))
-            .map(|rest| rest.trim_start())
-    }
-
     /// Compute completions using the active query (original input before Tab cycling) or
     /// the current input when no completion session is in progress.
     fn compute_completions(&self, tab: &TabState) -> Vec<String> {
@@ -94,246 +63,10 @@ impl CommandMode {
     /// Returns completions for whichever tier matches first:
     /// field → color → file path → theme → command name.
     fn completions_for(input: &str, tab: &TabState) -> Vec<String> {
-        let trimmed = input.trim().to_string();
-
-        // Field name/value completion for `filter --field` and `exclude --field`.
-        // Use trim_start() (left-trim only) to preserve any trailing space, which
-        // signals that the preceding token is complete and the next one starts.
-        let input_ls = input.trim_start();
-        if let Some(fc) = extract_field_partial(input_ls) {
-            let field_index = tab.build_field_index();
-            let completions: Vec<String> = match &fc {
-                FieldCompletion::Name(partial) => {
-                    let prefix_end = input_ls.len() - partial.len();
-                    let prefix = &input_ls[..prefix_end];
-                    complete_field_name(partial, &field_index)
-                        .into_iter()
-                        .map(|n| format!("{prefix}{n}="))
-                        .collect()
-                }
-                FieldCompletion::Value { field, partial } => {
-                    let prefix_end = input_ls.len() - partial.len();
-                    let prefix = &input_ls[..prefix_end];
-                    complete_field_value(field, partial, &field_index)
-                        .into_iter()
-                        .map(|v| format!("{prefix}{v}"))
-                        .collect()
-                }
-            };
-            if !completions.is_empty() {
-                return completions;
-            }
-        }
-
-        // Group-name completion for --group/-g arguments
-        if let Some(partial) = extract_group_partial(input_ls) {
-            let completions: Vec<String> = tab
-                .log_manager
-                .group_names()
-                .into_iter()
-                .filter(|g| fuzzy_match(partial, g))
-                .collect();
-            if !completions.is_empty() {
-                let prefix = if partial.is_empty() {
-                    input_ls.to_string()
-                } else {
-                    input_ls[..input_ls.len() - partial.len()].to_string()
-                };
-                return completions
-                    .into_iter()
-                    .map(|g| format!("{}{}", prefix, g))
-                    .collect();
-            }
-        }
-
-        // Flag/parameter completion (fires when last token starts with `-`)
-        if let Some((prefix, partial)) = extract_flag_partial(input) {
-            let cmd = shell_split(input).into_iter().next().unwrap_or_default();
-            let completions = complete_flags(&cmd, &partial);
-            if !completions.is_empty() {
-                return completions
-                    .into_iter()
-                    .map(|f| format!("{}{}", prefix, f))
-                    .collect();
-            }
-        }
-
-        // Color completion for --fg/--bg arguments
-        if let Some(partial) = extract_color_partial(input_ls) {
-            let completions = complete_color(partial);
-            if !completions.is_empty() {
-                let prefix = if partial.is_empty() {
-                    input_ls.to_string()
-                } else {
-                    input_ls[..input_ls.len() - partial.len()].to_string()
-                };
-                return completions
-                    .into_iter()
-                    .map(|c| format!("{}{}", prefix, c))
-                    .collect();
-            }
-        }
-
-        // Template completion for export -t/--template
-        if let Some(partial) = extract_template_partial(&trimmed) {
-            let completions = crate::commands::complete_template(partial);
-            if !completions.is_empty() {
-                let prefix = if partial.is_empty() {
-                    trimmed.clone()
-                } else {
-                    trimmed[..trimmed.len() - partial.len()].to_string()
-                };
-                return completions
-                    .into_iter()
-                    .map(|c| format!("{}{}", prefix, c))
-                    .collect();
-            }
-        }
-
-        // File path completion
-        let input_ltrimmed = input.trim_start();
-        let file_cmd = FILE_PATH_COMMANDS
-            .iter()
-            .find(|cmd| input_ltrimmed.starts_with(&format!("{} ", cmd)));
-        if let Some(&cmd) = file_cmd {
-            let partial = input_ltrimmed[cmd.len()..].trim_start();
-            let default_dir: String;
-            let effective_partial: &str = if partial.is_empty() {
-                default_dir = tab
-                    .log_manager
-                    .source_file()
-                    .and_then(|p| std::path::Path::new(p).parent())
-                    .and_then(|d| d.to_str())
-                    .map(|d| format!("{}/", d))
-                    .unwrap_or_default();
-                &default_dir
-            } else {
-                partial
-            };
-            let completions = complete_file_path(effective_partial);
-            if !completions.is_empty() {
-                return completions
-                    .into_iter()
-                    .map(|c| format!("{} {}", cmd, c))
-                    .collect();
-            }
-            return vec![];
-        }
-
-        // hide-field: complete with all known field names
-        if let Some(partial) = Self::arg_partial(input, "hide-field") {
-            let index = tab.build_field_index();
-            return index
-                .names
-                .iter()
-                .filter(|n| fuzzy_match(partial, n))
-                .map(|n| format!("hide-field {n}"))
-                .collect();
-        }
-
-        // show-field: complete with currently hidden fields (or all if none hidden)
-        if let Some(partial) = Self::arg_partial(input, "show-field") {
-            let candidates: Vec<String> = if tab.display.hidden_fields.is_empty() {
-                tab.build_field_index().names
-            } else {
-                let mut v: Vec<String> = tab.display.hidden_fields.iter().cloned().collect();
-                v.sort();
-                v
-            };
-            return candidates
-                .iter()
-                .filter(|n| fuzzy_match(partial, n))
-                .map(|n| format!("show-field {n}"))
-                .collect();
-        }
-
-        // toggle-group: complete with known filter group names
-        if let Some(partial) = Self::arg_partial(input, "toggle-group") {
-            return tab
-                .log_manager
-                .group_names()
-                .into_iter()
-                .filter(|g| fuzzy_match(partial, g))
-                .map(|g| format!("toggle-group {g}"))
-                .collect();
-        }
-
-        // group: complete the group-name argument with known group names
-        // (both groups referenced by filters and predefined-but-filterless
-        // groups — see `LogManager::group_names`).
-        if let Some(partial) = Self::arg_partial(input, "group") {
-            return tab
-                .log_manager
-                .group_names()
-                .into_iter()
-                .filter(|g| fuzzy_match(partial, g))
-                .map(|g| format!("group {g}"))
-                .collect();
-        }
-
-        // sidebar-position: complete with the two valid sides
-        if let Some(partial) = Self::arg_partial(input, "sidebar-position") {
-            return ["left", "right"]
-                .into_iter()
-                .filter(|s| fuzzy_match(partial, s))
-                .map(|s| format!("sidebar-position {s}"))
-                .collect();
-        }
-
-        // schema: complete with known custom schema names and built-in formats
-        if let Some(partial) = Self::arg_partial(input, "schema") {
-            let names: Vec<String> = crate::config::custom_schemas()
-                .iter()
-                .map(|s| s.name.clone())
-                .collect();
-            return crate::commands::auto_complete::complete_schema_with_builtins(partial, &names)
-                .into_iter()
-                .map(|(n, _)| format!("schema {n}"))
-                .collect();
-        }
-
-        // default-filters: first arg is a format name, second (once present)
-        // is a file path.
-        if let Some(rest) = Self::arg_partial(input, "default-filters") {
-            if let Some((format, path_partial)) = rest.split_once(' ') {
-                return crate::commands::auto_complete::complete_file_path(
-                    path_partial.trim_start(),
-                )
-                .into_iter()
-                .map(|c| format!("default-filters {format} {c}"))
-                .collect();
-            }
-            let names: Vec<String> = crate::config::custom_schemas()
-                .iter()
-                .map(|s| s.name.clone())
-                .collect();
-            return crate::commands::auto_complete::complete_schema_with_builtins(rest, &names)
-                .into_iter()
-                .map(|(n, _)| format!("default-filters {n}"))
-                .collect();
-        }
-
-        // Theme completion
-        if let Some(after_prefix) = trimmed.strip_prefix("set-theme") {
-            let partial = after_prefix.trim_start();
-            let mut themes = Theme::list_available_themes();
-            if !partial.is_empty() {
-                themes.retain(|t| fuzzy_match(partial, t));
-            }
-            if !themes.is_empty() {
-                return themes
-                    .into_iter()
-                    .map(|t| format!("set-theme {}", t))
-                    .collect();
-            }
-            return vec![];
-        }
-
-        // Command name completion
-        find_command_completions(&trimmed)
-            .into_iter()
-            .map(|s| s.to_string())
-            .collect()
+        crate::commands::completion::replacements(
+            input,
+            &crate::commands::completion::CompletionContext::for_query(input, tab),
+        )
     }
 }
 
@@ -486,6 +219,7 @@ impl Mode for CommandMode {
         (self, KeyResult::Handled)
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[COMMAND]  ",
@@ -517,7 +251,7 @@ mod tests {
     use crate::db::LogManager;
     use crate::ingestion::FileReader;
     use crate::mode::app_mode::ModeRenderState;
-    use crate::ui::{KeyResult, TabState};
+    use crate::shared::{KeyResult, TabState};
     use std::sync::Arc;
 
     async fn make_tab() -> TabState {

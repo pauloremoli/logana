@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::config::RestoreSessionPolicy;
 use crate::db::{AppSettingsStore, FileContextStore, SessionStore, SettingsKey};
 
-use crate::ui::TabState;
+use crate::shared::TabState;
 
 pub struct SessionManager {
     pub db: Arc<crate::db::Database>,

@@ -1,14 +1,20 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
 use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
 use crate::{
     commands::auto_complete::fuzzy_match,
-    config::Keybindings,
-    mode::app_mode::{Mode, ModeRenderState, status_entry},
+    mode::app_mode::{Mode, ModeRenderState},
     mode::normal_mode::NormalMode,
-    theme::Theme,
-    ui::{KeyResult, TabId, TabState},
+    shared::{KeyResult, TabId, TabState},
 };
 use async_trait::async_trait;
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 /// Quick-open popup (`Ctrl+P`) listing every open tab, narrowed by a live
@@ -120,6 +126,7 @@ impl Mode for FileSwitcherMode {
         }
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, _kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[SWITCH FILE]  ",
@@ -368,6 +375,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_mode_bar_content_contains_switch_label() {
         let mode = FileSwitcherMode::new(entries(2), TabId(0));
         let kb = Keybindings::default();

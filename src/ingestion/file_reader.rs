@@ -2891,6 +2891,7 @@ mod tests {
     /// byte-identical to the same filter run against a fully-resident
     /// reader over the same content.
     #[tokio::test]
+    #[cfg(feature = "tui")]
     async fn test_run_headless_wholefile_paged_matches_non_paged_across_chunks() {
         use crate::db::{Database, LogManager};
         use crate::filters::{FilterOptions, FilterType};

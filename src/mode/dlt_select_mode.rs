@@ -1,13 +1,20 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
 use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
 use crate::{
-    config::{DEFAULT_DLT_PORT, DltDevice, Keybindings},
-    mode::app_mode::{Mode, ModeRenderState, status_entry},
+    config::{DEFAULT_DLT_PORT, DltDevice},
+    mode::app_mode::{Mode, ModeRenderState},
     mode::normal_mode::NormalMode,
-    theme::Theme,
-    ui::{KeyResult, TabState},
+    shared::{KeyResult, TabState},
 };
 use async_trait::async_trait;
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 #[derive(Debug, Clone)]
@@ -204,6 +211,7 @@ impl Mode for DltSelectMode {
         }
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         if self.adding.is_some() {
             let mut spans: Vec<Span<'static>> = vec![Span::styled(

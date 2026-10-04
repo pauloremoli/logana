@@ -2,6 +2,7 @@ pub mod archive;
 pub mod archive_tree;
 pub mod file_reader;
 pub mod format_detect;
+#[cfg(feature = "tui")]
 pub mod loading;
 pub mod otlp_receiver;
 pub mod paged_file;

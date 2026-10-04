@@ -1,17 +1,22 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
 use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
 use crate::{
-    config::{DltDevice, Keybindings},
+    config::DltDevice,
     db::FileContext,
     mode::docker_select_mode::DockerContainer,
     mode::{
         dlt_select_mode::AddDeviceRenderState, normal_mode::NormalMode,
         value_colors_mode::ValueColorGroup,
     },
-    theme::Theme,
-    ui::{KeyResult, TabId, TabState},
+    shared::{KeyResult, TabId, TabState},
 };
 use async_trait::async_trait;
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 use std::sync::Arc;
 
@@ -183,6 +188,8 @@ impl ModeRenderState {
     }
 }
 
+// async_trait adds must_use to an already must-use boxed future.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Mode: std::fmt::Debug + Send {
     async fn handle_key(
@@ -193,6 +200,7 @@ pub trait Mode: std::fmt::Debug + Send {
     ) -> (Box<dyn Mode>, KeyResult);
 
     /// Returns a styled mode bar `Line` with `<KEY> action` spans based on the active keybindings.
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static>;
 
     /// Returns the rendering state for this mode.
@@ -223,6 +231,7 @@ pub trait Mode: std::fmt::Debug + Send {
 }
 
 /// Like `status_entry` but accepts a runtime-computed action string.
+#[cfg(feature = "tui")]
 pub fn status_entry_dyn(
     spans: &mut Vec<Span<'static>>,
     key: String,
@@ -245,6 +254,7 @@ pub fn status_entry_dyn(
 
 /// Appends a styled `<key> action  ` entry to `spans`.
 /// Used by mode implementations to build the mode bar line.
+#[cfg(feature = "tui")]
 pub fn status_entry(
     spans: &mut Vec<Span<'static>>,
     key: String,
@@ -305,6 +315,7 @@ impl Mode for ConfirmRestoreMode {
         }
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[RESTORE]  ",
@@ -364,6 +375,7 @@ impl Mode for ConfirmRestoreSessionMode {
         }
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[RESTORE SESSION]  ",
@@ -396,7 +408,7 @@ mod tests {
     use crate::db::LogManager;
     use crate::filters::{FilterOptions, FilterType};
     use crate::ingestion::FileReader;
-    use crate::ui::{KeyResult, TabState};
+    use crate::shared::{KeyResult, TabState};
     use std::sync::Arc;
 
     async fn make_tab(lines: &[&str]) -> TabState {
@@ -580,6 +592,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "tui")]
     async fn test_confirm_restore_mode_bar_content() {
         let mode = ConfirmRestoreMode {
             context: default_context(),
@@ -659,6 +672,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "tui")]
     async fn test_confirm_session_mode_bar_content() {
         let mode = ConfirmRestoreSessionMode {
             files: Arc::new(vec!["file.log".to_string()]),

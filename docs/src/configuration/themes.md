@@ -111,6 +111,29 @@ Only five fields are required — everything else falls back to built-in default
 }
 ```
 
+## GUI palettes
+
+All 22 bundled themes include desktop colors for panels, popovers, controls,
+separators, secondary text, and the main action accent. The GUI derives hover,
+pressed, and selection states from this palette and adjusts text contrast for
+readability. Terminal and log syntax colors retain their existing styling.
+
+Custom themes can add a `gui` object. If present, provide all six colors:
+
+```json
+"gui": {
+  "surface": "#21222c",
+  "elevated": "#343746",
+  "control": "#44475a",
+  "border": "#565b73",
+  "muted": "#9aa5ce",
+  "primary": "#bd93f9"
+}
+```
+
+The main canvas and text still use `root_bg` and `text`. Themes without `gui`
+continue to work: the GUI derives desktop colors from the terminal palette.
+
 ## Color Formats
 
 All color values accept:

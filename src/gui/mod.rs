@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod app;
 pub mod color;
 pub mod column_widths;
@@ -12,3 +13,8 @@ pub mod theme;
 pub mod time_range;
 pub mod update;
 pub mod view;
+
+pub mod palette;
+
+#[cfg(all(test, feature = "gui-test"))]
+mod palette_ui_tests;

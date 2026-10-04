@@ -14,7 +14,7 @@ use crate::filters::{FilterDecision, FilterManager};
 use crate::ingestion::{ArchiveTree, FileReader, NodeId};
 use crate::mode::normal_mode::NormalMode;
 use crate::parser::{LogFormatParser, detect_format};
-use crate::ui::FieldLayout;
+use crate::shared::FieldLayout;
 use crate::utils::search::Search;
 use crate::utils::search::SearchResult;
 
@@ -978,6 +978,112 @@ impl TabState {
     }
 
     /// Recompute which file lines are visible under the current filters.
+    /// Apply available background scan chunks without waiting for the worker.
+    pub fn advance_filter_computation(&mut self) {
+        use tokio::sync::mpsc::error::TryRecvError;
+        let tab = self;
+        if tab.filter.handle.is_none() {
+            return;
+        }
+        // Phase 1: drain available chunks into a local buffer (limits borrow scope).
+        let (chunks, done) = {
+            let h = tab.filter.handle.as_mut().unwrap();
+            let mut chunks = Vec::new();
+            let mut done = false;
+            // Bound UI work even if many worker chunks are ready.
+            for _ in 0..2 {
+                match h.result_rx.try_recv() {
+                    Ok(chunk) => {
+                        let last = chunk.is_last;
+                        chunks.push(chunk);
+                        if last {
+                            done = true;
+                            break;
+                        }
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        done = true;
+                        break;
+                    }
+                }
+            }
+            (chunks, done)
+        };
+
+        if chunks.is_empty() && !done {
+            return;
+        }
+
+        let already_had_first = tab.filter.handle.as_ref().unwrap().received_first_chunk;
+        let scroll_anchor = tab.filter.handle.as_ref().unwrap().scroll_anchor;
+
+        if !chunks.is_empty() {
+            tab.filter.handle.as_mut().unwrap().received_first_chunk = true;
+        }
+
+        // Phase 2: apply chunks to visible_indices.
+        let mut should_replace = !already_had_first;
+        for chunk in chunks {
+            let is_last = chunk.is_last;
+            if let Some(h) = tab.filter.handle.as_mut() {
+                h.displayed_progress = chunk.progress;
+            }
+            if should_replace {
+                tab.filter.visible_indices = VisibleLines::Filtered(chunk.visible);
+                should_replace = false;
+            } else if let VisibleLines::Filtered(ref mut v) = tab.filter.visible_indices {
+                v.extend(chunk.visible);
+            }
+            if let Some(counts) = chunk.filter_match_counts {
+                tab.filter.match_counts = counts;
+            }
+            if is_last {
+                // Apply continuation-line grouping: continuation lines
+                // (those whose parser returned None) inherit their parent's
+                // filter visibility so they are hidden when the parent is
+                // hidden (e.g. by a date or exclude filter).
+                if let Some(cmap) = tab.active_continuation_map().cloned() {
+                    crate::shared::apply_continuation_correction(
+                        &mut tab.filter.visible_indices,
+                        &cmap,
+                        tab.filter.manager.has_include(),
+                    );
+                }
+                tab.union_marked_into_visible();
+                tab.sync_collapse_mask();
+                tab.restore_scroll_to_line(scroll_anchor);
+            } else if tab.filter.visible_indices.is_empty() {
+                tab.scroll.scroll_offset = 0;
+            } else {
+                tab.scroll.scroll_offset = tab
+                    .scroll
+                    .scroll_offset
+                    .min(tab.filter.visible_indices.len() - 1);
+            }
+        }
+        if done {
+            if let Some(h) = &tab.filter.handle {
+                tab.filter.cached_scan = Some(crate::shared::CachedScanResult {
+                    filter_fingerprint: h.scan_fingerprint.clone(),
+                    line_count: h.scan_line_count,
+                    raw_mode: h.scan_raw_mode,
+                    highlight_mode: h.scan_highlight_mode,
+                    group_fingerprint: h.scan_group_fingerprint.clone(),
+                    view: (
+                        tab.filter.visible_indices.clone(),
+                        tab.filter.manager.clone(),
+                        tab.filter.text_styles.clone(),
+                        tab.filter.date_styles.clone(),
+                        tab.filter.field_styles.clone(),
+                    ),
+                    match_counts: tab.filter.match_counts.clone(),
+                });
+            }
+            tab.filter.handle = None;
+        }
+    }
+
     pub fn refresh_visible(&mut self) {
         self.refresh_visible_inner();
     }
@@ -1321,7 +1427,7 @@ impl TabState {
                                     && synthetic_level
                                     && let Some(p) = parts.as_ref()
                                 {
-                                    let display = crate::ui::field_layout::apply_field_layout(
+                                    let display = crate::shared::field_layout::apply_field_layout(
                                         p,
                                         field_layout,
                                         hidden_fields,
@@ -1968,14 +2074,15 @@ impl TabState {
                                         && synthetic_level
                                         && let Some(p) = parts.as_ref()
                                     {
-                                        let display = crate::ui::field_layout::apply_field_layout(
-                                            p,
-                                            &field_layout,
-                                            &hidden_fields,
-                                            show_keys,
-                                            None,
-                                        )
-                                        .join(" ");
+                                        let display =
+                                            crate::shared::field_layout::apply_field_layout(
+                                                p,
+                                                &field_layout,
+                                                &hidden_fields,
+                                                show_keys,
+                                                None,
+                                            )
+                                            .join(" ");
                                         let dec =
                                             fm_arc.evaluate_and_count(display.as_bytes(), &mut tc);
                                         if dec != FilterDecision::Neutral {
@@ -2275,7 +2382,7 @@ impl TabState {
                     && synthetic_level
                     && let Some(p) = parts.as_ref()
                 {
-                    let display = crate::ui::field_layout::apply_field_layout(
+                    let display = crate::shared::field_layout::apply_field_layout(
                         p,
                         &self.display.field_layout,
                         &self.display.hidden_fields,
@@ -2445,6 +2552,7 @@ impl TabState {
     pub fn refresh_filter_colors(&mut self) {
         self.rebuild_filter_manager_cache();
         self.cache.render_gen = self.cache.render_gen.wrapping_add(1);
+        #[cfg(feature = "tui")]
         self.cache.render_line.clear();
     }
 
@@ -2492,6 +2600,7 @@ impl TabState {
         self.cache.parse_gen = self.cache.parse_gen.wrapping_add(1);
         self.cache.parse.clear();
         self.cache.render_gen = self.cache.render_gen.wrapping_add(1);
+        #[cfg(feature = "tui")]
         self.cache.render_line.clear();
     }
 
@@ -2532,6 +2641,7 @@ impl TabState {
         }
         self.filter.handle = None;
         self.cache.parse.clear();
+        #[cfg(feature = "tui")]
         self.cache.render_line.clear();
         self.cache.field_names = None;
         self.filter.manager = Arc::new(FilterManager::empty());
@@ -2866,25 +2976,30 @@ impl TabState {
     /// list. `timestamp`/`message` are excluded, same as
     /// `build_field_index` (free text, not a meaningful facet).
     pub fn build_field_value_counts(&self) -> FieldValueCounts {
-        let Some(parser) = &self.display.format else {
+        Self::field_value_counts_for(&self.file_reader, self.display.format.as_deref())
+    }
+
+    pub fn field_value_counts_for(
+        reader: &FileReader,
+        parser: Option<&dyn LogFormatParser>,
+    ) -> FieldValueCounts {
+        let Some(parser) = parser else {
             return FieldValueCounts::default();
         };
 
         const SAMPLE_LIMIT: usize = 5_000;
-        let total = self.file_reader.line_count();
+        let total = reader.line_count();
         let limit = total.min(SAMPLE_LIMIT);
 
         const NAME_SAMPLE: usize = 200;
         let name_sample = total.min(NAME_SAMPLE);
-        let owned_name_lines: Vec<_> = (0..name_sample)
-            .map(|i| self.file_reader.get_line(i))
-            .collect();
+        let owned_name_lines: Vec<_> = (0..name_sample).map(|i| reader.get_line(i)).collect();
         let name_lines: Vec<&[u8]> = owned_name_lines.iter().map(|l| &**l).collect();
         let names = parser.collect_field_names(&name_lines);
 
         let mut counts: HashMap<String, HashMap<String, usize>> = HashMap::new();
         for i in 0..limit {
-            let owned_line = self.file_reader.get_line(i);
+            let owned_line = reader.get_line(i);
             let line: &[u8] = &owned_line;
             let Some(parts) = parser.parse_line(line) else {
                 continue;
@@ -3078,7 +3193,7 @@ pub struct MergeBuildState {
     /// built with — kept here so each incremental update can rebuild the
     /// merged view without needing to look anything up on the tab itself.
     pub sources_arc: Arc<Vec<crate::ingestion::FileReader>>,
-    pub update_rx: std::sync::mpsc::Receiver<crate::ui::tab_state::merged::MergeBuildUpdate>,
+    pub update_rx: std::sync::mpsc::Receiver<crate::shared::tab_state::merged::MergeBuildUpdate>,
 }
 
 /// Per-tab state for watching a file for new appended content.
@@ -3235,9 +3350,11 @@ pub fn watch_state_from_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "tui")]
+    use crate::db::AppSettingsStore;
     use crate::db::Comment;
     use crate::db::LogManager;
-    use crate::db::{AppSettingsStore, Database, FileContext};
+    use crate::db::{Database, FileContext};
     use crate::filters::{FilterOptions, FilterType};
     use crate::ingestion::FileReader;
     use std::sync::Arc;
@@ -4033,6 +4150,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "tui")]
     async fn test_config_priority_show_mode_bar_overrides_db() {
         use std::sync::Arc;
         let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
@@ -4057,6 +4175,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "tui")]
     async fn test_config_priority_wrap_overrides_db() {
         use std::sync::Arc;
         let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
@@ -4334,6 +4453,7 @@ mod tests {
         let old = tab.cache.render_gen;
         tab.refresh_visible();
         assert!(tab.cache.render_gen > old);
+        #[cfg(feature = "tui")]
         assert!(tab.cache.render_line.is_empty());
     }
 
@@ -4414,6 +4534,7 @@ mod tests {
         let old = tab.cache.render_gen;
         tab.invalidate_parse_cache();
         assert!(tab.cache.render_gen > old);
+        #[cfg(feature = "tui")]
         assert!(tab.cache.render_line.is_empty());
     }
 
@@ -4444,6 +4565,7 @@ mod tests {
         assert_eq!(tab.cache.parse_gen, old_parse_gen);
         // Render cache must be invalidated so the next frame picks up new colors.
         assert!(tab.cache.render_gen > old_render_gen);
+        #[cfg(feature = "tui")]
         assert!(tab.cache.render_line.is_empty());
         // Styles must be updated.
         assert!(!tab.filter.text_styles.is_empty());

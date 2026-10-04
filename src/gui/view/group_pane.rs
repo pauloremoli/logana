@@ -7,22 +7,12 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div};
 
-/// `GroupManagementMode`'s live state, mirroring `FilterManagementView`.
-pub struct GroupManagementView {
-    pub selected_group: String,
-    pub search: String,
-    pub searching: bool,
-}
-
-/// Every known group name — filters' `--group` values plus predefined
-/// styles with no members yet — plus `GroupManagementMode`'s selection
-/// cursor and live search narrowing when `management` is `Some`.
+/// Native group management, including groups without member filters.
 pub fn group_pane(
     tab_idx: usize,
     names: &[String],
     group_defs: &[GroupDef],
     filter_defs: &[FilterDef],
-    management: Option<&GroupManagementView>,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let mut col = div()
@@ -30,21 +20,24 @@ pub fn group_pane(
         .flex_col()
         .gap_2()
         .child(format!("Groups [{}]", names.len()));
-    if let Some(mgmt) = management {
-        col = col.child(if mgmt.searching {
-            format!("/{}", mgmt.search)
-        } else {
-            "[GROUP MODE]".to_string()
-        });
-    }
+    col = col.child(
+        Button::new("add-group")
+            .label("Add group")
+            .on_click(cx.listener(|app, _, window, cx| {
+                app.dispatch(
+                    Message::GuiAction(crate::gui::actions::Action::Group),
+                    window,
+                    cx,
+                )
+            })),
+    );
     for name in names {
-        let selected = management.is_some_and(|mgmt| mgmt.selected_group == *name);
         col = col.child(group_row(
             tab_idx,
             name.clone(),
             group_defs,
             filter_defs,
-            selected,
+            false,
             cx,
         ));
     }
@@ -73,6 +66,7 @@ fn group_row(
     }
     let toggle_name = name.clone();
     let delete_name = name.clone();
+    let edit_name = name.clone();
     div()
         .flex()
         .gap_2()
@@ -91,6 +85,13 @@ fn group_row(
                 ),
         )
         .child(label)
+        .child(
+            Button::new(format!("group-edit-{name}"))
+                .label("Edit")
+                .on_click(cx.listener(move |app, _, window, cx| {
+                    app.dispatch(Message::EditGroup(edit_name.clone()), window, cx)
+                })),
+        )
         .child(
             Button::new(format!("group-delete-{name}"))
                 .label("Delete")

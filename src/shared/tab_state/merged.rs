@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::filters::{CanonicalTs, timestamp_to_canonical};
 use crate::ingestion::{FileReader, MergedEntry};
 use crate::parser::LogFormatParser;
-use crate::ui::tab_state::TabId;
-use crate::ui::tab_state::year_map::YearMap;
+use crate::shared::tab_state::TabId;
+use crate::shared::tab_state::year_map::YearMap;
 
 pub struct MergedState {
     /// Which tab each source maps to (for live-update polling). A source
@@ -308,7 +308,7 @@ mod tests {
             b"Jan  1 00:00:01 host tag: header one\n  continuation 1a\n  continuation 1b\n"
                 .to_vec(),
         );
-        let cmap = crate::ui::tab_state::build_continuation_map(&full_source, parser.as_ref());
+        let cmap = crate::shared::tab_state::build_continuation_map(&full_source, parser.as_ref());
         assert_eq!(cmap, vec![0, 0, 0]);
 
         extend_merged_index(

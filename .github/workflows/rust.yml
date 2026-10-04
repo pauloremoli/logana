@@ -25,17 +25,47 @@ jobs:
       run: cargo clippy -- -D warnings
 
   test:
-    name: Test
+    name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: core
+            flags: --no-default-features
+            gui: false
+          - name: tui
+            flags: ""
+            gui: false
+          - name: gui
+            flags: --no-default-features --features gui
+            gui: true
+          - name: both
+            flags: --features gui
+            gui: true
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+    - name: Install GUI system dependencies
+      if: matrix.gui
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libfontconfig1-dev libwayland-dev libxkbcommon-x11-dev libvulkan-dev libssl-dev libclang-dev
     - uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.name }}
+    - name: Clippy
+      run: cargo clippy --locked --all-targets ${{ matrix.flags }} -- -D warnings
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --locked ${{ matrix.flags }}
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --locked ${{ matrix.flags }}
+    - name: Verify dependency isolation
+      if: matrix.name == 'core'
+      run: python3 scripts/check-feature-deps.py
 
   coverage:
     name: Code Coverage

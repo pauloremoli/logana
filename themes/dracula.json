@@ -27,5 +27,13 @@
     "#bd93f9",
     "#ff79c6",
     "#8be9fd"
-  ]
+  ],
+  "gui": {
+    "surface": "#21222c",
+    "elevated": "#343746",
+    "control": "#44475a",
+    "border": "#565b73",
+    "muted": "#9aa5ce",
+    "primary": "#bd93f9"
+  }
 }

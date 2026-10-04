@@ -5,7 +5,7 @@
 //! parser would be exposed to XXE/entity-expansion risk on untrusted input.
 
 use crate::filters::{ColorConfig, FilterDef, FilterType};
-use ratatui::style::Color;
+use crate::style::Color;
 use regex::Regex;
 use std::collections::HashMap;
 use std::str::FromStr;

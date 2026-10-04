@@ -4,20 +4,17 @@ use crate::gui::state::GuiState;
 use crate::gui::time_range::{ALL_PRESETS, preset_label};
 use crate::gui::update::is_tab_live;
 use crate::gui::view::tab_bar::TAB_BAR_HEIGHT;
-use crate::input::{KeyCode, KeyModifiers};
-use crate::mode::app_mode::ModeRenderState;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::badge::Badge;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme, Icon, TITLE_BAR_HEIGHT};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{
-    AnyElement, Context, Pixels, Size, Window, anchored, deferred, div, point, px,
+    AnyElement, Context, Entity, Pixels, Size, Window, anchored, deferred, div, point, px,
 };
 
-pub(crate) const SEARCH_BAR_HEIGHT: f32 = 32.0;
-const PLACEHOLDER: &str = "Search logs... (regex, field:value, or free text)";
+pub(crate) const SEARCH_BAR_HEIGHT: f32 = 64.0;
 /// Width of the time-range dropdown's floating panel, and the right-edge
 /// inset used to roughly line it up under `time_range_control`'s toggle —
 /// an approximation, not real bounds tracking (see `time_range_overlay`'s
@@ -31,77 +28,60 @@ const TIME_RANGE_RIGHT_INSET: f32 = 96.0;
 /// `:resume` commands). `.flex()`/`.h()`/`.overflow_hidden()` on every
 /// sub-element are load-bearing, not cosmetic — see `log_pane.rs`'s
 /// `styled_line_row` doc comment.
-pub fn search_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
+pub fn search_bar(
+    state: &GuiState,
+    input: Option<&Entity<InputState>>,
+    cx: &mut Context<App>,
+) -> impl IntoElement {
     div()
         .flex()
         .items_center()
         .gap_2()
         .h(px(SEARCH_BAR_HEIGHT))
-        .px(px(8.))
+        .bg(cx.theme().title_bar)
+        .px(px(12.))
         .overflow_hidden()
         .border_b_1()
         .border_color(cx.theme().border)
-        .child(search_input(state, cx))
+        .child(div().flex_1().min_w(px(0.)).children(input.map(|input| {
+            Input::new(input)
+                .id("log-search-input")
+                .bg(cx.theme().secondary)
+                .text_color(cx.theme().foreground)
+                .prefix(Icon::new(IconName::Search))
+        })))
+        .child(
+            Button::new("search-previous")
+                .ghost()
+                .icon(IconName::ChevronUp)
+                .tooltip("Previous match")
+                .on_click(cx.listener(|app, _, window, cx| {
+                    app.dispatch(Message::SearchNext(false), window, cx)
+                })),
+        )
+        .child(
+            Button::new("search-next")
+                .ghost()
+                .icon(IconName::ChevronDown)
+                .tooltip("Next match")
+                .on_click(cx.listener(|app, _, window, cx| {
+                    app.dispatch(Message::SearchNext(true), window, cx)
+                })),
+        )
         .child(time_range_control(state, cx))
-        .child(filter_count_badge(state))
+        .child(filter_count_badge(state, cx))
         .child(live_indicator(state, cx))
-}
-
-/// Shows the `/` (forward) or `?` (backward) search prompt and its live
-/// query while `SearchMode` is active; the placeholder otherwise (Command
-/// mode has its own floating overlay — see `command_palette` — rather
-/// than sharing this slot). Styled to look like a real text input field
-/// (bordered, rounded, its own background) even though it isn't a
-/// focusable native input: typing is handled entirely by the TUI's real
-/// `SearchMode`, same as every other mode, via the root's capture-phase
-/// key handler — this just reflects its `render_state`. Clicking it while
-/// not already searching dispatches the same `/` keypress `NormalMode`'s
-/// `search_forward` binding handles, so it enters `SearchMode` through the
-/// real keybinding-driven transition rather than a GUI-only shortcut; once
-/// already searching, clicking does nothing (routing another `/` through
-/// `SearchMode` would type a literal `/` into the query).
-fn search_input(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
-    let render_state = state
-        .active_tab()
-        .map(|tab| tab.interaction.mode.render_state());
-    let (text, is_placeholder) = match &render_state {
-        Some(ModeRenderState::Search { query, forward, .. }) => {
-            let prompt = if *forward { "/" } else { "?" };
-            (format!("{prompt}{query}"), false)
-        }
-        _ => (PLACEHOLDER.to_string(), true),
-    };
-    let already_searching = matches!(render_state, Some(ModeRenderState::Search { .. }));
-    let mut input = div()
-        .id("search-input")
-        .flex()
-        .flex_1()
-        .h(px(24.))
-        .items_center()
-        .px(px(8.))
-        .rounded(px(6.))
-        .bg(cx.theme().input)
-        .overflow_hidden()
-        .whitespace_nowrap()
-        .child(text);
-    if is_placeholder {
-        input = input.text_color(cx.theme().muted_foreground);
-    }
-    if !already_searching {
-        input = input.on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
-            app.dispatch(
-                Message::KeyPressed(KeyCode::Char('/'), KeyModifiers::NONE),
-                window,
-                cx,
-            );
-        }));
-    }
-    input
 }
 
 fn time_range_control(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
     div()
         .id("time-range-toggle")
+        .h(px(38.))
+        .px(px(12.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(cx.theme().border)
+        .cursor_pointer()
         .flex()
         .items_center()
         .gap_1()
@@ -141,7 +121,8 @@ pub fn time_range_overlay(
         .flex()
         .flex_col()
         .rounded(px(8.))
-        .bg(cx.theme().background)
+        .bg(cx.theme().popover)
+        .text_color(cx.theme().popover_foreground)
         .border_1()
         .border_color(cx.theme().border)
         .shadow_md()
@@ -150,7 +131,7 @@ pub fn time_range_overlay(
         list = list.child(
             div()
                 .id(preset_label(preset))
-                .px(px(8.))
+                .px(px(12.))
                 .py(px(4.))
                 .rounded(px(4.))
                 .overflow_hidden()
@@ -172,7 +153,14 @@ pub fn time_range_overlay(
                     .flex()
                     .justify_end()
                     .pt(px(top_offset))
-                    .pr(px(TIME_RANGE_RIGHT_INSET))
+                    .pr(px(TIME_RANGE_RIGHT_INSET
+                        + state
+                            .active_tab()
+                            .filter(|tab| {
+                                tab.display.show_sidebar && !tab.display.sidebar_side.is_left()
+                            })
+                            .map(|_| 360.)
+                            .unwrap_or(0.)))
                     .child(list),
             ),
         )
@@ -180,7 +168,7 @@ pub fn time_range_overlay(
     )
 }
 
-fn filter_count_badge(state: &GuiState) -> impl IntoElement {
+fn filter_count_badge(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
     let count = state
         .active_tab()
         .map(|tab| {
@@ -191,13 +179,14 @@ fn filter_count_badge(state: &GuiState) -> impl IntoElement {
                 .count()
         })
         .unwrap_or(0);
-    div()
-        .flex()
-        .items_center()
-        .gap_1()
-        .overflow_hidden()
-        .child(Icon::new(IconName::Funnel))
-        .child(Badge::new().count(count))
+    Button::new("filter-panel-toggle")
+        .ghost()
+        .icon(Icon::new(IconName::Funnel))
+        .label(count.to_string())
+        .tooltip("Show or hide filters")
+        .on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
+            app.dispatch(Message::SidebarToggled, window, cx);
+        }))
 }
 
 /// A colored dot (live = green, idle/paused = gray) plus a Pause/Play
@@ -213,9 +202,9 @@ fn live_indicator(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
     let live = is_tab_live(tab);
     let has_watch = tab.stream.watch.is_some();
     let dot_color = if live {
-        gpui_kit::gpui::rgb(0x3fb950)
+        cx.theme().success
     } else {
-        gpui_kit::gpui::rgb(0x6e7681)
+        cx.theme().muted_foreground
     };
     let icon = if tab.stream.paused {
         IconName::Play
@@ -227,9 +216,16 @@ fn live_indicator(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
         .items_center()
         .gap_1()
         .overflow_hidden()
-        .child(div().w(px(8.)).h(px(8.)).bg(dot_color))
+        .h(px(38.))
+        .px(px(10.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(dot_color))
+        .child(if live { "Live" } else { "Paused" })
         .child(
             Button::new("stream-toggle")
+                .ghost()
                 .icon(Icon::new(icon))
                 .disabled(!has_watch)
                 .tooltip(if tab.stream.paused { "Resume" } else { "Pause" })

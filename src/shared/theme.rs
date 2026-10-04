@@ -1,5 +1,5 @@
+use crate::style::Color;
 use anyhow::Context;
-use ratatui::style::Color;
 use serde::de::Error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -256,8 +256,27 @@ impl ValueColors {
     }
 }
 
+/// Desktop chrome colors, independent of terminal cursor and search styling.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GuiColors {
+    #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
+    pub surface: Color,
+    #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
+    pub elevated: Color,
+    #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
+    pub control: Color,
+    #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
+    pub border: Color,
+    #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
+    pub muted: Color,
+    #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
+    pub primary: Color,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Theme {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gui: Option<GuiColors>,
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
     pub root_bg: Color,
     #[serde(serialize_with = "color_to_str", deserialize_with = "color_from_str")]
@@ -678,6 +697,7 @@ impl Default for Theme {
                 Color::Rgb(0x39, 0xc5, 0xcf),
             ],
             value_colors: ValueColors::default(),
+            gui: None,
         })
     }
 }

@@ -2,9 +2,9 @@ use crate::db::{Database, FilterStore, GroupStore};
 use crate::filters::{ColorConfig, FilterDef, FilterInsertOptions, FilterOptions, FilterType};
 use crate::filters::{DATE_PREFIX, DateFilterStyle, parse_date_filter};
 use crate::filters::{FilterDecision, FilterManager, GroupDef, StyleId, build_filter};
+use crate::style::Style;
 use crate::theme::parse_color;
 use aho_corasick::AhoCorasick;
-use ratatui::style::Style;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -52,6 +52,18 @@ pub struct LogManager {
     source_file: Option<String>,
     filter_defs: Vec<FilterDef>,
     group_defs: Vec<GroupDef>,
+    ui_version: u64,
+    ui_enabled: std::collections::HashMap<usize, (u64, bool)>,
+    ui_groups: std::collections::HashMap<String, (u64, bool)>,
+    ui_order: Option<(u64, Vec<usize>)>,
+}
+
+#[derive(Default)]
+pub struct FilterUiChanges {
+    pub enabled: Vec<(usize, bool)>,
+    pub groups: Vec<(String, bool)>,
+    pub swaps: Vec<(usize, usize)>,
+    pub order: Option<Vec<usize>>,
 }
 
 impl LogManager {
@@ -61,10 +73,24 @@ impl LogManager {
             source_file,
             filter_defs: Vec::new(),
             group_defs: Vec::new(),
+            ui_version: 0,
+            ui_enabled: Default::default(),
+            ui_groups: Default::default(),
+            ui_order: None,
         };
         mgr.reload_filters_from_db().await;
         mgr.reload_groups_from_db().await;
         mgr
+    }
+
+    /// Refresh persisted definitions, including sourceless tabs, and report storage errors.
+    pub async fn reload_checked(&mut self) -> anyhow::Result<()> {
+        let source = self.source_file.as_deref().unwrap_or("");
+        let filters = self.db.get_filters_for_source(source).await?;
+        let groups = self.db.get_groups_for_source(source).await?;
+        self.filter_defs = filters;
+        self.group_defs = groups;
+        Ok(())
     }
 
     pub fn source_file(&self) -> Option<&str> {
@@ -135,6 +161,7 @@ impl LogManager {
         if options.ignore_case {
             insert_opts = insert_opts.ignore_case();
         }
+        insert_opts.group = options.group.clone();
         let id = self
             .db
             .insert_filter(&pattern_clone, &filter_type_clone, insert_opts)
@@ -158,6 +185,131 @@ impl LogManager {
             group: options.group.clone(),
         });
         true
+    }
+
+    /// Update controls immediately; the GUI persists the edit separately.
+    pub fn toggle_filter_local(&mut self, id: usize) -> bool {
+        let Some(filter) = self.filter_defs.iter_mut().find(|f| f.id == id) else {
+            return false;
+        };
+        filter.enabled = !filter.enabled;
+        self.ui_version += 1;
+        self.ui_enabled
+            .insert(id, (self.ui_version, filter.enabled));
+        true
+    }
+
+    pub fn toggle_group_local(&mut self, name: &str) -> bool {
+        let has_members = self
+            .filter_defs
+            .iter()
+            .any(|f| f.group.as_deref() == Some(name));
+        let enabled = if has_members {
+            !self
+                .filter_defs
+                .iter()
+                .any(|f| f.group.as_deref() == Some(name) && f.enabled)
+        } else {
+            !crate::filters::group_enabled(&self.group_defs, name)
+        };
+        self.ui_version += 1;
+        self.ui_groups
+            .insert(name.to_string(), (self.ui_version, enabled));
+        for filter in &mut self.filter_defs {
+            if filter.group.as_deref() == Some(name) {
+                filter.enabled = enabled;
+                self.ui_enabled
+                    .insert(filter.id, (self.ui_version, enabled));
+            }
+        }
+        if let Some(group) = self.group_defs.iter_mut().find(|g| g.name == name) {
+            group.enabled = enabled;
+        } else {
+            self.group_defs.push(GroupDef {
+                name: name.to_string(),
+                enabled,
+                ..Default::default()
+            });
+        }
+        enabled
+    }
+
+    /// Move to the target row and return adjacent swaps for persistent order.
+    pub fn reorder_filter_local(&mut self, id: usize, target: usize) -> Vec<(usize, usize)> {
+        let Some(mut from) = self.filter_defs.iter().position(|f| f.id == id) else {
+            return Vec::new();
+        };
+        let Some(to) = self.filter_defs.iter().position(|f| f.id == target) else {
+            return Vec::new();
+        };
+        let mut swaps = Vec::new();
+        while from != to {
+            let next = if from < to { from + 1 } else { from - 1 };
+            swaps.push((id, self.filter_defs[next].id));
+            self.filter_defs.swap(from, next);
+            from = next;
+        }
+        if !swaps.is_empty() {
+            self.ui_version += 1;
+            self.ui_order = Some((
+                self.ui_version,
+                self.filter_defs.iter().map(|f| f.id).collect(),
+            ));
+        }
+        swaps
+    }
+
+    /// Keep edits made while an async command or deletion was in flight.
+    /// Returns the changes to persist again after that older operation.
+    pub fn merge_newer_ui_edits(&mut self, latest: &Self) -> FilterUiChanges {
+        let baseline = self.ui_version;
+        let mut changes = FilterUiChanges::default();
+        for (&id, &(version, enabled)) in &latest.ui_enabled {
+            if version > baseline
+                && let Some(filter) = self.filter_defs.iter_mut().find(|f| f.id == id)
+            {
+                filter.enabled = enabled;
+                changes.enabled.push((id, enabled));
+            }
+        }
+        for (name, &(version, enabled)) in &latest.ui_groups {
+            if version > baseline {
+                if let Some(group) = self.group_defs.iter_mut().find(|g| g.name == *name) {
+                    group.enabled = enabled;
+                } else {
+                    self.group_defs.push(GroupDef {
+                        name: name.clone(),
+                        enabled,
+                        ..Default::default()
+                    });
+                }
+                changes.groups.push((name.clone(), enabled));
+            }
+        }
+        if let Some((version, order)) = &latest.ui_order
+            && *version > baseline
+        {
+            let desired: Vec<_> = order
+                .iter()
+                .copied()
+                .filter(|id| self.filter_defs.iter().any(|f| f.id == *id))
+                .collect();
+            for (index, id) in desired.into_iter().enumerate() {
+                let mut from = self.filter_defs.iter().position(|f| f.id == id).unwrap();
+                while from > index {
+                    let other = self.filter_defs[from - 1].id;
+                    self.filter_defs.swap(from, from - 1);
+                    changes.swaps.push((id, other));
+                    from -= 1;
+                }
+            }
+            changes.order = Some(self.filter_defs.iter().map(|f| f.id).collect());
+        }
+        self.ui_version = latest.ui_version;
+        self.ui_enabled = latest.ui_enabled.clone();
+        self.ui_groups = latest.ui_groups.clone();
+        self.ui_order = latest.ui_order.clone();
+        changes
     }
 
     pub async fn toggle_filter(&mut self, id: usize) {
@@ -729,8 +881,8 @@ mod tests {
 
         let a_style = crate::filters::group_style(a.get_group_styles(), "errors").unwrap();
         let b_style = crate::filters::group_style(b.get_group_styles(), "errors").unwrap();
-        assert_eq!(a_style.fg, Some(ratatui::style::Color::Red));
-        assert_eq!(b_style.fg, Some(ratatui::style::Color::Blue));
+        assert_eq!(a_style.fg, Some(crate::style::Color::Red));
+        assert_eq!(b_style.fg, Some(crate::style::Color::Blue));
 
         a.clear_group_style("errors").await;
         assert!(a.get_group_styles().is_empty());
@@ -975,8 +1127,8 @@ mod tests {
 
         let (_fm, styles, _, _) = mgr.build_filter_manager();
         assert_eq!(styles.len(), 1);
-        assert_eq!(styles[0].fg, Some(ratatui::style::Color::Red));
-        assert_eq!(styles[0].bg, Some(ratatui::style::Color::Black));
+        assert_eq!(styles[0].fg, Some(crate::style::Color::Red));
+        assert_eq!(styles[0].bg, Some(crate::style::Color::Black));
     }
 
     #[tokio::test]
@@ -993,7 +1145,7 @@ mod tests {
 
         let (_fm, styles, _, _) = mgr.build_filter_manager();
         assert_eq!(styles.len(), 1);
-        assert_eq!(styles[0].fg, Some(ratatui::style::Color::Green));
+        assert_eq!(styles[0].fg, Some(crate::style::Color::Green));
         assert_eq!(styles[0].bg, None);
     }
 
@@ -1015,7 +1167,7 @@ mod tests {
         assert_eq!(field_styles.len(), 1);
         assert_eq!(
             styles[field_styles[0].style_id as usize].fg,
-            Some(ratatui::style::Color::Red)
+            Some(crate::style::Color::Red)
         );
     }
 
@@ -1034,7 +1186,7 @@ mod tests {
         assert_eq!(date_styles.len(), 1);
         assert_eq!(
             styles[date_styles[0].style_id as usize].fg,
-            Some(ratatui::style::Color::Red)
+            Some(crate::style::Color::Red)
         );
     }
 
@@ -1103,12 +1255,12 @@ mod tests {
         let errs = groups.iter().find(|g| g.name == "errs").unwrap();
         assert_eq!(
             errs.color_config.as_ref().unwrap().fg,
-            Some(ratatui::style::Color::Red)
+            Some(crate::style::Color::Red)
         );
         let filterless = groups.iter().find(|g| g.name == "filterless").unwrap();
         assert_eq!(
             filterless.color_config.as_ref().unwrap().fg,
-            Some(ratatui::style::Color::Blue)
+            Some(crate::style::Color::Blue)
         );
     }
 
@@ -1202,12 +1354,12 @@ mod tests {
         let kept = groups.iter().find(|g| g.name == "kept").unwrap();
         assert_eq!(
             kept.color_config.as_ref().unwrap().fg,
-            Some(ratatui::style::Color::Green)
+            Some(crate::style::Color::Green)
         );
         let errs = groups.iter().find(|g| g.name == "errs").unwrap();
         assert_eq!(
             errs.color_config.as_ref().unwrap().fg,
-            Some(ratatui::style::Color::Red)
+            Some(crate::style::Color::Red)
         );
     }
 
@@ -1257,7 +1409,7 @@ mod tests {
         assert_eq!(error_filter.group.as_deref(), Some("errs"));
         assert_eq!(
             error_filter.color_config.as_ref().unwrap().bg,
-            Some(ratatui::style::Color::Green)
+            Some(crate::style::Color::Green)
         );
     }
 
@@ -1479,7 +1631,7 @@ mod tests {
             crate::filters::group_style(mgr.get_group_styles(), "errors")
                 .unwrap()
                 .fg,
-            Some(ratatui::style::Color::Red)
+            Some(crate::style::Color::Red)
         );
     }
 

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use ratatui::style::Style;
+use crate::style::Style;
 
 use crate::filters::DateFilterStyle;
 use crate::filters::FilterManager;

@@ -1,7 +1,7 @@
 use crate::parser::LogLevel;
+use crate::parser::classify_level;
+use crate::shared::TabState;
 use crate::theme::Theme as TuiTheme;
-use crate::ui::TabState;
-use crate::ui::widgets::log_panel::classify_level;
 use gpui_kit::gpui::Rgba;
 
 /// Classifies a log line's level for the table's Level column. Only
@@ -21,9 +21,8 @@ pub fn classify_line_level(tab: &TabState, bytes: &[u8]) -> LogLevel {
 }
 
 /// `(background, foreground)` for a level pill, or `None` for a blank cell
-/// (`LogLevel::Unknown`). Background reuses the TUI's own per-level theme
-/// color as a solid swatch (the TUI itself only ever uses these as text
-/// colors or line backgrounds, never both at once); foreground is chosen
+/// (`LogLevel::Unknown`). Background blends the selected theme's level color
+/// into its root surface for a subdued badge; foreground is chosen
 /// for contrast against it via the TUI's own `readable_foreground_for`.
 pub fn level_pill_colors(level: &LogLevel, theme: &TuiTheme) -> Option<(Rgba, Rgba)> {
     let bg_color = match level {
@@ -36,12 +35,17 @@ pub fn level_pill_colors(level: &LogLevel, theme: &TuiTheme) -> Option<(Rgba, Rg
         LogLevel::Fatal => theme.fatal_fg,
         LogLevel::Unknown => return None,
     };
-    let bg_rgb = crate::theme::color_to_rgb(bg_color);
-    let fg_rgb = crate::ui::theme::readable_foreground_for(bg_rgb);
-    let bg = super::color::ratatui_color_to_gpui(bg_color)?;
-    let fg = super::color::ratatui_color_to_gpui(ratatui::style::Color::Rgb(
-        fg_rgb.0, fg_rgb.1, fg_rgb.2,
-    ))?;
+    let tint = crate::theme::color_to_rgb(bg_color);
+    let surface = crate::theme::color_to_rgb(theme.root_bg);
+    let blend = |base: u8, accent: u8| ((base as u16 * 4 + accent as u16) / 5) as u8;
+    let bg_rgb = (
+        blend(surface.0, tint.0),
+        blend(surface.1, tint.1),
+        blend(surface.2, tint.2),
+    );
+    let fg_rgb = crate::shared::theme::readable_foreground_for(bg_rgb);
+    let bg = super::color::color_to_gpui(crate::style::Color::Rgb(bg_rgb.0, bg_rgb.1, bg_rgb.2))?;
+    let fg = super::color::color_to_gpui(crate::style::Color::Rgb(fg_rgb.0, fg_rgb.1, fg_rgb.2))?;
     Some((bg, fg))
 }
 
@@ -110,7 +114,7 @@ mod tests {
                 (fg.g * 255.0).round() as u8,
                 (fg.b * 255.0).round() as u8,
             );
-            let readable = crate::ui::theme::readable_foreground_for(bg_rgb);
+            let readable = crate::shared::theme::readable_foreground_for(bg_rgb);
             assert_eq!(fg_rgb, readable, "{level:?}");
         }
     }

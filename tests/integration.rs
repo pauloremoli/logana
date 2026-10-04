@@ -1,3 +1,4 @@
+#![cfg(feature = "tui")]
 use clap::Parser;
 use logana::commands::auto_complete::shell_split;
 use logana::commands::{CommandLine, Commands};

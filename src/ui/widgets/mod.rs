@@ -42,9 +42,9 @@ pub(super) fn popup_entry(
     spans: &mut Vec<ratatui::prelude::Span<'static>>,
     key: String,
     label: &str,
-    key_style: ratatui::prelude::Style,
-    txt_style: ratatui::prelude::Style,
-    br_style: ratatui::prelude::Style,
+    key_style: crate::style::Style,
+    txt_style: crate::style::Style,
+    br_style: crate::style::Style,
 ) {
     spans.push(ratatui::prelude::Span::styled("<", br_style));
     spans.push(ratatui::prelude::Span::styled(key, key_style));

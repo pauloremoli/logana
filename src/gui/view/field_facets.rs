@@ -2,12 +2,13 @@ use crate::filters::FilterDef;
 use crate::gui::app::App;
 use crate::gui::message::Message;
 use crate::gui::update::filter_id_for_field_equality;
-use crate::ui::FieldValueCounts;
+use crate::shared::FieldValueCounts;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::Icon;
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{Context, Rgba, Window, div, px};
+use gpui_kit::gpui::{Context, Entity, Rgba, Window, div, px};
 use std::collections::HashMap;
 
 /// "Available Filters": one collapsible category per field `counts`
@@ -21,18 +22,47 @@ pub fn field_facets(
     counts: &FieldValueCounts,
     filter_defs: &[FilterDef],
     expanded: &HashMap<String, bool>,
+    search: Option<&Entity<InputState>>,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let mut col = div().flex().flex_col().gap_1().child("Available Filters");
+    let query = search
+        .map(|input| input.read(cx).value().to_lowercase())
+        .unwrap_or_default();
+    if let Some(input) = search {
+        col = col.child(
+            Input::new(input)
+                .id("facet-search-input")
+                .bg(cx.theme().secondary)
+                .text_color(cx.theme().foreground)
+                .prefix(Icon::new(IconName::Search)),
+        );
+    }
     for name in &counts.names {
         let Some(values) = counts.counts.get(name) else {
             continue;
         };
-        let is_expanded = expanded.get(name).copied().unwrap_or(false);
+        let values: Vec<_> = values
+            .iter()
+            .filter(|(value, _)| {
+                query.is_empty()
+                    || name.to_lowercase().contains(&query)
+                    || value.to_lowercase().contains(&query)
+            })
+            .cloned()
+            .collect();
+        if values.is_empty() {
+            continue;
+        }
+        let is_expanded = !query.is_empty()
+            || expanded
+                .get(name)
+                .copied()
+                .unwrap_or(name == "level" || name == "target" || name == "service");
         col = col.child(facet_category(
             tab_idx,
             name,
-            values,
+            &values,
             filter_defs,
             is_expanded,
             cx,
@@ -55,21 +85,29 @@ fn facet_category(
         IconName::ChevronRight
     };
     let field_owned = field.to_string();
-    let mut category = div().flex().flex_col().child(
-        div()
-            .id(format!("facet-category:{field}"))
-            .flex()
-            .items_center()
-            .gap_1()
-            .overflow_hidden()
-            .child(Icon::new(chevron))
-            .child(field.to_string())
-            .on_click(
-                cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
-                    app.dispatch(Message::FacetToggled(field_owned.clone()), window, cx);
-                }),
-            ),
-    );
+    let mut category = div()
+        .flex()
+        .flex_col()
+        .py(px(8.))
+        .border_t_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .id(format!("facet-category:{field}"))
+                .flex()
+                .items_center()
+                .gap_2()
+                .h(px(32.))
+                .cursor_pointer()
+                .overflow_hidden()
+                .child(Icon::new(chevron))
+                .child(field.to_string())
+                .on_click(
+                    cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
+                        app.dispatch(Message::FacetToggled(field_owned.clone()), window, cx);
+                    }),
+                ),
+        );
     if expanded {
         let mut list = div().flex().flex_col();
         for (value, count) in values {
@@ -103,6 +141,8 @@ fn facet_value_row(
         .items_center()
         .justify_between()
         .gap_2()
+        .h(px(30.))
+        .text_color(cx.theme().muted_foreground)
         .overflow_hidden()
         .child(
             div()
@@ -110,7 +150,15 @@ fn facet_value_row(
                 .items_center()
                 .gap_1()
                 .overflow_hidden()
-                .child(div().w(px(8.)).h(px(8.)).bg(facet_dot_color(value)))
+                .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(
+                    match value.to_lowercase().as_str() {
+                        "error" | "fatal" => cx.theme().danger,
+                        "warn" | "warning" => cx.theme().warning,
+                        "info" | "notice" => cx.theme().success,
+                        "debug" | "trace" => cx.theme().primary,
+                        _ => facet_dot_color(value).into(),
+                    },
+                ))
                 .child(
                     Checkbox::new(format!("facet-value:{field}:{value}"))
                         .checked(checked)

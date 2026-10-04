@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::parser::LogFormatParser;
-use crate::ui::FieldLayout;
+use crate::shared::FieldLayout;
 
 #[derive(
     Debug,

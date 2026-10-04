@@ -10,25 +10,6 @@ mod filter;
 mod io;
 mod stream;
 
-pub(crate) use filter::build_field_filter_pattern;
-#[cfg(feature = "gui")]
-pub(crate) use filter::resolve_colors;
-
-pub(super) fn parse_key_value(pattern: &str) -> Result<(&str, &str), String> {
-    let eq = pattern
-        .find('=')
-        .ok_or_else(|| format!("--field pattern must be 'key=value', got: {pattern}"))?;
-    let key = &pattern[..eq];
-    let value = &pattern[eq + 1..];
-    if key.is_empty() {
-        return Err("field name must not be empty".to_string());
-    }
-    if value.is_empty() {
-        return Err("field value must not be empty".to_string());
-    }
-    Ok((key, value))
-}
-
 pub(super) fn resolve_hide_field_arg(
     tab: &mut crate::ui::TabState,
     arg: &str,
@@ -625,7 +606,7 @@ mod tests {
             .as_ref()
             .unwrap();
         assert!(!cc.match_only);
-        assert_eq!(cc.fg, Some(ratatui::style::Color::Green));
+        assert_eq!(cc.fg, Some(crate::style::Color::Green));
     }
 
     #[tokio::test]
@@ -1003,8 +984,8 @@ mod tests {
         let groups = app.tabs[0].log_manager.get_group_styles();
         assert_eq!(groups.len(), 1);
         let cc = groups[0].color_config.as_ref().unwrap();
-        assert_eq!(cc.fg, Some(ratatui::style::Color::Red));
-        assert_eq!(cc.bg, Some(ratatui::style::Color::Black));
+        assert_eq!(cc.fg, Some(crate::style::Color::Red));
+        assert_eq!(cc.bg, Some(crate::style::Color::Black));
     }
 
     #[tokio::test]
@@ -1063,7 +1044,7 @@ mod tests {
         let groups = app.tabs[0].log_manager.get_group_styles();
         assert_eq!(
             groups[0].color_config.as_ref().unwrap().fg,
-            Some(ratatui::style::Color::Red)
+            Some(crate::style::Color::Red)
         );
     }
 
@@ -2322,8 +2303,8 @@ mod tests {
         let filters = app.tabs[0].log_manager.get_filters();
         assert_eq!(filters.len(), 1);
         let cc = filters[0].color_config.as_ref().unwrap();
-        assert_eq!(cc.fg, Some(ratatui::style::Color::Red));
-        assert_eq!(cc.bg, Some(ratatui::style::Color::Blue));
+        assert_eq!(cc.fg, Some(crate::style::Color::Red));
+        assert_eq!(cc.bg, Some(crate::style::Color::Blue));
     }
 
     #[tokio::test]
@@ -2334,8 +2315,8 @@ mod tests {
         assert_eq!(filters.len(), 1);
         let cc = filters[0].color_config.as_ref().unwrap();
         let (fg, bg) = (cc.fg.unwrap(), cc.bg.unwrap());
-        let to_rgb = |c: ratatui::style::Color| match c {
-            ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
+        let to_rgb = |c: crate::style::Color| match c {
+            crate::style::Color::Rgb(r, g, b) => (r, g, b),
             other => panic!("expected -a to generate an Rgb color, got {other:?}"),
         };
         let ratio = crate::theme::contrast_ratio(to_rgb(fg), to_rgb(bg));
@@ -2377,8 +2358,8 @@ mod tests {
         assert_eq!(filters.len(), 1);
         let cc = filters[0].color_config.as_ref().unwrap();
         assert!(cc.bg.is_none(), "--fga must leave bg unset");
-        let to_rgb = |c: ratatui::style::Color| match c {
-            ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
+        let to_rgb = |c: crate::style::Color| match c {
+            crate::style::Color::Rgb(r, g, b) => (r, g, b),
             other => panic!("expected --fga to generate an Rgb color, got {other:?}"),
         };
         let fg = to_rgb(cc.fg.unwrap());
@@ -2398,7 +2379,7 @@ mod tests {
             .unwrap();
         let filters = app.tabs[0].log_manager.get_filters();
         let cc = filters[0].color_config.as_ref().unwrap();
-        assert_eq!(cc.bg, Some(ratatui::style::Color::Blue));
+        assert_eq!(cc.bg, Some(crate::style::Color::Blue));
         assert!(cc.fg.is_some());
     }
 
@@ -2439,8 +2420,8 @@ mod tests {
         assert_eq!(filters[0].filter_type, FilterType::Highlight);
         let cc = filters[0].color_config.as_ref().unwrap();
         let (fg, bg) = (cc.fg.unwrap(), cc.bg.unwrap());
-        let to_rgb = |c: ratatui::style::Color| match c {
-            ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
+        let to_rgb = |c: crate::style::Color| match c {
+            crate::style::Color::Rgb(r, g, b) => (r, g, b),
             other => panic!("expected -a to generate an Rgb color, got {other:?}"),
         };
         let ratio = crate::theme::contrast_ratio(to_rgb(fg), to_rgb(bg));

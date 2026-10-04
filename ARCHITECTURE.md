@@ -1,10 +1,10 @@
 # logana Architecture
 
-Terminal-based log analysis tool built in Rust with a Ratatui TUI. Filters and UI context are persisted in SQLite.
+Log analysis tool built in Rust with independent Ratatui TUI and GPUI GUI frontends. Filters and UI context are persisted in SQLite.
 
 ## High-Level Design
 
-logana is structured around a strict separation between domain logic and the UI layer, divided into five broad concerns:
+logana is structured around a strict separation between domain logic and the UI layer, divided into the following concerns:
 
 **File I/O & Ingestion** (`ingestion/`) — `FileReader` reads files and streaming sources (stdin, Docker, DLT TCP, file tailing, OTLP HTTP). Compressed and archive files are extracted in the background; only the extracted content is opened as tabs.
 
@@ -14,9 +14,13 @@ logana is structured around a strict separation between domain logic and the UI 
 
 **Mode System** (`mode/`) — Modal UI where each mode owns keyboard input and returns a `KeyResult` for effects that cross mode boundaries. Example of modes: Normal, Command, Search, Filter, Visual, Comment. Each window is also treated as a mode.
 
-**UI & Rendering** (`ui/`) — The renderer reads tab state and produces widgets each frame; it never mutates state. The event loop dispatches key events to the active mode. Session state is persisted to SQLite and restored on reopen.
+**Shared application data** (`shared/`, `style.rs`) — Tab state, sessions, field layout, themes, command helpers, and color/style data are independent of frontend dependencies. Modes share input and interaction state; terminal status bars and render caches are gated by `tui`. Existing `ui` paths re-export shared types for compatibility.
 
-**Persistence** (`db/`) — `Database` owns the SQLite connection pool and schema migrations. `Database::open`/`in_memory` run pragmas and every `migrate_to_vN` step on one dedicated connection acquired up front, rather than letting each statement round-trip through the pool independently — schema-changing statements (especially the `filters` table rebuild in `migrate_to_v12`) must not be interleaved with another pooled connection observing a stale view of the schema. Storage is accessed through four traits: `FilterStore` (filter definitions), `FileContextStore` (per-file scroll/search/display context), `SessionStore` (open file list), and `AppSettingsStore` (runtime toggles keyed by `SettingsKey`). `LogManager` builds `FilterManager` instances from persisted filter definitions. `MarkManager` and `CommentManager` are in-memory managers owned by `TabState`; their state is flushed to SQLite via `FileContext` on tab close/switch. Session save/restore is coordinated by `SessionManager` in `ui/session.rs`.
+**GUI** (`gui/`, feature `gui`) — GPUI rendering and native controls use shared tab data with GUI-owned action and editor state. Mouse controls dispatch typed operations; the action launcher opens from its button, `:`, or `Ctrl+Shift+P`. TUI modes and keybindings do not handle GUI input. GPUI receives colors through a frontend adapter.
+
+**TUI & Rendering** (`ui/`, default feature `tui`) — The renderer reads tab state and produces widgets each frame; it never mutates state. The event loop dispatches key events to the active mode. Session state is persisted to SQLite and restored on reopen.
+
+**Persistence** (`db/`) — `Database` owns the SQLite connection pool and schema migrations. `Database::open`/`in_memory` run pragmas and every `migrate_to_vN` step on one dedicated connection acquired up front, rather than letting each statement round-trip through the pool independently — schema-changing statements (especially the `filters` table rebuild in `migrate_to_v12`) must not be interleaved with another pooled connection observing a stale view of the schema. Storage is accessed through four traits: `FilterStore` (filter definitions), `FileContextStore` (per-file scroll/search/display context), `SessionStore` (open file list), and `AppSettingsStore` (runtime toggles keyed by `SettingsKey`). `LogManager` builds `FilterManager` instances from persisted filter definitions. `MarkManager` and `CommentManager` are in-memory managers owned by `TabState`; their state is flushed to SQLite via `FileContext` on tab close/switch. Session save/restore is coordinated by `SessionManager` in `shared/session.rs`.
 
 ## Custom Schema Loading
 
@@ -42,7 +46,7 @@ For a `template`-based schema, `CustomParser` also compiles the template into an
 
 `select_fields_mode.rs`'s apply step only pins `field_layout.columns` to `Some(..)` when the staged order differs from `default_order` — matching it (whether nothing was ever touched, or the `r` key reset it) leaves `columns` at `None`, so it doesn't disable template reconstruction by itself. `cmd_show_all_fields` (`:show-all-fields`) clears both `hidden_fields` and `field_layout.columns` for the same reason.
 
-`CustomSchemaConfig::levels` (`CustomLevelValues { error: Vec<String>, warning: Vec<String> }`) lets a schema declare raw `level` values that don't match `LogLevel::parse_level`'s built-in keywords (e.g. `SEV1`/`SEV2`). `CustomParser::from_config` lowercases them into a `LevelOverrides { error: HashSet<String>, warning: HashSet<String> }` (rejecting a value declared as both) and implements the `LogFormatParser::classify_level` default-method hook to consult it before falling back to `LogLevel::parse_level`. Both `e`/`w` navigation (`TabState::pos_matches_level`, `src/ui/tab_state/mod.rs`) and level coloring (`log_panel.rs::classify_level`) call `parser.classify_level(raw)` instead of `LogLevel::parse_level` directly, so a schema's overrides drive both consistently.
+`CustomSchemaConfig::levels` (`CustomLevelValues { error: Vec<String>, warning: Vec<String> }`) lets a schema declare raw `level` values that don't match `LogLevel::parse_level`'s built-in keywords (e.g. `SEV1`/`SEV2`). `CustomParser::from_config` lowercases them into a `LevelOverrides { error: HashSet<String>, warning: HashSet<String> }` (rejecting a value declared as both) and implements the `LogFormatParser::classify_level` default-method hook to consult it before falling back to `LogLevel::parse_level`. Both `e`/`w` navigation (`TabState::pos_matches_level`, `src/shared/tab_state/mod.rs`) and level coloring (`parser::classify_level`) call `parser.classify_level(raw)` instead of `LogLevel::parse_level` directly, so a schema's overrides drive both consistently.
 
 ## Component Diagram
 
@@ -214,8 +218,8 @@ Each text filter (the `Text` box above) can be marked `ignore_case` (`FilterDef:
 
 | Crate | Role |
 |---|---|
-| **ratatui** | TUI rendering |
-| **crossterm** | Terminal I/O, key events |
+| **ratatui** | TUI rendering (`tui`) |
+| **crossterm** | Terminal I/O, key events (`tui`) |
 | **tokio** | Async runtime |
 | **async-trait** | Async trait methods for the mode system |
 | **memchr** | SIMD byte scanning for line indexing |
@@ -229,7 +233,9 @@ Each text filter (the `Text` box above) can be marked `ignore_case` (`FilterDef:
 | **strum** | Enum-to-string and string-to-enum derives |
 | **time** | Timestamp parsing for date-range filters |
 | **unicode-width** | Unicode display width for cursor/truncation |
-| **arboard** | Clipboard |
+| **arboard** | Terminal clipboard (`tui`) |
+| **gpui-kit / futures** | Desktop frontend (`gui`) |
+| **bitflags** | Shared style modifiers |
 | **dirs** | XDG config and data directories |
 | **anyhow** | Error handling |
 | **libc** | Low-level OS interfaces |

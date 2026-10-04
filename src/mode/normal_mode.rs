@@ -1,8 +1,15 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
 use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
 use crate::{
-    config::Keybindings,
     mode::{
-        app_mode::{Mode, ModeRenderState, status_entry},
+        app_mode::{Mode, ModeRenderState},
         command_mode::CommandMode,
         comment_mode::CommentMode,
         filter_mode::FilterManagementMode,
@@ -13,11 +20,10 @@ use crate::{
         visual_char_mode::{VisualMode, display_line_text},
         visual_mode::VisualLineMode,
     },
-    theme::Theme,
-    ui::{KeyResult, TabState},
+    shared::{KeyResult, TabState},
 };
 use async_trait::async_trait;
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 #[derive(Debug, Default)]
@@ -624,6 +630,7 @@ impl Mode for NormalMode {
         ModeRenderState::Normal
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let label = match self.count {
             Some(n) => format!("[NORMAL] {}  ", n),
@@ -720,7 +727,7 @@ mod tests {
     use crate::db::Database;
     use crate::db::LogManager;
     use crate::ingestion::FileReader;
-    use crate::ui::{KeyResult, TabState, VisibleLines};
+    use crate::shared::{KeyResult, TabState, VisibleLines};
     use std::sync::Arc;
 
     async fn make_tab(lines: &[&str]) -> TabState {
@@ -1735,6 +1742,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_mode_bar_content_contains_marks_only_hint() {
         let content =
             NormalMode::default().mode_bar_content(&Keybindings::default(), &Theme::default());

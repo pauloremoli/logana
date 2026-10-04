@@ -2,7 +2,7 @@ use gpui_kit::component::{GlobalState, TitleBar};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{KeyBinding, Menu, MenuItem};
 use logana::db::{Database, default_db_path};
-use logana::gui::app::{App, OpenFile, Quit};
+use logana::gui::app::{App, OpenCommands, OpenFile, Quit};
 use logana::gui::runtime;
 use logana::gui::theme as gui_theme;
 use logana::theme::Theme as TuiTheme;
@@ -24,10 +24,11 @@ fn main() {
         .run(move |cx| {
             gpui_kit::init(cx);
             gui_theme::install(&theme, cx);
-            cx.bind_keys([
-                KeyBinding::new("q", Quit, None),
-                KeyBinding::new("ctrl-o", OpenFile, None),
-            ]);
+            cx.bind_keys([KeyBinding::new(
+                "ctrl-shift-p",
+                OpenCommands,
+                Some("LoganaLogs"),
+            )]);
             GlobalState::global_mut(cx).set_app_menus(vec![
                 Menu::new("File")
                     .items([

@@ -157,6 +157,15 @@ pub fn validate_custom_schemas(schemas: &[crate::config::CustomSchemaConfig]) ->
         .collect()
 }
 
+/// Classifies a raw captured `level` value via `parser`'s own mapping (e.g. a
+/// custom schema's error/warning value overrides) when a parser is
+/// available, otherwise via the built-in `LogLevel::parse_level` keywords.
+pub fn classify_level(parser: Option<&dyn crate::parser::LogFormatParser>, raw: &str) -> LogLevel {
+    parser
+        .map(|p| p.classify_level(raw))
+        .unwrap_or_else(|| LogLevel::parse_level(raw))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

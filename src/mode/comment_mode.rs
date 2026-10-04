@@ -1,16 +1,22 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
 use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
 use crate::{
-    config::Keybindings,
     db::Comment,
     mode::{
-        app_mode::{Mode, ModeRenderState, status_entry},
+        app_mode::{Mode, ModeRenderState},
         normal_mode::NormalMode,
     },
-    theme::Theme,
-    ui::{KeyResult, TabState},
+    shared::{KeyResult, TabState},
 };
 use async_trait::async_trait;
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 #[derive(Debug)]
@@ -163,6 +169,7 @@ impl Mode for CommentMode {
         (self, KeyResult::Handled)
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let label = if self.editing_index.is_some() {
             "[COMMENT EDIT]  "
@@ -204,7 +211,7 @@ mod tests {
     use crate::db::Database;
     use crate::db::LogManager;
     use crate::ingestion::FileReader;
-    use crate::ui::TabState;
+    use crate::shared::TabState;
     use std::sync::Arc;
 
     async fn make_tab() -> TabState {
@@ -557,6 +564,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_mode_bar_content_edit_mode_contains_delete() {
         let mode = CommentMode::edit(0, "text".to_string(), vec![0]);
         let content = mode.mode_bar_content(&Keybindings::default(), &Theme::default());
@@ -565,6 +573,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_mode_bar_content_new_mode_no_delete() {
         let mode = CommentMode::new(vec![0]);
         let content = mode.mode_bar_content(&Keybindings::default(), &Theme::default());

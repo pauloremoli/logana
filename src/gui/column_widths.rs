@@ -1,4 +1,4 @@
-use crate::ui::TabState;
+use crate::shared::TabState;
 
 /// Identifies which of the log table's fixed-width columns a resize drag
 /// targets. `Message` has no fixed width (it always fills whatever space
@@ -30,11 +30,11 @@ pub const MIN_COLUMN_WIDTH_PX: f32 = 32.0;
 /// (unlike `#`/Time) there's no real content-fit benefit to sampling it.
 const COL_LEVEL_WIDTH: f32 = 84.0;
 
-const COL_LINE_NO_MIN_WIDTH: f32 = 40.0;
-const COL_TIME_MIN_WIDTH: f32 = 60.0;
+const COL_LINE_NO_MIN_WIDTH: f32 = 23.2;
+const COL_TIME_MIN_WIDTH: f32 = 44.8;
 /// A rough average glyph width (px) at the table's default text size,
 /// used to turn a sampled character count into a pixel estimate. The GUI
-/// has no fixed-width font, so this is an approximation, not a measured
+/// uses a monospaced font, but this is an approximation, not a measured
 /// value — good enough to size columns in the right ballpark, with manual
 /// resize (dragging a column's handle) available to correct it.
 const CHAR_WIDTH_PX: f32 = 7.2;
@@ -59,20 +59,33 @@ impl Default for ColumnWidths {
 /// Auto-fit column widths for `tab`'s content, run once when a file
 /// loads (not on every render — sampling is cheap but not free). `#`
 /// fits the file's real line count exactly (O(1), no sampling needed);
-/// Time samples up to `FIT_SAMPLE_CAP` visible lines for the longest
-/// parsed timestamp; Level stays fixed (see `COL_LEVEL_WIDTH`'s doc
-/// comment).
+/// Time and Level sample up to `FIT_SAMPLE_CAP` lines for the longest values.
 pub fn fit_column_widths(tab: &TabState) -> ColumnWidths {
     ColumnWidths {
         line_no: fit_line_no_width(tab),
         time: fit_time_width(tab),
-        level: COL_LEVEL_WIDTH,
+        level: fit_level_width(tab),
     }
+}
+
+fn fit_level_width(tab: &TabState) -> f32 {
+    let mut width = text_width("Level") + COL_PADDING_PX;
+    for line in 0..tab.file_reader.line_count().min(FIT_SAMPLE_CAP) {
+        let bytes = tab.file_reader.get_line(line);
+        let level = crate::gui::level::classify_line_level(tab, &bytes);
+        let label = match level {
+            crate::parser::LogLevel::Unknown => String::new(),
+            crate::parser::LogLevel::Warning => "WARN".to_string(),
+            _ => format!("{level:?}").to_uppercase(),
+        };
+        width = width.max(text_width(&label) + COL_PADDING_PX);
+    }
+    width
 }
 
 fn fit_line_no_width(tab: &TabState) -> f32 {
     let digits = tab.file_reader.line_count().max(1).to_string().len() as f32;
-    (digits * CHAR_WIDTH_PX + COL_PADDING_PX).max(COL_LINE_NO_MIN_WIDTH)
+    ((digits + 1.) * CHAR_WIDTH_PX + COL_PADDING_PX).max(COL_LINE_NO_MIN_WIDTH)
 }
 
 fn fit_time_width(tab: &TabState) -> f32 {
@@ -86,11 +99,104 @@ fn fit_time_width(tab: &TabState) -> f32 {
             let bytes = tab.file_reader.get_line(line_idx);
             parser
                 .parse_line(&bytes)
-                .and_then(|parts| parts.timestamp.map(str::len))
+                .and_then(|parts| parts.timestamp.map(text_width))
         })
-        .max()
-        .unwrap_or(0) as f32;
-    (max_len * CHAR_WIDTH_PX + COL_PADDING_PX).max(COL_TIME_MIN_WIDTH)
+        .fold(0.0_f32, f32::max);
+    (max_len + COL_PADDING_PX).max(COL_TIME_MIN_WIDTH)
+}
+
+/// Content widths are cached independently of viewport size and resize handles.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableWidths {
+    pub fixed: ColumnWidths,
+    pub fields: std::sync::Arc<std::collections::BTreeMap<String, f32>>,
+}
+impl std::ops::Deref for TableWidths {
+    type Target = ColumnWidths;
+    fn deref(&self) -> &Self::Target {
+        &self.fixed
+    }
+}
+impl From<ColumnWidths> for TableWidths {
+    fn from(fixed: ColumnWidths) -> Self {
+        Self {
+            fixed,
+            fields: Default::default(),
+        }
+    }
+}
+pub struct FieldWidthCache {
+    key: (crate::shared::TabId, u64, usize, bool, Vec<String>),
+    widths: std::sync::Arc<std::collections::BTreeMap<String, f32>>,
+}
+fn text_width(text: &str) -> f32 {
+    use unicode_width::UnicodeWidthStr;
+    text.lines().map(UnicodeWidthStr::width).max().unwrap_or(0) as f32 * CHAR_WIDTH_PX
+}
+pub fn table_widths(
+    cache: &mut Option<FieldWidthCache>,
+    tab: &TabState,
+    fields: &[String],
+    fixed: ColumnWidths,
+) -> TableWidths {
+    let key = (
+        tab.id,
+        tab.cache.parse_gen,
+        tab.file_reader.line_count(),
+        tab.display.show_keys,
+        fields.to_vec(),
+    );
+    if let Some(entry) = cache.as_ref().filter(|entry| entry.key == key) {
+        return TableWidths {
+            fixed,
+            fields: entry.widths.clone(),
+        };
+    }
+    let mut fitted = std::collections::BTreeMap::new();
+    for field in fields.iter().filter(|field| {
+        !matches!(
+            field.as_str(),
+            "timestamp" | "time" | "ts" | "level" | "lvl" | "message" | "msg"
+        )
+    }) {
+        fitted.insert(field.clone(), text_width(field) + COL_PADDING_PX);
+    }
+    if let (Some(width), Some(merged)) = (fitted.get_mut("source"), tab.merged.as_ref()) {
+        for label in &merged.source_labels {
+            let prefix = if tab.display.show_keys {
+                text_width("source=")
+            } else {
+                0.
+            };
+            *width = width.max(text_width(label) + prefix + COL_PADDING_PX);
+        }
+    }
+    if let Some(parser) = tab.display.format.as_ref() {
+        for line in 0..tab.file_reader.line_count().min(FIT_SAMPLE_CAP) {
+            let bytes = tab.file_reader.get_line(line);
+            if let Some(parts) = parser.parse_line(&bytes) {
+                for (field, width) in &mut fitted {
+                    if let Some(value) = crate::filters::resolve_field(field, &parts) {
+                        let prefix = if tab.display.show_keys && !value.is_empty() {
+                            text_width(field) + CHAR_WIDTH_PX
+                        } else {
+                            0.
+                        };
+                        *width = width.max(text_width(value) + prefix + COL_PADDING_PX);
+                    }
+                }
+            }
+        }
+    }
+    let widths = std::sync::Arc::new(fitted);
+    *cache = Some(FieldWidthCache {
+        key,
+        widths: widths.clone(),
+    });
+    TableWidths {
+        fixed,
+        fields: widths,
+    }
 }
 
 /// Applies a resize drag's pixel delta to `column`, clamped so a column
@@ -124,8 +230,8 @@ mod tests {
         let lines: Vec<String> = (0..150).map(|i| i.to_string()).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let tab = tab_with_lines(&refs).await;
-        // 150 lines -> 3 digits -> 3 * 7.2 + 16 = 37.6, above the 40px floor.
-        assert_eq!(fit_line_no_width(&tab), COL_LINE_NO_MIN_WIDTH);
+        // Three digits plus the bookmark marker slot must fit without clipping.
+        assert_eq!(fit_line_no_width(&tab), 44.8);
     }
 
     #[tokio::test]
@@ -133,7 +239,7 @@ mod tests {
         let lines: Vec<String> = (0..200_000).map(|i| i.to_string()).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let tab = tab_with_lines(&refs).await;
-        // 200,000 lines -> 6 digits -> 6 * 7.2 + 16 = 59.2.
+        // Six digits plus the bookmark marker exceed the minimum width.
         assert!(fit_line_no_width(&tab) > COL_LINE_NO_MIN_WIDTH);
     }
 
@@ -155,13 +261,35 @@ mod tests {
         assert_eq!(fit_time_width(&tab), 15.0 * CHAR_WIDTH_PX + COL_PADDING_PX);
     }
 
+    #[tokio::test]
+    async fn field_widths_fit_values_keys_and_unicode_and_reuse_cache() {
+        let tab =
+            tab_with_lines(&[r#"{"level":"INFO","message":"hello","id":"42","city":"東京"}"#])
+                .await;
+        let fields = vec!["id".into(), "city".into()];
+        let mut tab = tab;
+        tab.display.show_keys = false;
+        let mut cache = None;
+        let widths = table_widths(&mut cache, &tab, &fields, fit_column_widths(&tab));
+        assert_eq!(widths.fields["id"], 2. * CHAR_WIDTH_PX + COL_PADDING_PX);
+        assert_eq!(widths.fields["city"], 4. * CHAR_WIDTH_PX + COL_PADDING_PX);
+        assert!(widths.level < COL_LEVEL_WIDTH);
+        let cached = table_widths(&mut cache, &tab, &fields, widths.fixed);
+        assert!(std::sync::Arc::ptr_eq(&widths.fields, &cached.fields));
+        tab.display.show_keys = true;
+        let keyed = table_widths(&mut cache, &tab, &fields, widths.fixed);
+        assert_eq!(keyed.fields["id"], 5. * CHAR_WIDTH_PX + COL_PADDING_PX);
+        assert!((keyed.fields["city"] - (9. * CHAR_WIDTH_PX + COL_PADDING_PX)).abs() < 0.001);
+        assert!(!std::sync::Arc::ptr_eq(&widths.fields, &keyed.fields));
+    }
+
     #[test]
     fn apply_width_delta_grows_and_shrinks() {
         let mut widths = ColumnWidths::default();
         apply_width_delta(&mut widths, ResizableColumn::Time, 20.0);
         assert_eq!(widths.time, ColumnWidths::default().time + 20.0);
         apply_width_delta(&mut widths, ResizableColumn::Time, -20.0);
-        assert_eq!(widths.time, ColumnWidths::default().time);
+        assert!((widths.time - ColumnWidths::default().time).abs() < 0.001);
     }
 
     #[test]
