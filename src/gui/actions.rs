@@ -8,6 +8,8 @@ use crate::shared::TabId;
 pub enum Action {
     Open,
     Annotation,
+    SaveLogs,
+    SaveMarked,
     SaveFilters,
     LoadFilters,
     AppendFilters,
@@ -46,6 +48,20 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::SaveLogs,
+        label: "Save logs",
+        description: "Save visible source log entries",
+        aliases: "save logs",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::SaveMarked,
+        label: "Save bookmarked logs",
+        description: "Save bookmarked source log entries",
+        aliases: "export-marked",
+        tab: true,
+    },
     Descriptor {
         action: Action::SaveFilters,
         label: "Save filters",
@@ -250,6 +266,12 @@ pub fn open(
         return Effect::FilterFileDialog {
             action,
             tab_id: state.active_tab().unwrap().id,
+        };
+    }
+    if matches!(action, Action::SaveLogs | Action::SaveMarked) {
+        return Effect::SaveLogsDialog {
+            tab_id: state.active_tab().unwrap().id,
+            marked: action == Action::SaveMarked,
         };
     }
     let cmd = match action {

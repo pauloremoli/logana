@@ -291,6 +291,7 @@ impl App {
 
     fn apply_effect(&mut self, effect: Effect, _window: &mut Window, cx: &mut Context<Self>) {
         match effect {
+            Effect::SaveLogsDialog { tab_id, marked } => self.prompt_save_logs(tab_id, marked, cx),
             Effect::FilterFileDialog { action, tab_id } => {
                 self.prompt_filter_file(action, tab_id, cx)
             }
