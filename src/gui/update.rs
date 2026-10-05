@@ -29,6 +29,17 @@ use std::sync::atomic::AtomicBool;
 /// `app.rs`) still needs to perform. Never touches a gpui type itself.
 pub fn update(state: &mut GuiState, message: Message) -> Effect {
     match message {
+        Message::DefaultMappingsLoaded(epoch, mappings) => {
+            if let Some(editor) = &mut state.editor {
+                if editor.action == crate::gui::actions::Action::DefaultFilters
+                    && editor.epoch == epoch
+                {
+                    editor.values[1] = mappings.get(&editor.values[0]).cloned().unwrap_or_default();
+                    editor.conditions = mappings.into_iter().collect();
+                }
+            }
+            Effect::None
+        }
         Message::DockerListed(epoch, result) => {
             if let Some(editor) = &mut state.editor {
                 if editor.action == crate::gui::actions::Action::Docker && editor.epoch == epoch {
@@ -106,7 +117,15 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
         }
         Message::EditorText(index, value) => {
             if let Some(e) = &mut state.editor {
-                if e.action == crate::gui::actions::Action::Export && index == 0 {
+                if e.action == crate::gui::actions::Action::DefaultFilters && index == 0 {
+                    e.values[1] = e
+                        .conditions
+                        .iter()
+                        .find(|(name, _)| name == &value)
+                        .map(|(_, path)| path.clone())
+                        .unwrap_or_default();
+                    e.values[0] = value;
+                } else if e.action == crate::gui::actions::Action::Export && index == 0 {
                     crate::gui::actions::configure_export(e, &value);
                 } else if let Some(slot) = e.values.get_mut(index) {
                     *slot = value;

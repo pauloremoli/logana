@@ -45,7 +45,7 @@ GUI-only builds must not acquire terminal dependencies.
       the existing restore policies.
 - [ ] Keyboard navigation, tab shortcuts, bookmark shortcuts, file switching,
       and discoverable shortcut help. Legacy `KeyPressed` is currently ignored.
-- [ ] Default-filter configuration and automatic schema-default loading.
+- [x] Default-filter configuration and automatic schema-default loading.
 - [ ] Merge-file picker and merged-source lifecycle.
 - [ ] Archive-entry picker and extraction workflow.
 - [x] Docker container selection and log streaming.

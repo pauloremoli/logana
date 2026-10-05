@@ -8,6 +8,7 @@ use crate::shared::TabId;
 pub enum Action {
     Open,
     Annotation,
+    DefaultFilters,
     Docker,
     Dlt,
     Otel,
@@ -53,6 +54,13 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::DefaultFilters,
+        label: "Default filters by schema",
+        description: "Choose a filter file to load automatically for a schema",
+        aliases: "default-filters",
+        tab: false,
+    },
     Descriptor {
         action: Action::Docker,
         label: "Open Docker logs",
@@ -476,6 +484,13 @@ pub fn open(
             .collect();
         }
     }
+    if action == Action::DefaultFilters {
+        e.values[0] = state
+            .active_tab()
+            .and_then(|t| t.display.format.as_deref())
+            .map(|f| f.name().to_string())
+            .unwrap_or_else(|| "syslog".into());
+    }
     if action == Action::Dlt {
         e.values[0] = "localhost".into();
         e.values[1] = crate::config::DEFAULT_DLT_PORT.to_string();
@@ -540,6 +555,11 @@ pub fn open(
     state.palette.open = false;
     state.time_range_open = false;
     state.editor = Some(e);
+    if action == Action::DefaultFilters {
+        return Effect::LoadDefaultMappings {
+            epoch: state.editor.as_ref().unwrap().epoch,
+        };
+    }
     if action == Action::Docker {
         return Effect::ListDocker {
             epoch: state.editor.as_ref().unwrap().epoch,
@@ -617,6 +637,18 @@ pub fn apply(state: &mut GuiState) -> Effect {
     if let Some(error) = invalid {
         state.editor.as_mut().unwrap().error = Some(error);
         return Effect::None;
+    }
+    if e.action == Action::DefaultFilters {
+        if e.values[0].trim().is_empty() {
+            state.editor.as_mut().unwrap().error = Some("Choose a schema.".into());
+            return Effect::None;
+        }
+        let effect = Effect::SaveDefaultMapping {
+            format: e.values[0].clone(),
+            path: e.values[1].clone(),
+        };
+        close(state, true);
+        return effect;
     }
     if e.action == Action::Docker {
         if e.values[0].trim().is_empty() {

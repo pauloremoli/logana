@@ -70,6 +70,39 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         .flex_col()
         .gap_3();
     match e.action {
+        Action::DefaultFilters => {
+            body = body
+                .child(format!("Schema: {}", e.values[0]))
+                .child(text(
+                    app,
+                    1,
+                    "Default filter file (empty removes the mapping)",
+                    cx,
+                ))
+                .child("Mappings in config.json take precedence over saved settings.");
+            let custom = crate::config::custom_schemas()
+                .iter()
+                .map(|s| s.name.clone())
+                .collect::<Vec<_>>();
+            let mut names = crate::commands::auto_complete::schema_completion_names(&custom)
+                .into_iter()
+                .map(|(name, _)| name)
+                .filter(|name| name != "none")
+                .collect::<Vec<_>>();
+            names.extend(e.conditions.iter().map(|(name, _)| name.clone()));
+            names.sort();
+            names.dedup();
+            for (index, name) in names.into_iter().enumerate() {
+                body = body.child(
+                    Button::new(("default-schema", index))
+                        .label(name.clone())
+                        .selected(e.values[0] == name)
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.dispatch(Message::EditorText(0, name.clone()), window, cx)
+                        })),
+                );
+            }
+        }
         Action::Docker => {
             body = body.child(text(app, 0, "Container name or ID", cx));
             for (index, (id, label)) in e.conditions.iter().enumerate() {

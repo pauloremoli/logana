@@ -8,6 +8,13 @@ use std::path::PathBuf;
 /// the discarded prototype, but as a plain, directly-testable enum.
 #[derive(Debug)]
 pub enum Effect {
+    LoadDefaultMappings {
+        epoch: u64,
+    },
+    SaveDefaultMapping {
+        format: String,
+        path: String,
+    },
     ListDocker {
         epoch: u64,
     },

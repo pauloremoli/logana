@@ -7,6 +7,7 @@ use crate::input::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
 
 pub enum Message {
+    DefaultMappingsLoaded(u64, std::collections::HashMap<String, String>),
     DockerListed(u64, Result<Vec<(String, String)>, String>),
     SourceLoaded(Result<Box<crate::shared::TabState>, String>),
     DismissNotification(u64),
