@@ -3,6 +3,7 @@ use gpui_kit::gpui::Context;
 
 #[derive(Debug)]
 pub enum Source {
+    Otel { port: u16, grpc: bool },
     Run { program: String, args: Vec<String> },
 }
 impl Source {
@@ -11,6 +12,21 @@ impl Source {
         db: std::sync::Arc<crate::db::Database>,
     ) -> Result<Box<crate::shared::TabState>, String> {
         let (label, connect, no_retry) = match self {
+            Self::Otel { port, grpc } => {
+                if grpc {
+                    (
+                        format!("otlp-grpc://{port}"),
+                        crate::shared::otlp_grpc_connect_fn(port),
+                        false,
+                    )
+                } else {
+                    (
+                        format!("otlp://{port}"),
+                        crate::shared::otlp_connect_fn(port),
+                        false,
+                    )
+                }
+            }
             Self::Run { program, args } => {
                 let label = format!(
                     "run:{}",
@@ -105,5 +121,30 @@ mod lifecycle_tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("child process was not stopped");
+    }
+}
+
+#[cfg(test)]
+mod otel_tests {
+    #[tokio::test]
+    async fn receiver_editor_validates_port_and_protocol() {
+        let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let mut state = crate::gui::state::GuiState::new(db);
+        crate::gui::actions::open(&mut state, crate::gui::actions::Action::Otel, None, None);
+        state.editor.as_mut().unwrap().values[0] = "0".into();
+        assert!(matches!(
+            crate::gui::actions::apply(&mut state),
+            crate::gui::effect::Effect::None
+        ));
+        assert!(state.editor.as_ref().unwrap().error.is_some());
+        state.editor.as_mut().unwrap().values[0] = "4317".into();
+        state.editor.as_mut().unwrap().values[1] = "grpc".into();
+        assert!(matches!(
+            crate::gui::actions::apply(&mut state),
+            crate::gui::effect::Effect::ConnectSource(super::Source::Otel {
+                port: 4317,
+                grpc: true
+            })
+        ));
     }
 }

@@ -70,6 +70,19 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         .flex_col()
         .gap_3();
     match e.action {
+        Action::Otel => {
+            body = body.child(text(app, 0, "Listen port", cx));
+            for protocol in ["http", "grpc"] {
+                body = body.child(
+                    Button::new(format!("otel-{protocol}"))
+                        .label(protocol)
+                        .selected(e.values[1] == protocol)
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.dispatch(Message::EditorText(1, protocol.into()), window, cx)
+                        })),
+                );
+            }
+        }
         Action::Run => {
             body = body.child(text(app, 0, "Executable", cx)).child(text(
                 app,

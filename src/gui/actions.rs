@@ -8,6 +8,7 @@ use crate::shared::TabId;
 pub enum Action {
     Open,
     Annotation,
+    Otel,
     Run,
     Export,
     SaveLogs,
@@ -50,6 +51,13 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::Otel,
+        label: "Receive OpenTelemetry logs",
+        description: "Start an OTLP HTTP or gRPC receiver",
+        aliases: "otel otlp",
+        tab: false,
+    },
     Descriptor {
         action: Action::Run,
         label: "Run command",
@@ -452,6 +460,10 @@ pub fn open(
             .collect();
         }
     }
+    if action == Action::Otel {
+        e.values[0] = "4318".into();
+        e.values[1] = "http".into();
+    }
     if action == Action::Export {
         configure_export(&mut e, "markdown");
     }
@@ -565,6 +577,18 @@ pub fn apply(state: &mut GuiState) -> Effect {
     if let Some(error) = invalid {
         state.editor.as_mut().unwrap().error = Some(error);
         return Effect::None;
+    }
+    if e.action == Action::Otel {
+        let Some(port) = e.values[0].parse::<u16>().ok().filter(|port| *port > 0) else {
+            state.editor.as_mut().unwrap().error = Some("Enter a port between 1 and 65535.".into());
+            return Effect::None;
+        };
+        let source = crate::gui::sources::Source::Otel {
+            port,
+            grpc: e.values[1] == "grpc",
+        };
+        close(state, true);
+        return Effect::ConnectSource(source);
     }
     if e.action == Action::Run {
         if e.values[0].trim().is_empty() {
