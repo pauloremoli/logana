@@ -8,6 +8,11 @@ use std::path::PathBuf;
 /// the discarded prototype, but as a plain, directly-testable enum.
 #[derive(Debug)]
 pub enum Effect {
+    ExportDialog {
+        tab_id: crate::shared::TabId,
+        template: String,
+        fields: Vec<(String, String)>,
+    },
     SaveLogsDialog {
         tab_id: crate::shared::TabId,
         marked: bool,

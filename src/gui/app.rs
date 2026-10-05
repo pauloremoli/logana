@@ -24,6 +24,8 @@ actions!(logana_gui, [OpenFile, OpenCommands, Quit]);
 pub struct App {
     pub state: GuiState,
     pub editor_inputs: Vec<Entity<InputState>>,
+    pub editor_textareas:
+        std::collections::HashMap<usize, Entity<gpui_kit::component::input::TextareaState>>,
     editor_epoch: u64,
     editor_synced: Vec<String>,
     filter_edits: tokio::sync::mpsc::UnboundedSender<crate::gui::effect::FilterEdit>,
@@ -134,6 +136,7 @@ impl App {
             filter_edits,
             state: GuiState::new(db).with_theme(theme),
             editor_inputs: Vec::new(),
+            editor_textareas: Default::default(),
             editor_epoch: 0,
             editor_synced: Vec::new(),
             log_scroll: VirtualListScrollHandle::new(),
@@ -179,6 +182,7 @@ impl App {
                 message,
                 Message::OpenCommands
                     | Message::GuiAction(_)
+                    | Message::LogRowAction(..)
                     | Message::EditFilter(_)
                     | Message::EditGroup(_)
             )
@@ -189,11 +193,20 @@ impl App {
             if let Some(editor) = &mut self.state.editor {
                 if editor.epoch == self.editor_epoch {
                     for (index, input) in self.editor_inputs.iter().enumerate() {
-                        let value = input.read(cx).value().to_string();
+                        let value = self
+                            .editor_textareas
+                            .get(&index)
+                            .map(|input| input.read(cx).value().to_string())
+                            .unwrap_or_else(|| input.read(cx).value().to_string());
                         if self.editor_synced.get(index) == Some(&editor.values[index])
                             && value != editor.values[index]
                         {
                             editor.values[index] = value.clone();
+                            if let Some(input) = self.editor_textareas.get(&index) {
+                                input.update(cx, |input, cx| {
+                                    input.set_value(value.clone(), window, cx)
+                                });
+                            }
                             self.editor_synced[index] = value;
                             editor.error = None;
                         }
@@ -219,7 +232,7 @@ impl App {
                 | Message::EditorCancel
                 | Message::EditorApply
                 | Message::PaletteClose
-                | Message::PaletteKey(crate::input::KeyCode::Esc, _)
+                | Message::PaletteKey(crate::input::KeyCode::Esc | crate::input::KeyCode::Enter, _)
         );
         let previous_theme = self.state.theme.clone();
         let runtime_handle = runtime::handle();
@@ -291,6 +304,11 @@ impl App {
 
     fn apply_effect(&mut self, effect: Effect, _window: &mut Window, cx: &mut Context<Self>) {
         match effect {
+            Effect::ExportDialog {
+                tab_id,
+                template,
+                fields,
+            } => self.prompt_export(tab_id, template, fields, cx),
             Effect::SaveLogsDialog { tab_id, marked } => self.prompt_save_logs(tab_id, marked, cx),
             Effect::FilterFileDialog { action, tab_id } => {
                 self.prompt_filter_file(action, tab_id, cx)
@@ -882,9 +900,11 @@ impl Render for App {
         }
         if let Some(editor) = &self.state.editor {
             let values = editor.values.clone();
+            let editor_action = editor.action;
             let epoch = editor.epoch;
             if self.editor_epoch != epoch || self.editor_inputs.is_empty() {
                 self.editor_inputs.clear();
+                self.editor_textareas.clear();
                 self.editor_synced = values.to_vec();
                 for (index, value) in values.into_iter().enumerate() {
                     let input = cx.new(|cx| {
@@ -911,6 +931,32 @@ impl Render for App {
                     )
                     .detach();
                     self.editor_inputs.push(input);
+                    if (editor_action == crate::gui::actions::Action::Annotation && index == 0)
+                        || (editor_action == crate::gui::actions::Action::Export && index >= 6)
+                    {
+                        let value = self.state.editor.as_ref().unwrap().values[index].clone();
+                        let textarea = cx.new(|cx| {
+                            let mut input =
+                                gpui_kit::component::input::TextareaState::new(window, cx).rows(4);
+                            input.set_value(value, window, cx);
+                            input
+                        });
+                        cx.subscribe_in(
+                            &textarea,
+                            window,
+                            move |app, input, event: &InputEvent, window, cx| {
+                                if matches!(event, InputEvent::Change)
+                                    && app.state.editor.as_ref().is_some_and(|e| e.epoch == epoch)
+                                {
+                                    let value = input.read(cx).value().to_string();
+                                    app.editor_synced[index] = value.clone();
+                                    app.dispatch(Message::EditorText(index, value), window, cx);
+                                }
+                            },
+                        )
+                        .detach();
+                        self.editor_textareas.insert(index, textarea);
+                    }
                 }
                 self.editor_epoch = epoch;
                 let action = self.state.editor.as_ref().unwrap().action;
@@ -923,6 +969,9 @@ impl Render for App {
                     | crate::gui::actions::Action::ValueColors
                     | crate::gui::actions::Action::LevelColors => {
                         self.interface_focus.focus(window, cx)
+                    }
+                    crate::gui::actions::Action::Annotation => {
+                        self.editor_textareas[&0].update(cx, |input, cx| input.focus(window, cx))
                     }
                     _ => self.editor_inputs[0].update(cx, |input, cx| input.focus(window, cx)),
                 };
@@ -937,6 +986,7 @@ impl Render for App {
             }
         } else {
             self.editor_inputs.clear();
+            self.editor_textareas.clear();
             self.editor_synced.clear();
         }
         let focused = |input: &Option<Entity<InputState>>| {
@@ -980,6 +1030,36 @@ impl Render for App {
                         cx.notify();
                     }
                     return;
+                }
+                if context == "LoganaActions" {
+                    let key = match stroke.key.as_str() {
+                        "enter" => Some(crate::input::KeyCode::Enter),
+                        "up" => Some(crate::input::KeyCode::Up),
+                        "down" => Some(crate::input::KeyCode::Down),
+                        _ => None,
+                    };
+                    if let Some(key) = key {
+                        cx.stop_propagation();
+                        app.dispatch(Message::PaletteKey(key, Default::default()), window, cx);
+                    }
+                    return;
+                }
+                if !editing
+                    && context == "LoganaLogs"
+                    && stroke.modifiers.control
+                    && !stroke.modifiers.alt
+                {
+                    let action = match (stroke.key.as_str(), stroke.modifiers.shift) {
+                        ("b", false) => Some(crate::gui::actions::Action::Bookmark),
+                        ("b", true) => Some(crate::gui::actions::Action::ToggleBookmarks),
+                        ("a", true) => Some(crate::gui::actions::Action::Annotation),
+                        _ => None,
+                    };
+                    if let Some(action) = action {
+                        cx.stop_propagation();
+                        app.dispatch(Message::GuiAction(action), window, cx);
+                        return;
+                    }
                 }
                 if context == "LoganaDialog" || context == "LoganaActions" {
                     return;

@@ -84,7 +84,11 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
         }
         Message::EditorText(index, value) => {
             if let Some(e) = &mut state.editor {
-                e.values[index] = value;
+                if e.action == crate::gui::actions::Action::Export && index == 0 {
+                    crate::gui::actions::configure_export(e, &value);
+                } else if let Some(slot) = e.values.get_mut(index) {
+                    *slot = value;
+                }
                 e.error = None;
             }
             Effect::None

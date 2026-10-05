@@ -8,7 +8,7 @@ use crate::gui::{
 use gpui_kit::base::{Disableable, FocusTrapElement, Selectable, TestSupportExt};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::Input;
+use gpui_kit::component::input::{Input, Textarea};
 use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::gpui::{
     AnyElement, ClipboardItem, Context, MouseButton, Pixels, Size, anchored, deferred, div, point,
@@ -16,6 +16,15 @@ use gpui_kit::gpui::{
 };
 
 fn text(app: &App, index: usize, label: &str, _cx: &mut Context<App>) -> AnyElement {
+    if let Some(input) = app.editor_textareas.get(&index) {
+        return div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(label.to_string())
+            .child(Textarea::new(input))
+            .into_any_element();
+    }
     div()
         .flex()
         .flex_col()
@@ -61,6 +70,22 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         .flex_col()
         .gap_3();
     match e.action {
+        Action::Export => {
+            body = body.child("Choose a template and fill its optional fields.");
+            for (index, name) in crate::commands::list_templates().into_iter().enumerate() {
+                body = body.child(
+                    Button::new(("export-template", index))
+                        .label(name.clone())
+                        .selected(e.values[0] == name)
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.dispatch(Message::EditorText(0, name.clone()), window, cx)
+                        })),
+                );
+            }
+            for (index, (key, _)) in e.fields.iter().enumerate() {
+                body = body.child(text(app, index + 6, key, cx));
+            }
+        }
         Action::Annotation => {
             body = body
                 .child(format!("Note attached to {} source rows", e.members.len()))

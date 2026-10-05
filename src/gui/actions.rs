@@ -8,6 +8,7 @@ use crate::shared::TabId;
 pub enum Action {
     Open,
     Annotation,
+    Export,
     SaveLogs,
     SaveMarked,
     SaveFilters,
@@ -48,6 +49,13 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::Export,
+        label: "Export analysis",
+        description: "Export annotations and bookmarks using a template",
+        aliases: "export template",
+        tab: true,
+    },
     Descriptor {
         action: Action::SaveLogs,
         label: "Save logs",
@@ -227,7 +235,7 @@ pub struct Editor {
     pub action: Action,
     pub source: Option<TabId>,
     pub epoch: u64,
-    pub values: [String; 6],
+    pub values: Vec<String>,
     pub kind: FilterType,
     pub regex: bool,
     pub ignore_case: bool,
@@ -317,7 +325,7 @@ pub fn open(
             None
         },
         epoch: state.palette.focus_epoch.wrapping_add(1),
-        values: Default::default(),
+        values: vec![String::new(); 6],
         kind: FilterType::Include,
         regex: false,
         ignore_case: false,
@@ -436,6 +444,9 @@ pub fn open(
             .collect();
         }
     }
+    if action == Action::Export {
+        configure_export(&mut e, "markdown");
+    }
     if action == Action::Annotation {
         let tab = state.active_tab().unwrap();
         if let Some(comment) = edit_id.and_then(|i| tab.comment_manager.get().get(i)) {
@@ -546,6 +557,24 @@ pub fn apply(state: &mut GuiState) -> Effect {
     if let Some(error) = invalid {
         state.editor.as_mut().unwrap().error = Some(error);
         return Effect::None;
+    }
+    if e.action == Action::Export {
+        if let Err(error) = crate::commands::load_template(&e.values[0]) {
+            state.editor.as_mut().unwrap().error = Some(error.to_string());
+            return Effect::None;
+        }
+        let effect = Effect::ExportDialog {
+            tab_id: e.source.unwrap(),
+            template: e.values[0].clone(),
+            fields: e
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(i, (key, _))| (key.clone(), e.values[i + 6].clone()))
+                .collect(),
+        };
+        close(state, true);
+        return effect;
     }
     if e.action == Action::Annotation {
         if e.values[0].trim().is_empty() || e.members.is_empty() {
@@ -1126,5 +1155,22 @@ mod tests {
         assert_eq!(manager.get_filters()[0].id, id);
         assert_eq!(manager.get_filters()[0].pattern, "world");
         assert_eq!(manager.get_filters()[0].filter_type, FilterType::Exclude);
+    }
+}
+
+pub fn configure_export(editor: &mut Editor, name: &str) {
+    match crate::commands::load_template(name) {
+        Ok(template) => {
+            editor.values[0] = name.into();
+            editor.fields = crate::commands::extract_user_fields(&template)
+                .into_iter()
+                .map(|key| (key, true))
+                .collect();
+            editor.values.resize(6 + editor.fields.len(), String::new());
+            editor.values[6..].fill(String::new());
+            editor.epoch = editor.epoch.wrapping_add(1);
+            editor.error = None;
+        }
+        Err(error) => editor.error = Some(error.to_string()),
     }
 }

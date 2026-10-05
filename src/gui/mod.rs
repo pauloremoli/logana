@@ -22,3 +22,5 @@ mod palette_ui_tests;
 mod file_actions;
 
 mod save_logs;
+
+mod export;

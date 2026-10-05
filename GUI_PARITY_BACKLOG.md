@@ -38,7 +38,7 @@ GUI-only builds must not acquire terminal dependencies.
 - [x] Save current logs and marked logs using native save dialogs.
 - [ ] Re-home saved temporary/stream tabs and migrate their context to the permanent path.
 - [x] Save/load/append/import filter files using native dialogs.
-- [ ] Template exports with editable footer fields and output dialogs.
+- [x] Template exports with editable footer fields and output dialogs.
 - [ ] Consume live file growth, preserve filters and source indices, follow the
       newest visible row, and handle truncation/rotation and pause/resume.
 - [ ] Persist and restore display settings, per-file context, and sessions with
