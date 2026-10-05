@@ -7,6 +7,7 @@ use crate::shared::TabId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Open,
+    OpenDirectory,
     Annotation,
     Bookmark,
     ShowBookmarks,
@@ -68,6 +69,13 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::OpenDirectory,
+        label: "Open directory…",
+        description: "Choose a directory and browse its log files",
+        aliases: "open-directory open-folder",
+        tab: false,
+    },
     Descriptor {
         action: Action::Settings,
         label: "Settings",
@@ -474,6 +482,9 @@ pub fn open(
     }
     if action == Action::Open {
         return Effect::OpenFileDialog;
+    }
+    if action == Action::OpenDirectory {
+        return Effect::OpenDirectoryDialog;
     }
     if matches!(
         action,

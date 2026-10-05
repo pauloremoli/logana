@@ -80,6 +80,7 @@ pub enum Effect {
     None,
     Quit,
     OpenFileDialog,
+    OpenDirectoryDialog,
     LoadFile(PathBuf),
     ToggleFilter {
         tab_idx: usize,

@@ -598,7 +598,8 @@ impl App {
             }
             Effect::None => {}
             Effect::Quit => self.request_quit(cx),
-            Effect::OpenFileDialog => self.spawn_open_file_dialog(cx),
+            Effect::OpenFileDialog => self.spawn_open_file_dialog(false, cx),
+            Effect::OpenDirectoryDialog => self.spawn_open_file_dialog(true, cx),
             Effect::LoadFile(path) => self.spawn_load_file(path, cx),
             Effect::ToggleFilter {
                 tab_idx,
@@ -655,10 +656,10 @@ impl App {
         }
     }
 
-    fn spawn_open_file_dialog(&self, cx: &mut Context<Self>) {
+    fn spawn_open_file_dialog(&self, directories: bool, cx: &mut Context<Self>) {
         let prompt = cx.prompt_for_paths(gpui_kit::gpui::PathPromptOptions {
-            files: true,
-            directories: true,
+            files: !directories,
+            directories,
             multiple: false,
             prompt: None,
         });
