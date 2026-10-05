@@ -436,10 +436,12 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             }
         }
         Message::FileDialogResult(Some(path)) => {
+            // Background loading owns progress; a running palette outcome would
+            // block subsequent actions without a palette completion callback.
             gui_outcome(
                 state,
                 "Open file".into(),
-                crate::gui::palette::ExecutionState::Running,
+                crate::gui::palette::ExecutionState::Information,
                 format!("Loading {}…", path.display()),
             );
             Effect::LoadFile(path)
@@ -2935,6 +2937,29 @@ mod tests {
             Message::FileDialogResult(Some(PathBuf::from("/tmp/x.log"))),
         );
         assert!(matches!(effect, Effect::LoadFile(p) if p == std::path::Path::new("/tmp/x.log")));
+    }
+
+    #[tokio::test]
+    async fn opening_a_file_does_not_block_the_next_file_dialog() {
+        let (mut state, _file) = state_with_one_tab().await;
+        for path in ["/tmp/first.log", "/tmp/second.log"] {
+            assert!(matches!(
+                update(&mut state, Message::OpenFileDialog),
+                Effect::OpenFileDialog
+            ));
+            assert!(matches!(
+                update(
+                    &mut state,
+                    Message::FileDialogResult(Some(PathBuf::from(path)))
+                ),
+                Effect::LoadFile(_)
+            ));
+            assert!(!state.palette.pending());
+        }
+        assert!(matches!(
+            update(&mut state, Message::OpenFileDialog),
+            Effect::OpenFileDialog
+        ));
     }
 
     #[tokio::test]
