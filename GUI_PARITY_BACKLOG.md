@@ -57,8 +57,8 @@ GUI-only builds must not acquire terminal dependencies.
 
 ## Additional GUI pages
 
-- [ ] Searches: define behavior for saved searches; the TUI has no equivalent
-      saved-search page, so this is a GUI enhancement rather than parity.
+The saved-search feature and navigation item were removed at the user’s request.
+
 - [ ] Settings: expose persisted application options in a native page.
 
 ## Validation

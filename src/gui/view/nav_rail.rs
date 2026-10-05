@@ -67,14 +67,6 @@ pub fn nav_rail(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
             cx,
         ))
         .child(nav_item(
-            IconName::Search,
-            "Searches",
-            NavPage::Searches,
-            state.nav_page == NavPage::Searches,
-            None,
-            cx,
-        ))
-        .child(nav_item(
             IconName::Settings,
             "Settings",
             NavPage::Settings,

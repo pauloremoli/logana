@@ -59,7 +59,6 @@ pub enum NavPage {
     Logs,
     Bookmarks,
     Annotations,
-    Searches,
     Settings,
 }
 
