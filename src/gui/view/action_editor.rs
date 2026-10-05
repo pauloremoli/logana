@@ -70,6 +70,25 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         .flex_col()
         .gap_3();
     match e.action {
+        Action::Dlt => {
+            for (index, label, _) in &e.members {
+                if let Some((host, port)) = e.conditions.get(*index) {
+                    let host = host.clone();
+                    let port = port.clone();
+                    body = body.child(
+                        Button::new(("dlt-device", *index))
+                            .label(label.clone())
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.dispatch(Message::EditorText(0, host.clone()), window, cx);
+                                app.dispatch(Message::EditorText(1, port.clone()), window, cx);
+                            })),
+                    );
+                }
+            }
+            body = body
+                .child(text(app, 0, "Device host", cx))
+                .child(text(app, 1, "TCP port", cx));
+        }
         Action::Otel => {
             body = body.child(text(app, 0, "Listen port", cx));
             for protocol in ["http", "grpc"] {

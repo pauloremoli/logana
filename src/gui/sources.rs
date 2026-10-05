@@ -3,6 +3,7 @@ use gpui_kit::gpui::Context;
 
 #[derive(Debug)]
 pub enum Source {
+    Dlt { host: String, port: u16 },
     Otel { port: u16, grpc: bool },
     Run { program: String, args: Vec<String> },
 }
@@ -12,6 +13,11 @@ impl Source {
         db: std::sync::Arc<crate::db::Database>,
     ) -> Result<Box<crate::shared::TabState>, String> {
         let (label, connect, no_retry) = match self {
+            Self::Dlt { host, port } => (
+                format!("dlt://{host}:{port}"),
+                crate::shared::dlt_connect_fn(host, port),
+                false,
+            ),
             Self::Otel { port, grpc } => {
                 if grpc {
                     (

@@ -49,7 +49,7 @@ GUI-only builds must not acquire terminal dependencies.
 - [ ] Merge-file picker and merged-source lifecycle.
 - [ ] Archive-entry picker and extraction workflow.
 - [ ] Docker container selection and log streaming.
-- [ ] DLT source selection and streaming.
+- [x] DLT source selection and streaming.
 - [x] OTEL receiver configuration and streaming.
 - [x] Run subprocess output in a log tab with stop/pause lifecycle.
 - [ ] Enable/disable MCP with the existing server lifecycle.

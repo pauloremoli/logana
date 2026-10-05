@@ -8,6 +8,7 @@ use crate::shared::TabId;
 pub enum Action {
     Open,
     Annotation,
+    Dlt,
     Otel,
     Run,
     Export,
@@ -51,6 +52,13 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::Dlt,
+        label: "Connect DLT device",
+        description: "Select a configured device or enter its host and port",
+        aliases: "dlt",
+        tab: false,
+    },
     Descriptor {
         action: Action::Otel,
         label: "Receive OpenTelemetry logs",
@@ -460,6 +468,25 @@ pub fn open(
             .collect();
         }
     }
+    if action == Action::Dlt {
+        e.values[0] = "localhost".into();
+        e.values[1] = crate::config::DEFAULT_DLT_PORT.to_string();
+        for (index, device) in crate::config::Config::load()
+            .unwrap_or_default()
+            .dlt_devices
+            .into_iter()
+            .enumerate()
+        {
+            e.members.push((index, device.name, true));
+            e.conditions.push((
+                device.host,
+                device
+                    .port
+                    .unwrap_or(crate::config::DEFAULT_DLT_PORT)
+                    .to_string(),
+            ));
+        }
+    }
     if action == Action::Otel {
         e.values[0] = "4318".into();
         e.values[1] = "http".into();
@@ -577,6 +604,22 @@ pub fn apply(state: &mut GuiState) -> Effect {
     if let Some(error) = invalid {
         state.editor.as_mut().unwrap().error = Some(error);
         return Effect::None;
+    }
+    if e.action == Action::Dlt {
+        let Some(port) = e.values[1].parse::<u16>().ok().filter(|port| *port > 0) else {
+            state.editor.as_mut().unwrap().error = Some("Enter a port between 1 and 65535.".into());
+            return Effect::None;
+        };
+        if e.values[0].trim().is_empty() {
+            state.editor.as_mut().unwrap().error = Some("Enter the device host.".into());
+            return Effect::None;
+        }
+        let source = crate::gui::sources::Source::Dlt {
+            host: e.values[0].clone(),
+            port,
+        };
+        close(state, true);
+        return Effect::ConnectSource(source);
     }
     if e.action == Action::Otel {
         let Some(port) = e.values[0].parse::<u16>().ok().filter(|port| *port > 0) else {
