@@ -953,10 +953,6 @@ impl TabState {
             display: DisplayConfig {
                 format: detected_format,
                 hidden_fields: default_hidden,
-                level_colors_disabled: ["trace", "debug", "info", "notice"]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect(),
                 ..DisplayConfig::default()
             },
             interaction: InteractionState {
@@ -2700,10 +2696,7 @@ impl TabState {
         self.search.query = Search::new();
         self.interaction.command_error = None;
         self.filter.saved_view = None;
-        self.display.level_colors_disabled = ["trace", "debug", "info", "notice"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        self.display.level_colors_disabled.clear();
         if let Some(ref h) = self.search.handle {
             h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -3951,18 +3944,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_to_file_context_with_source() {
-        let tab = make_tab_with_source(&["line1", "line2", "line3"], "test.log").await;
+        let mut tab = make_tab_with_source(&["line1", "line2", "line3"], "test.log").await;
         let ctx = tab.to_file_context();
         assert!(ctx.is_some());
         let ctx = ctx.unwrap();
         assert_eq!(ctx.source_file, "test.log");
         assert_eq!(ctx.scroll_offset, 0);
-        let expected_disabled: std::collections::HashSet<String> =
-            ["trace", "debug", "info", "notice"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-        assert_eq!(ctx.level_colors_disabled, expected_disabled);
+        assert!(ctx.level_colors_disabled.is_empty());
+        tab.display.level_colors_disabled.insert("info".into());
+        tab.reset_tab_state();
+        assert!(tab.display.level_colors_disabled.is_empty());
     }
 
     #[tokio::test]

@@ -409,12 +409,7 @@ mod tests {
     #[tokio::test]
     async fn test_level_colors_opens_dialog() {
         let mut app = make_app(&["line1"]).await;
-        let default_disabled: std::collections::HashSet<String> =
-            ["trace", "debug", "info", "notice"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-        assert_eq!(app.tabs[0].display.level_colors_disabled, default_disabled);
+        assert!(app.tabs[0].display.level_colors_disabled.is_empty());
         let result = app.run_command("level-colors").await.unwrap();
         assert!(result);
         assert!(matches!(

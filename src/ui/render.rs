@@ -1646,12 +1646,7 @@ mod tests {
             "ERROR error occurred",
         ])
         .await;
-        let default_disabled: std::collections::HashSet<String> =
-            ["trace", "debug", "info", "notice"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-        assert_eq!(app.tabs[0].display.level_colors_disabled, default_disabled);
+        assert!(app.tabs[0].display.level_colors_disabled.is_empty());
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
