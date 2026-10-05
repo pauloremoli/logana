@@ -651,7 +651,7 @@ impl App {
     fn spawn_open_file_dialog(&self, cx: &mut Context<Self>) {
         let prompt = cx.prompt_for_paths(gpui_kit::gpui::PathPromptOptions {
             files: true,
-            directories: false,
+            directories: true,
             multiple: false,
             prompt: None,
         });
