@@ -29,6 +29,17 @@ use std::sync::atomic::AtomicBool;
 /// `app.rs`) still needs to perform. Never touches a gpui type itself.
 pub fn update(state: &mut GuiState, message: Message) -> Effect {
     match message {
+        Message::DockerListed(epoch, result) => {
+            if let Some(editor) = &mut state.editor {
+                if editor.action == crate::gui::actions::Action::Docker && editor.epoch == epoch {
+                    match result {
+                        Ok(containers) => editor.conditions = containers,
+                        Err(error) => editor.error = Some(error),
+                    }
+                }
+            }
+            Effect::None
+        }
         Message::SourceLoaded(result) => {
             match result {
                 Ok(tab) => {

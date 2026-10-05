@@ -318,6 +318,7 @@ impl App {
 
     fn apply_effect(&mut self, effect: Effect, _window: &mut Window, cx: &mut Context<Self>) {
         match effect {
+            Effect::ListDocker { epoch } => self.list_docker(epoch, cx),
             Effect::ConnectSource(source) => self.connect_source(source, cx),
             Effect::ExportDialog {
                 tab_id,

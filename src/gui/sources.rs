@@ -3,6 +3,7 @@ use gpui_kit::gpui::Context;
 
 #[derive(Debug)]
 pub enum Source {
+    Docker { container: String },
     Dlt { host: String, port: u16 },
     Otel { port: u16, grpc: bool },
     Run { program: String, args: Vec<String> },
@@ -13,6 +14,11 @@ impl Source {
         db: std::sync::Arc<crate::db::Database>,
     ) -> Result<Box<crate::shared::TabState>, String> {
         let (label, connect, no_retry) = match self {
+            Self::Docker { container } => (
+                format!("docker://{container}"),
+                crate::shared::docker_connect_fn(container),
+                false,
+            ),
             Self::Dlt { host, port } => (
                 format!("dlt://{host}:{port}"),
                 crate::shared::dlt_connect_fn(host, port),
@@ -152,5 +158,58 @@ mod otel_tests {
                 grpc: true
             })
         ));
+    }
+}
+
+fn parse_containers(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let parts = line.splitn(4, '\t').collect::<Vec<_>>();
+            (parts.len() == 4).then(|| {
+                (
+                    parts[0].into(),
+                    format!("{} · {} · {}", parts[1], parts[2], parts[3]),
+                )
+            })
+        })
+        .collect()
+}
+impl App {
+    pub(super) fn list_docker(&self, epoch: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let result = crate::gui::runtime::handle()
+                .spawn(async {
+                    let output = tokio::process::Command::new("docker")
+                        .args([
+                            "ps",
+                            "--format",
+                            "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
+                        ])
+                        .output()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if !output.status.success() {
+                        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+                    }
+                    Ok(parse_containers(&String::from_utf8_lossy(&output.stdout)))
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            this.update_in(cx, |app, window, cx| {
+                app.dispatch(Message::DockerListed(epoch, result), window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+#[cfg(test)]
+mod docker_tests {
+    #[test]
+    fn container_listing_keeps_ids_and_rejects_incomplete_rows() {
+        assert_eq!(
+            super::parse_containers("abc\tservice\timage:v1\tUp 2 hours\ninvalid\n"),
+            vec![("abc".into(), "service · image:v1 · Up 2 hours".into())]
+        );
     }
 }

@@ -70,6 +70,20 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         .flex_col()
         .gap_3();
     match e.action {
+        Action::Docker => {
+            body = body.child(text(app, 0, "Container name or ID", cx));
+            for (index, (id, label)) in e.conditions.iter().enumerate() {
+                let id = id.clone();
+                body = body.child(
+                    Button::new(("docker-container", index))
+                        .label(label.clone())
+                        .selected(e.values[0] == id)
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.dispatch(Message::EditorText(0, id.clone()), window, cx)
+                        })),
+                );
+            }
+        }
         Action::Dlt => {
             for (index, label, _) in &e.members {
                 if let Some((host, port)) = e.conditions.get(*index) {

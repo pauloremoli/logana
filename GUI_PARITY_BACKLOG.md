@@ -48,7 +48,7 @@ GUI-only builds must not acquire terminal dependencies.
 - [ ] Default-filter configuration and automatic schema-default loading.
 - [ ] Merge-file picker and merged-source lifecycle.
 - [ ] Archive-entry picker and extraction workflow.
-- [ ] Docker container selection and log streaming.
+- [x] Docker container selection and log streaming.
 - [x] DLT source selection and streaming.
 - [x] OTEL receiver configuration and streaming.
 - [x] Run subprocess output in a log tab with stop/pause lifecycle.

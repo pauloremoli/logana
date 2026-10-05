@@ -8,6 +8,7 @@ use crate::shared::TabId;
 pub enum Action {
     Open,
     Annotation,
+    Docker,
     Dlt,
     Otel,
     Run,
@@ -52,6 +53,13 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::Docker,
+        label: "Open Docker logs",
+        description: "Select a running container and follow its logs",
+        aliases: "docker container",
+        tab: false,
+    },
     Descriptor {
         action: Action::Dlt,
         label: "Connect DLT device",
@@ -532,6 +540,11 @@ pub fn open(
     state.palette.open = false;
     state.time_range_open = false;
     state.editor = Some(e);
+    if action == Action::Docker {
+        return Effect::ListDocker {
+            epoch: state.editor.as_ref().unwrap().epoch,
+        };
+    }
     if action == Action::FileInfo {
         let output = state
             .active_tab()
@@ -604,6 +617,18 @@ pub fn apply(state: &mut GuiState) -> Effect {
     if let Some(error) = invalid {
         state.editor.as_mut().unwrap().error = Some(error);
         return Effect::None;
+    }
+    if e.action == Action::Docker {
+        if e.values[0].trim().is_empty() {
+            state.editor.as_mut().unwrap().error =
+                Some("Select a container or enter its name/ID.".into());
+            return Effect::None;
+        }
+        let source = crate::gui::sources::Source::Docker {
+            container: e.values[0].clone(),
+        };
+        close(state, true);
+        return Effect::ConnectSource(source);
     }
     if e.action == Action::Dlt {
         let Some(port) = e.values[1].parse::<u16>().ok().filter(|port| *port > 0) else {
