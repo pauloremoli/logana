@@ -23,6 +23,7 @@ actions!(logana_gui, [OpenFile, OpenCommands, Quit]);
 /// GPUI widget ownership and asynchronous effect execution.
 pub struct App {
     pub state: GuiState,
+    pub(super) mcp: crate::gui::mcp::Server,
     pub(super) default_formats: std::collections::HashMap<crate::shared::TabId, String>,
     pub(super) stream_pending: std::collections::HashSet<crate::shared::TabId>,
     pub editor_inputs: Vec<Entity<InputState>>,
@@ -93,6 +94,7 @@ impl App {
                     .update_in(cx, |app, _window, cx| {
                         app.poll_streams(cx);
                         app.poll_defaults(cx);
+                        app.poll_mcp(cx);
                         let mut filtering = false;
                         for tab in &mut app.state.tabs {
                             if tab.filter.handle.is_some() {
@@ -150,6 +152,7 @@ impl App {
         Self {
             filter_edits,
             state: GuiState::new(db).with_theme(theme),
+            mcp: Default::default(),
             default_formats: Default::default(),
             stream_pending: Default::default(),
             editor_inputs: Vec::new(),
@@ -321,6 +324,7 @@ impl App {
 
     fn apply_effect(&mut self, effect: Effect, _window: &mut Window, cx: &mut Context<Self>) {
         match effect {
+            Effect::ConfigureMcp(port) => self.configure_mcp(port, cx),
             Effect::LoadDefaultMappings { epoch } => self.load_default_mappings(epoch, cx),
             Effect::SaveDefaultMapping { format, path } => {
                 self.save_default_mapping(format, path, cx)

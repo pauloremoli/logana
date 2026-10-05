@@ -70,6 +70,9 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         .flex_col()
         .gap_3();
     match e.action {
+        Action::EnableMcp => {
+            body = body.child(text(app, 0, "MCP HTTP port", cx));
+        }
         Action::DefaultFilters => {
             body = body
                 .child(format!("Schema: {}", e.values[0]))

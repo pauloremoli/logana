@@ -52,7 +52,7 @@ GUI-only builds must not acquire terminal dependencies.
 - [x] DLT source selection and streaming.
 - [x] OTEL receiver configuration and streaming.
 - [x] Run subprocess output in a log tab with stop/pause lifecycle.
-- [ ] Enable/disable MCP with the existing server lifecycle.
+- [x] Enable/disable MCP with the existing server lifecycle.
 - [ ] Reset settings/database with explicit scope and restore-policy handling.
 
 ## Additional GUI pages

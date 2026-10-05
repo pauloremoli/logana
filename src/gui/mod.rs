@@ -30,3 +30,5 @@ mod live;
 mod sources;
 
 mod defaults;
+
+mod mcp;

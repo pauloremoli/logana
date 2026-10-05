@@ -8,6 +8,8 @@ use crate::shared::TabId;
 pub enum Action {
     Open,
     Annotation,
+    EnableMcp,
+    DisableMcp,
     DefaultFilters,
     Docker,
     Dlt,
@@ -54,6 +56,20 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::EnableMcp,
+        label: "Enable MCP server",
+        description: "Expose bookmarks and annotations through MCP",
+        aliases: "enable-mcp",
+        tab: false,
+    },
+    Descriptor {
+        action: Action::DisableMcp,
+        label: "Disable MCP server",
+        description: "Stop the MCP server",
+        aliases: "disable-mcp",
+        tab: false,
+    },
     Descriptor {
         action: Action::DefaultFilters,
         label: "Default filters by schema",
@@ -304,6 +320,9 @@ pub fn open(
         return Effect::None;
     }
     state.palette.open = false;
+    if action == Action::DisableMcp {
+        return Effect::ConfigureMcp(None);
+    }
     if action == Action::Open {
         return Effect::OpenFileDialog;
     }
@@ -484,6 +503,9 @@ pub fn open(
             .collect();
         }
     }
+    if action == Action::EnableMcp {
+        e.values[0] = "9876".into();
+    }
     if action == Action::DefaultFilters {
         e.values[0] = state
             .active_tab()
@@ -637,6 +659,14 @@ pub fn apply(state: &mut GuiState) -> Effect {
     if let Some(error) = invalid {
         state.editor.as_mut().unwrap().error = Some(error);
         return Effect::None;
+    }
+    if e.action == Action::EnableMcp {
+        let Some(port) = e.values[0].parse::<u16>().ok().filter(|p| *p > 0) else {
+            state.editor.as_mut().unwrap().error = Some("Enter a port between 1 and 65535.".into());
+            return Effect::None;
+        };
+        close(state, true);
+        return Effect::ConfigureMcp(Some(port));
     }
     if e.action == Action::DefaultFilters {
         if e.values[0].trim().is_empty() {
