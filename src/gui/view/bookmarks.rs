@@ -3,10 +3,9 @@ use crate::gui::{
     app::App,
     state::{NavPage, StatusMessage},
 };
-use gpui_kit::component::{ActiveTheme, button::Button};
-use gpui_kit::gpui::{Context, div, prelude::*, px};
 
 pub fn jump(app: &mut App, line: usize) -> bool {
+    set_view(&mut app.state, NavPage::Logs);
     let Some(tab) = app.state.active_tab_mut() else {
         return false;
     };
@@ -24,86 +23,43 @@ pub fn jump(app: &mut App, line: usize) -> bool {
     true
 }
 
-pub fn page(app: &App, cx: &mut Context<App>) -> impl IntoElement {
-    let mut content = div()
-        .id("bookmarks-page")
-        .flex_1()
-        .p_4()
-        .overflow_y_scroll()
-        .flex()
-        .flex_col()
-        .gap_2();
-    let Some(tab) = app.state.active_tab() else {
-        return content.child("Open a file to manage bookmarks");
-    };
-    content = content.child(
-        div()
-            .flex()
-            .gap_2()
-            .child("Bookmarks")
-            .child(
-                Button::new("bookmark-current")
-                    .label("Toggle selected bookmarks")
-                    .on_click(cx.listener(|app, _, window, cx| {
-                        app.dispatch(
-                            crate::gui::message::Message::GuiAction(
-                                crate::gui::actions::Action::Bookmark,
-                            ),
-                            window,
-                            cx,
-                        );
-                    })),
-            )
-            .child(
-                Button::new("bookmark-clear")
-                    .label("Clear bookmarks")
-                    .on_click(cx.listener(|app, _, _, cx| {
-                        if let Some(tab) = app.state.active_tab_mut() {
-                            tab.mark_manager.clear();
-                        }
-                        cx.notify();
-                    })),
-            ),
-    );
-    let indices = tab.mark_manager.get_indices();
-    if indices.is_empty() {
-        content = content.child(
-            "No bookmarks yet. Select log lines and press Ctrl+B, or use their context menu.",
-        );
+/// Share the Logs table and its source-line mapping for the bookmarks view.
+pub fn set_view(state: &mut crate::gui::state::GuiState, page: NavPage) {
+    if state.nav_page != page {
+        state.log_selection = None;
     }
-    for line in indices {
-        if line >= tab.file_reader.line_count() {
-            continue;
+    state.nav_page = page;
+    if matches!(page, NavPage::Logs | NavPage::Bookmarks) {
+        for tab in &mut state.tabs {
+            let marks_only = page == NavPage::Bookmarks;
+            if tab.filter.show_marks_only != marks_only {
+                tab.filter.show_marks_only = marks_only;
+                refresh(tab);
+            }
         }
-        let preview = String::from_utf8_lossy(&tab.file_reader.get_line(line)).into_owned();
-        content = content.child(
-            div()
-                .flex()
-                .gap_2()
-                .items_center()
-                .border_b_1()
-                .border_color(cx.theme().border)
-                .py(px(8.))
-                .child(
-                    Button::new(("bookmark-jump", line))
-                        .label(format!("Line {}", line + 1))
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            jump(app, line);
-                            cx.notify();
-                        })),
-                )
-                .child(div().flex_1().min_w(px(0.)).truncate().child(preview))
-                .child(
-                    Button::new(("bookmark-remove", line))
-                        .label("Remove")
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if let Some(tab) = app.state.active_tab_mut() {
-                                tab.mark_manager.toggle(line);
-                            }
-                            cx.notify();
-                        })),
-                ),
-        );
     }
-    content
+}
+
+pub fn sync(state: &mut crate::gui::state::GuiState) {
+    if state.nav_page != NavPage::Bookmarks {
+        return;
+    }
+    if let Some(tab) = state.active_tab_mut() {
+        let mut marks = tab.mark_manager.get_indices();
+        marks.retain(|&line| line < tab.file_reader.line_count());
+        if !tab.filter.show_marks_only || !tab.filter.visible_indices.iter().eq(marks) {
+            tab.filter.show_marks_only = true;
+            refresh(tab);
+            state.log_selection = None;
+        }
+    }
+}
+
+fn refresh(tab: &mut crate::shared::TabState) {
+    let handle = crate::gui::runtime::handle();
+    let _guard = handle.enter();
+    tab.begin_filter_refresh();
+    if let Some(query) = tab.search.query.get_pattern().map(str::to_owned) {
+        tab.begin_search(&query, true, false);
+    }
 }

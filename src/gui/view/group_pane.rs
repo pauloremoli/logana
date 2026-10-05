@@ -87,7 +87,8 @@ fn group_row(
         .id(format!("group-label-{name}"))
         .flex_1()
         .min_w(px(0.))
-        .truncate()
+        .flex()
+        .items_center()
         .text_sm()
         .cursor_pointer()
         .text_color(if enabled {
@@ -95,7 +96,13 @@ fn group_row(
         } else {
             cx.theme().muted_foreground
         })
-        .child(full_label.clone())
+        .child(
+            div()
+                .max_w_full()
+                .truncate()
+                .when_some(bg, |d, bg| d.bg(bg))
+                .child(full_label.clone()),
+        )
         .tooltip(move |window, cx| Tooltip::new(full_label.clone()).build(window, cx))
         .on_click(cx.listener(move |app, _, window, cx| {
             app.dispatch(Message::EditGroup(label_name.clone()), window, cx)
@@ -109,7 +116,6 @@ fn group_row(
         .gap_2()
         .h(px(36.))
         .min_w(px(0.))
-        .when_some(bg, |d, bg| d.bg(bg))
         .when(selected, |d| d.bg(cx.theme().secondary))
         .child(
             Checkbox::new(format!("group-toggle-{name}"))

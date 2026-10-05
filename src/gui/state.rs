@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 pub struct GuiState {
     pub preferences: crate::gui::persistence::Preferences,
+    pub search_open: bool,
     pub editor: Option<crate::gui::actions::Editor>,
     pub log_selection: Option<(crate::shared::TabId, usize, usize)>,
     pub field_discovery: Option<(
@@ -80,6 +81,7 @@ impl GuiState {
             preferences: Default::default(),
             palette: Default::default(),
             editor: None,
+            search_open: false,
             log_selection: None,
             field_discovery: None,
             db,

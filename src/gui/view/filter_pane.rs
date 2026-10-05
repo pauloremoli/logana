@@ -8,6 +8,7 @@ use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::gpui::prelude::*;
@@ -22,7 +23,8 @@ pub fn filter_pane(
 ) -> impl IntoElement {
     let entity = cx.entity();
     let empty = filter_defs.is_empty();
-    let mut col = div().flex().flex_col().gap_1().child(
+    let enabled = filter_defs.iter().filter(|def| def.enabled).count();
+    let mut col = div().flex().flex_col().gap_2().child(
         div()
             .flex()
             .items_center()
@@ -31,14 +33,21 @@ pub fn filter_pane(
                 div()
                     .flex_1()
                     .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
-                    .child("Filters"),
+                    .child("Filters")
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui_kit::gpui::FontWeight::NORMAL)
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{enabled} of {} enabled", filter_defs.len())),
+                    ),
             )
             .child(
                 Button::new("add-filter")
-                    .ghost()
+                    .primary()
                     .small()
                     .icon(IconName::Plus)
-                    .label("Add")
+                    .label("Add filter")
                     .on_click(cx.listener(|app, _, window, cx| {
                         app.dispatch(
                             Message::GuiAction(crate::gui::actions::Action::Filter),
@@ -78,14 +87,25 @@ pub fn filter_pane(
     if empty {
         col = col.child(
             div()
-                .py_3()
+                .flex()
+                .flex_col()
+                .items_center()
+                .text_center()
+                .gap_2()
+                .py_6()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
-                .child("No filters"),
+                .child(Icon::new(IconName::Funnel).size(px(24.)))
+                .child("No filters yet")
+                .child(
+                    div()
+                        .text_xs()
+                        .child("Add a rule to include, exclude, or highlight logs."),
+                ),
         );
     }
     for def in filter_defs {
-        col = col.child(filter_row(tab_idx, def, group_defs, false, cx));
+        col = col.child(filter_row(tab_idx, def, group_defs, cx));
     }
     col
 }
@@ -114,7 +134,6 @@ fn filter_row(
     tab_idx: usize,
     def: &FilterDef,
     group_defs: &[GroupDef],
-    selected: bool,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let id = def.id;
@@ -137,15 +156,16 @@ fn filter_row(
         .flex()
         .items_center()
         .gap_2()
-        .h(px(36.))
+        .py_2()
+        .border_b_1()
+        .border_color(cx.theme().border)
         .min_w(px(0.))
-        .when_some(background, |d, bg| d.bg(bg))
-        .when(selected, |d| d.bg(cx.theme().secondary))
+        .hover(|d| d.bg(cx.theme().secondary))
         .child(
             div()
                 .id(("filter-drag", id))
                 .cursor_pointer()
-                .opacity(0.)
+                .opacity(0.5)
                 .group_hover("filter-row", |d| d.opacity(1.))
                 .text_color(cx.theme().muted_foreground)
                 .child(Icon::new(IconName::GripVertical).size(px(12.)))
@@ -161,30 +181,58 @@ fn filter_row(
         )
         .child(
             div()
-                .id(("filter-type", id))
-                .test_support()
-                .w(px(12.))
-                .flex_shrink_0()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(filter_type_symbol(&def.filter_type))
-                .tooltip(move |window, cx| Tooltip::new(type_label).build(window, cx)),
-        )
-        .child(
-            div()
                 .id(("filter-condition", id))
                 .test_support()
                 .flex_1()
                 .min_w(px(0.))
-                .truncate()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap_1()
                 .text_sm()
+                .child(
+                    div()
+                        .id(("filter-type", id))
+                        .test_support()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_1()
+                        .child(Tag::secondary().small().child(type_label))
+                        .when(!def.enabled, |d| {
+                            d.child(Tag::secondary().small().child("Off"))
+                        })
+                        .when(def.use_regex, |d| {
+                            d.child(Tag::secondary().small().child("Regex"))
+                        })
+                        .when(def.ignore_case, |d| {
+                            d.child(Tag::secondary().small().child("Ignore case"))
+                        })
+                        .tooltip(move |window, cx| Tooltip::new(type_label).build(window, cx)),
+                )
                 .cursor_pointer()
-                .text_color(if def.enabled {
-                    foreground.map(Into::into).unwrap_or(cx.theme().foreground)
-                } else {
-                    cx.theme().muted_foreground
+                .when_some(def.group.as_ref(), |d, group| {
+                    d.child(
+                        div()
+                            .max_w_full()
+                            .truncate()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("Group: {group}")),
+                    )
                 })
-                .child(condition)
+                .child(
+                    div()
+                        .max_w_full()
+                        .truncate()
+                        .when_some(background, |d, bg| d.bg(bg))
+                        .text_color(if def.enabled {
+                            foreground.map(Into::into).unwrap_or(cx.theme().foreground)
+                        } else {
+                            cx.theme().muted_foreground
+                        })
+                        .child(condition),
+                )
                 .tooltip(move |window, cx| Tooltip::new(full_condition.clone()).build(window, cx))
                 .on_click(cx.listener(move |app, _, window, cx| {
                     app.dispatch(Message::EditFilter(id), window, cx)
@@ -210,14 +258,6 @@ fn filter_row(
                     app.dispatch(Message::FilterRemoved(tab_idx, id), window, cx)
                 })),
         )
-}
-
-fn filter_type_symbol(kind: &FilterType) -> &'static str {
-    match kind {
-        FilterType::Include => "+",
-        FilterType::Exclude => "−",
-        FilterType::Highlight => "◇",
-    }
 }
 
 #[derive(Clone)]
@@ -255,13 +295,12 @@ mod tests {
     }
 
     #[test]
-    fn filter_types_have_discrete_symbols_and_explicit_tooltips() {
-        for (kind, symbol, label) in [
-            (FilterType::Include, "+", "Include"),
-            (FilterType::Exclude, "−", "Exclude"),
-            (FilterType::Highlight, "◇", "Highlight"),
+    fn filter_types_have_explicit_labels() {
+        for (kind, label) in [
+            (FilterType::Include, "Include"),
+            (FilterType::Exclude, "Exclude"),
+            (FilterType::Highlight, "Highlight"),
         ] {
-            assert_eq!(filter_type_symbol(&kind), symbol);
             assert_eq!(filter_type_label(&kind), label);
         }
     }

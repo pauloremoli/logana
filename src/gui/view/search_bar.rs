@@ -5,61 +5,95 @@ use crate::gui::update::is_tab_live;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::InputState;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{Context, Entity, Window, div, px};
+use gpui_kit::gpui::{Context, Window, div, px};
 
-pub(crate) const SEARCH_BAR_HEIGHT: f32 = 64.0;
-/// Search, view selection, filters, and live-stream controls.
-pub fn search_bar(
-    state: &GuiState,
-    input: Option<&Entity<InputState>>,
-    cx: &mut Context<App>,
-) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .h(px(SEARCH_BAR_HEIGHT))
-        .flex_shrink_0()
-        .bg(cx.theme().title_bar)
-        .px(px(12.))
-        .overflow_hidden()
-        .border_b_1()
-        .border_color(cx.theme().border)
-        .child(div().flex_1().min_w(px(0.)).children(input.map(|input| {
-            super::input(input)
-                .id("log-search-input")
-                .bg(cx.theme().secondary)
-                .text_color(cx.theme().foreground)
-                .prefix(Icon::new(IconName::Search))
-        })))
-        .child(
-            Button::new("search-previous")
-                .ghost()
-                .icon(IconName::ChevronUp)
-                .tooltip("Previous match")
-                .on_click(cx.listener(|app, _, window, cx| {
-                    app.dispatch(Message::SearchNext(false), window, cx)
-                })),
-        )
-        .child(
-            Button::new("search-next")
-                .ghost()
-                .icon(IconName::ChevronDown)
-                .tooltip("Next match")
-                .on_click(cx.listener(|app, _, window, cx| {
-                    app.dispatch(Message::SearchNext(true), window, cx)
-                })),
-        )
-        .child(view_mode_control(state, cx))
-        .child(filter_count_badge(state, cx))
-        .child(live_indicator(state, cx))
+/// Search is transient; closing the popup keeps matches highlighted.
+pub fn search_popup(app: &App, cx: &mut Context<App>) -> Option<gpui_kit::gpui::AnyElement> {
+    if !app.state.search_open {
+        return None;
+    }
+    Some(
+        div()
+            .id("search-popup")
+            .absolute()
+            .top(
+                gpui_kit::component::TITLE_BAR_HEIGHT
+                    + px(32. + super::tab_bar::TAB_BAR_HEIGHT + 8.),
+            )
+            .right(px(16.))
+            .w(px(480.))
+            .max_w(gpui_kit::gpui::relative(0.9))
+            .p_3()
+            .flex()
+            .items_center()
+            .gap_2()
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded(px(8.))
+            .shadow_md()
+            .children(app.log_search.as_ref().map(|input| {
+                div().flex_1().min_w(px(0.)).child(
+                    super::input(input)
+                        .id("log-search-input")
+                        .prefix(Icon::new(IconName::Search)),
+                )
+            }))
+            .child(
+                Button::new("search-previous")
+                    .ghost()
+                    .icon(IconName::ChevronUp)
+                    .tooltip("Previous match")
+                    .on_click(cx.listener(|app, _, window, cx| {
+                        app.dispatch(Message::SearchNext(false), window, cx)
+                    })),
+            )
+            .child(
+                Button::new("search-next")
+                    .ghost()
+                    .icon(IconName::ChevronDown)
+                    .tooltip("Next match")
+                    .on_click(cx.listener(|app, _, window, cx| {
+                        app.dispatch(Message::SearchNext(true), window, cx)
+                    })),
+            )
+            .child(
+                Button::new("search-close")
+                    .ghost()
+                    .icon(IconName::X)
+                    .tooltip("Close search (Escape)")
+                    .on_click(cx.listener(|app, _, window, cx| {
+                        app.dispatch(Message::SearchPopup(false), window, cx)
+                    })),
+            )
+            .into_any_element(),
+    )
 }
 
-fn view_mode_control(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
+pub fn search_button(cx: &mut Context<App>) -> impl IntoElement {
+    Button::new("open-search")
+        .ghost()
+        .icon(IconName::Search)
+        .tooltip("Search (/)")
+        .on_click(
+            cx.listener(|app, _, window, cx| app.dispatch(Message::SearchPopup(true), window, cx)),
+        )
+}
+
+pub fn filter_button(cx: &mut Context<App>) -> impl IntoElement {
+    Button::new("filter-panel-toggle")
+        .ghost()
+        .icon(IconName::Funnel)
+        .tooltip("Show or hide filters")
+        .on_click(
+            cx.listener(|app, _, window, cx| app.dispatch(Message::SidebarToggled, window, cx)),
+        )
+}
+
+pub fn view_mode_control(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
     let entity = cx.entity();
     Button::new("view-mode")
         .label(match state.nav_page {
@@ -82,33 +116,12 @@ fn view_mode_control(state: &GuiState, cx: &mut Context<App>) -> impl IntoElemen
         })
 }
 
-fn filter_count_badge(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
-    let count = state
-        .active_tab()
-        .map(|tab| {
-            tab.log_manager
-                .get_filters()
-                .iter()
-                .filter(|f| f.enabled)
-                .count()
-        })
-        .unwrap_or(0);
-    Button::new("filter-panel-toggle")
-        .ghost()
-        .icon(Icon::new(IconName::Funnel))
-        .label(count.to_string())
-        .tooltip("Show or hide filters")
-        .on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
-            app.dispatch(Message::SidebarToggled, window, cx);
-        }))
-}
-
 /// A colored dot (live = green, idle/paused = gray) plus a Pause/Play
 /// toggle button — real: reflects and controls `tab.stream.watch`/
 /// `paused` via `is_tab_live`/`Message::StreamToggled`. Disabled when the
 /// tab has no watcher at all (nothing to pause), as opposed to "watched
 /// but paused" which is still interactive.
-fn live_indicator(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
+pub fn live_indicator(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
     let Some(tab) = state.active_tab() else {
         return div().into_any_element();
     };

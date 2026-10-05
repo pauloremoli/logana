@@ -22,6 +22,10 @@ pub enum Message {
     EditGroup(String),
     EditorText(usize, String),
     EditorToggle(usize),
+    EditorTimestampPart(usize, String),
+    EditorAdvanced,
+    EditorStyle(bool),
+    EditorMatchField(Option<String>),
     EditorKind(crate::filters::FilterType),
     EditorField(usize),
     EditorMember(usize),
@@ -60,6 +64,7 @@ pub enum Message {
     KeyPressed(KeyCode, KeyModifiers),
     /// Native input edits reuse the same incremental search engine.
     SearchEdited(String),
+    SearchPopup(bool),
     CommandExecuted(usize, Result<LogManager, String>),
 
     FilterToggled(usize, usize),

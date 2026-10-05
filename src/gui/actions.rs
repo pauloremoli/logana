@@ -439,8 +439,28 @@ pub struct Editor {
     pub error: Option<String>,
     pub edit_id: Option<usize>,
     pub group_name_locked: bool,
+    pub advanced: bool,
+    pub auto_style: bool,
+    pub style_seed: usize,
     pub merge_sources: Vec<(TabId, bool)>,
 }
+pub fn automatic_filter_color(
+    pattern: &str,
+    theme: &crate::theme::Theme,
+    seed: usize,
+) -> crate::style::Color {
+    let colors = [
+        theme.info_fg,
+        theme.debug_fg,
+        theme.warning_fg,
+        theme.error_fg,
+    ];
+    let hash = pattern.bytes().fold(0usize, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(byte as usize)
+    });
+    colors[hash.wrapping_add(seed) % colors.len()]
+}
+
 pub fn open(
     state: &mut GuiState,
     action: Action,
@@ -484,19 +504,20 @@ pub fn open(
             return Effect::None;
         }
         Action::ShowLogs => {
-            state.nav_page = crate::gui::state::NavPage::Logs;
+            crate::gui::view::bookmarks::set_view(state, crate::gui::state::NavPage::Logs);
             return Effect::None;
         }
         Action::ShowBookmarks => {
-            state.nav_page = crate::gui::state::NavPage::Bookmarks;
+            crate::gui::view::bookmarks::set_view(state, crate::gui::state::NavPage::Bookmarks);
             return Effect::None;
         }
         Action::ToggleBookmarks => {
-            state.nav_page = if state.nav_page == crate::gui::state::NavPage::Bookmarks {
+            let page = if state.nav_page == crate::gui::state::NavPage::Bookmarks {
                 crate::gui::state::NavPage::Logs
             } else {
                 crate::gui::state::NavPage::Bookmarks
             };
+            crate::gui::view::bookmarks::set_view(state, page);
             return Effect::None;
         }
         Action::Bookmark => {
@@ -599,6 +620,9 @@ pub fn open(
         error: None,
         edit_id,
         group_name_locked: false,
+        advanced: false,
+        auto_style: edit_id.is_none(),
+        style_seed: 0,
         merge_sources: Vec::new(),
     };
     if let Some(tab) = state.active_tab_mut() {
@@ -929,7 +953,9 @@ pub fn apply(state: &mut GuiState) -> Effect {
         };
         state.active_tab = idx;
     }
-    if e.action == Action::Filter && !e.values[1].trim().is_empty() {
+    let timestamp =
+        e.action == Action::Filter && e.values[0].starts_with(crate::filters::DATE_PREFIX);
+    if e.action == Action::Filter && !timestamp && !e.values[1].trim().is_empty() {
         let condition = (e.values[1].clone(), e.values[2].clone());
         if let Some(index) = e
             .condition_edit
@@ -947,12 +973,24 @@ pub fn apply(state: &mut GuiState) -> Effect {
             Some(s.clone())
         }
     };
+    let timestamp_error = if timestamp {
+        crate::filters::parse_date_filter(
+            e.values[0]
+                .strip_prefix(crate::filters::DATE_PREFIX)
+                .unwrap(),
+        )
+        .err()
+    } else {
+        None
+    };
     let invalid = if matches!(e.action, Action::Filter | Action::Group) {
         if e.action == Action::Group && e.values[0].trim().is_empty() {
             Some("Enter a group name.".into())
         } else if e.action == Action::Filter && e.values[0].is_empty() && e.conditions.is_empty() {
             Some("Enter text or add a field condition.".into())
-        } else if e.regex && regex::Regex::new(&e.values[0]).is_err() {
+        } else if timestamp_error.is_some() {
+            timestamp_error
+        } else if !timestamp && e.regex && regex::Regex::new(&e.values[0]).is_err() {
             Some("The regular expression is invalid.".into())
         } else {
             e.values[4..6]
@@ -1197,17 +1235,27 @@ pub fn apply(state: &mut GuiState) -> Effect {
         }
     };
     if e.action == Action::Filter {
-        let pattern = if e.conditions.is_empty() {
+        let pattern = if timestamp || e.conditions.is_empty() {
             e.values[0].clone()
         } else {
             crate::filters::encode_field_filter(&e.conditions, nonempty(&e.values[0]).as_deref())
         };
+        let automatic = e.auto_style && (e.kind != FilterType::Exclude || timestamp);
         let options = crate::filters::FilterOptions {
-            fg: nonempty(&e.values[4]),
+            fg: if automatic && e.values[4..6].iter().all(String::is_empty) {
+                let style_key = if e.values[1].is_empty() {
+                    e.values[0].clone()
+                } else {
+                    format!("{}:{}", e.values[1], e.values[2])
+                };
+                Some(automatic_filter_color(&style_key, &state.theme, e.style_seed).to_string())
+            } else {
+                nonempty(&e.values[4])
+            },
             bg: nonempty(&e.values[5]),
             match_only: !e.whole_line,
-            use_regex: e.regex,
-            ignore_case: e.ignore_case,
+            use_regex: !timestamp && e.regex,
+            ignore_case: !timestamp && e.ignore_case,
             group: nonempty(&e.values[3]),
         };
         crate::gui::update::gui_outcome(
@@ -1228,7 +1276,11 @@ pub fn apply(state: &mut GuiState) -> Effect {
             log_manager: state.active_tab().unwrap().log_manager.clone(),
             id: e.edit_id,
             pattern,
-            kind: e.kind,
+            kind: if timestamp {
+                FilterType::Include
+            } else {
+                e.kind
+            },
             options,
         };
     }
@@ -1554,6 +1606,94 @@ mod tests {
         assert!(matching("東京").is_empty());
         assert!(matching("").iter().all(|d| !d.label.contains("recent")));
     }
+    #[tokio::test]
+    async fn filter_scope_switch_keeps_the_value_and_can_replace_a_single_field_rule() {
+        let mut state = state().await;
+        open(&mut state, Action::Filter, None, None);
+        update(&mut state, Message::EditorText(0, "timeout".into()));
+        update(
+            &mut state,
+            Message::EditorMatchField(Some("message".into())),
+        );
+        let e = state.editor.as_mut().unwrap();
+        assert_eq!(e.values[2], "timeout");
+        assert!(e.values[0].is_empty());
+        e.conditions = vec![("message".into(), "timeout".into())];
+        e.condition_edit = Some(0);
+        update(&mut state, Message::EditorMatchField(None));
+        let e = state.editor.as_ref().unwrap();
+        assert_eq!(e.values[0], "timeout");
+        assert!(e.conditions.is_empty());
+        assert!(e.values[1].is_empty());
+    }
+
+    #[tokio::test]
+    async fn filter_auto_style_defaults_generates_and_preserves_custom_colors() {
+        let mut state = state().await;
+        open(&mut state, Action::Filter, None, None);
+        assert!(state.editor.as_ref().unwrap().auto_style);
+        update(&mut state, Message::EditorText(0, "error".into()));
+        let initial = automatic_filter_color("error", &state.theme, 0);
+        update(&mut state, Message::EditorStyle(true));
+        let expected = automatic_filter_color("error", &state.theme, 1);
+        assert_ne!(initial, expected);
+        let Effect::SaveGuiFilter {
+            request_id,
+            options,
+            ..
+        } = apply(&mut state)
+        else {
+            panic!("expected save")
+        };
+        assert_eq!(options.fg.as_deref(), Some(expected.to_string().as_str()));
+        update(
+            &mut state,
+            Message::GuiFinished(request_id, Ok("Saved".into())),
+        );
+        open(&mut state, Action::Filter, None, None);
+        update(&mut state, Message::EditorText(0, "error".into()));
+        update(&mut state, Message::EditorStyle(false));
+        update(&mut state, Message::EditorText(4, "#123456".into()));
+        let Effect::SaveGuiFilter { options, .. } = apply(&mut state) else {
+            panic!("expected custom save")
+        };
+        assert_eq!(options.fg.as_deref(), Some("#123456"));
+    }
+
+    #[tokio::test]
+    async fn timestamp_editor_validates_and_saves_without_field_or_regex_options() {
+        let mut state = state().await;
+        for expression in [">= 2024-06-15 12:30:00", "09:00 .. 10:00"] {
+            open(&mut state, Action::Filter, None, None);
+            let pattern = format!("{}{expression}", crate::filters::DATE_PREFIX);
+            let editor = state.editor.as_mut().unwrap();
+            editor.values[0] = pattern.clone();
+            editor.values[1] = "level".into();
+            editor.values[2] = "INFO".into();
+            editor.regex = true;
+            let Effect::SaveGuiFilter {
+                request_id,
+                pattern: saved,
+                options,
+                ..
+            } = apply(&mut state)
+            else {
+                panic!("expected timestamp save")
+            };
+            assert_eq!(saved, pattern);
+            assert!(!options.use_regex);
+            assert!(!options.ignore_case);
+            update(
+                &mut state,
+                Message::GuiFinished(request_id, Ok("Saved".into())),
+            );
+        }
+        open(&mut state, Action::Filter, None, None);
+        state.editor.as_mut().unwrap().values[0] = format!("{}>= ", crate::filters::DATE_PREFIX);
+        assert!(matches!(apply(&mut state), Effect::None));
+        assert!(state.editor.as_ref().unwrap().error.is_some());
+    }
+
     #[tokio::test]
     async fn idempotent_launcher_and_editor_shortcut_isolation() {
         let mut state = state().await;

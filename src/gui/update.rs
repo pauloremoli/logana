@@ -196,6 +196,61 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             }
             Effect::None
         }
+        Message::EditorAdvanced => {
+            if let Some(e) = &mut state.editor {
+                e.advanced = !e.advanced;
+            }
+            Effect::None
+        }
+        Message::EditorStyle(automatic) => {
+            if let Some(e) = &mut state.editor {
+                if automatic {
+                    e.values[4].clear();
+                    e.values[5].clear();
+                    e.style_seed = e.style_seed.wrapping_add(1);
+                } else {
+                    e.advanced = true;
+                }
+                e.auto_style = automatic;
+                e.error = None;
+            }
+            Effect::None
+        }
+        Message::EditorMatchField(value) => {
+            if let Some(e) = &mut state.editor {
+                if value.is_none()
+                    && e.conditions.len() == 1
+                    && e.condition_edit == Some(0)
+                    && e.values[0].is_empty()
+                {
+                    e.conditions.clear();
+                    e.condition_edit = None;
+                }
+                if e.conditions.is_empty() {
+                    if value.is_some() && e.values[1].is_empty() {
+                        e.values[2] = std::mem::take(&mut e.values[0]);
+                    } else if value.is_none() {
+                        e.values[0] = std::mem::take(&mut e.values[2]);
+                    }
+                }
+                e.values[1] = value.unwrap_or_default();
+                e.error = None;
+            }
+            Effect::None
+        }
+        Message::EditorTimestampPart(index, value) => {
+            if let Some(e) = &mut state.editor {
+                let (operator, start, end) = crate::gui::time_range::timestamp_parts(&e.values[0]);
+                let mut parts = [operator.to_owned(), start.to_owned(), end.to_owned()];
+                if let Some(part) = parts.get_mut(index) {
+                    *part = value;
+                }
+                e.values[0] =
+                    crate::gui::time_range::timestamp_pattern(&parts[0], &parts[1], &parts[2]);
+                e.error = None;
+            }
+            Effect::None
+        }
         Message::EditorToggle(index) => {
             if let Some(e) = &mut state.editor {
                 match index {
@@ -521,6 +576,13 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             Effect::None
         }
         Message::KeyPressed(key, modifiers) => crate::gui::keyboard::apply(state, key, modifiers),
+        Message::SearchPopup(open) => {
+            state.search_open = open
+                && state.active_tab().is_some()
+                && state.editor.is_none()
+                && !state.palette.visible();
+            Effect::None
+        }
         Message::SearchEdited(query) => {
             if state.editor.is_none() && !state.palette.visible() {
                 if let Some(tab) = state.active_tab_mut() {
@@ -618,7 +680,7 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
                     None,
                 );
             }
-            state.nav_page = page;
+            crate::gui::view::bookmarks::set_view(state, page);
             Effect::None
         }
         Message::TimeRangeToggled => {

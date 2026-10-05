@@ -7,8 +7,11 @@ use crate::gui::state::GuiState;
 use crate::gui::update;
 use crate::theme::Theme as TuiTheme;
 use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::date_picker::{DatePickerEvent, DatePickerState, DateTime};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::menu::AppMenuBar;
+use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectState};
+use gpui_kit::component::time_field::{TimeFieldEvent, TimeFieldState, TimePrecision};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{
     Context, Entity, FocusHandle, Focusable, KeyDownEvent, ListAlignment, ListState, Window,
@@ -36,6 +39,10 @@ pub struct App {
     pub editor_textareas:
         std::collections::HashMap<usize, Entity<gpui_kit::component::input::TextareaState>>,
     pub editor_colors: Vec<Entity<gpui_kit::component::color_picker::ColorPickerState>>,
+    pub editor_dates: Vec<Entity<DatePickerState>>,
+    pub editor_times: Vec<Entity<TimeFieldState>>,
+    pub editor_group_select: Option<Entity<SelectState<SearchableVec<String>>>>,
+    pub editor_field_select: Option<Entity<SelectState<SearchableVec<String>>>>,
     editor_epoch: u64,
     editor_synced: Vec<String>,
     filter_edits: tokio::sync::mpsc::UnboundedSender<crate::gui::effect::FilterEdit>,
@@ -199,6 +206,10 @@ impl App {
             editor_inputs: Vec::new(),
             editor_textareas: Default::default(),
             editor_colors: Vec::new(),
+            editor_dates: Vec::new(),
+            editor_times: Vec::new(),
+            editor_group_select: None,
+            editor_field_select: None,
             editor_epoch: 0,
             editor_synced: Vec::new(),
             log_scroll: ListState::new(0, ListAlignment::Top, gpui_kit::gpui::px(60.)),
@@ -315,7 +326,28 @@ impl App {
         let previous_theme = self.state.theme.clone();
         let runtime_handle = runtime::handle();
         let _runtime_guard = runtime_handle.enter();
+        if matches!(&message, Message::SearchPopup(false)) && self.state.search_open {
+            if let Some(input) = &self.log_search {
+                let query = input.read(cx).value().to_string();
+                if self
+                    .state
+                    .active_tab()
+                    .and_then(|tab| tab.search.query.get_pattern())
+                    != Some(query.as_str())
+                {
+                    update::update(&mut self.state, Message::SearchEdited(query));
+                }
+            }
+        }
+        let search_popup = match &message {
+            Message::SearchPopup(open) => Some(*open),
+            _ => None,
+        };
         let effect = update::update(&mut self.state, message);
+        crate::gui::view::bookmarks::sync(&mut self.state);
+        if self.state.editor.is_some() || self.state.palette.visible() {
+            self.state.search_open = false;
+        }
         if restoring_context
             && let Some(tab) = prepared_restore_id
                 .and_then(|id| self.state.tabs.iter().find(|tab| tab.id == id))
@@ -330,6 +362,15 @@ impl App {
             crate::gui::theme::install(&self.state.theme, cx);
         }
         self.apply_effect(effect, window, cx);
+        if let Some(open) = search_popup {
+            if open && self.state.search_open {
+                if let Some(input) = &self.log_search {
+                    input.read(cx).focus_handle(cx).focus(window, cx);
+                }
+            } else if !open {
+                self.root_focus.focus(window, cx);
+            }
+        }
         if (closing_palette || had_editor)
             && self.state.editor.is_none()
             && !self.state.palette.visible()
@@ -909,6 +950,7 @@ impl App {
 
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::gui::view::bookmarks::sync(&mut self.state);
         self.sync_notification_timer(cx);
         self.refresh_facet_counts(cx);
         if self.command_input.is_none() {
@@ -971,6 +1013,7 @@ impl Render for App {
                     }
                     InputEvent::PressEnter { .. } => {
                         app.dispatch(Message::SearchNext(true), window, cx);
+                        app.dispatch(Message::SearchPopup(false), window, cx);
                     }
                     _ => {}
                 },
@@ -1011,6 +1054,123 @@ impl Render for App {
             if self.editor_epoch != epoch || self.editor_inputs.is_empty() {
                 self.editor_inputs.clear();
                 self.editor_textareas.clear();
+                self.editor_field_select = None;
+                self.editor_group_select = None;
+                self.editor_dates.clear();
+                self.editor_times.clear();
+                if editor_action == crate::gui::actions::Action::Filter {
+                    let editor = self.state.editor.as_ref().unwrap();
+                    let mut names = editor.discovery.names.clone();
+                    names.extend(editor.conditions.iter().map(|(field, _)| field.clone()));
+                    if !values[1].is_empty() {
+                        names.push(values[1].clone());
+                    }
+                    names.sort();
+                    names.dedup();
+                    let selected = values[1].clone();
+                    let select = cx.new(|cx| {
+                        let mut state =
+                            SelectState::new(SearchableVec::new(names), None, window, cx)
+                                .searchable(true);
+                        state.set_selected_value(&selected, window, cx);
+                        state
+                    });
+                    cx.subscribe_in(
+                        &select,
+                        window,
+                        move |app, _, event: &SelectEvent<SearchableVec<String>>, window, cx| {
+                            if app.state.editor.as_ref().is_some_and(|e| e.epoch == epoch) {
+                                let SelectEvent::Confirm(value) = event;
+                                app.dispatch(Message::EditorMatchField(value.clone()), window, cx);
+                            }
+                        },
+                    )
+                    .detach();
+                    self.editor_field_select = Some(select);
+                    let mut groups = self
+                        .state
+                        .active_tab()
+                        .map(|tab| tab.log_manager.group_names())
+                        .unwrap_or_default();
+                    if !values[3].is_empty() {
+                        groups.push(values[3].clone());
+                    }
+                    groups.sort();
+                    groups.dedup();
+                    let selected = values[3].clone();
+                    let select = cx.new(|cx| {
+                        let mut state =
+                            SelectState::new(SearchableVec::new(groups), None, window, cx)
+                                .searchable(true);
+                        state.set_selected_value(&selected, window, cx);
+                        state
+                    });
+                    cx.subscribe_in(
+                        &select,
+                        window,
+                        move |app, _, event: &SelectEvent<SearchableVec<String>>, window, cx| {
+                            if app.state.editor.as_ref().is_some_and(|e| e.epoch == epoch) {
+                                let SelectEvent::Confirm(value) = event;
+                                app.dispatch(
+                                    Message::EditorText(3, value.clone().unwrap_or_default()),
+                                    window,
+                                    cx,
+                                );
+                            }
+                        },
+                    )
+                    .detach();
+                    self.editor_group_select = Some(select);
+                    for index in 0..2 {
+                        let date = cx.new(|cx| {
+                            DatePickerState::new(window, cx)
+                                .date_format("%Y-%m-%d")
+                                .time_precision(TimePrecision::Second)
+                        });
+                        cx.subscribe_in(
+                            &date,
+                            window,
+                            move |app, _, event: &DatePickerEvent, window, cx| {
+                                if app.state.editor.as_ref().is_some_and(|e| e.epoch == epoch) {
+                                    let DatePickerEvent::Change(value) = event;
+                                    let value = value
+                                        .start()
+                                        .map(|v| v.format("%Y-%m-%d %H:%M:%S").to_string())
+                                        .unwrap_or_default();
+                                    app.dispatch(
+                                        Message::EditorTimestampPart(index + 1, value),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            },
+                        )
+                        .detach();
+                        self.editor_dates.push(date);
+                        let time = cx.new(|cx| {
+                            TimeFieldState::new(window, cx).precision(TimePrecision::Second)
+                        });
+                        cx.subscribe_in(
+                            &time,
+                            window,
+                            move |app, _, event: &TimeFieldEvent, window, cx| {
+                                if app.state.editor.as_ref().is_some_and(|e| e.epoch == epoch) {
+                                    let TimeFieldEvent::Change(value) = event;
+                                    app.dispatch(
+                                        Message::EditorTimestampPart(
+                                            index + 1,
+                                            value.format("%H:%M:%S").to_string(),
+                                        ),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            },
+                        )
+                        .detach();
+                        self.editor_times.push(time);
+                    }
+                }
                 self.editor_synced = values.to_vec();
                 for (index, value) in values.into_iter().enumerate() {
                     let input = cx.new(|cx| {
@@ -1129,6 +1289,58 @@ impl Render for App {
                 }
             }
             if let Some(editor) = &self.state.editor {
+                if editor.values[0].starts_with(crate::filters::DATE_PREFIX) {
+                    let (_, start, end) =
+                        crate::gui::time_range::timestamp_parts(&editor.values[0]);
+                    for (index, bound) in [start, end].into_iter().enumerate() {
+                        let normalized = if bound.len() == 10 {
+                            format!("{bound}T00:00:00")
+                        } else if bound.len() == 16 {
+                            format!("{}:00", bound.replace(' ', "T"))
+                        } else {
+                            bound.replace(' ', "T")
+                        };
+                        let value = DateTime::Single(normalized.parse().ok());
+                        if let Some(date) = self.editor_dates.get(index) {
+                            if date.read(cx).date_time() != value {
+                                date.update(cx, |date, cx| date.set_date_time(value, window, cx));
+                            }
+                        }
+                        let normalized_time = if bound.len() == 5 {
+                            format!("{bound}:00")
+                        } else {
+                            bound.to_owned()
+                        };
+                        if let Ok(value) = normalized_time.parse() {
+                            if let Some(time) = self.editor_times.get(index) {
+                                if time.read(cx).time() != value {
+                                    time.update(cx, |time, cx| time.set_time(value, window, cx));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(select) = &self.editor_group_select {
+                    let selected = editor.values[3].clone();
+                    if select.read(cx).selected_value() != Some(&selected)
+                        && !(selected.is_empty() && select.read(cx).selected_value().is_none())
+                    {
+                        select.update(cx, |select, cx| {
+                            select.set_selected_value(&selected, window, cx)
+                        });
+                    }
+                }
+                if let Some(select) = &self.editor_field_select {
+                    let selected = editor.values[1].clone();
+                    if select.read(cx).selected_value() != Some(&selected)
+                        && !(selected.is_empty() && select.read(cx).selected_value().is_none())
+                    {
+                        select.update(cx, |select, cx| {
+                            select.set_selected_value(&selected, window, cx)
+                        });
+                    }
+                }
                 for (picker, value) in self.editor_colors.iter().zip(&editor.values[4..6]) {
                     let color: Option<gpui_kit::gpui::Hsla> = crate::theme::parse_color(value)
                         .and_then(crate::gui::color::color_to_gpui)
@@ -1145,6 +1357,10 @@ impl Render for App {
                 }
             }
         } else {
+            self.editor_field_select = None;
+            self.editor_group_select = None;
+            self.editor_dates.clear();
+            self.editor_times.clear();
             self.editor_colors.clear();
             self.editor_inputs.clear();
             self.editor_textareas.clear();
@@ -1213,6 +1429,28 @@ impl Render for App {
             .on_action(cx.listener(Self::on_quit_action))
             .capture_key_down(cx.listener(move |app, event: &KeyDownEvent, window, cx| {
                 let stroke = &event.keystroke;
+                if app.state.search_open && stroke.key == "enter" {
+                    cx.stop_propagation();
+                    app.dispatch(Message::SearchNext(!stroke.modifiers.shift), window, cx);
+                    app.dispatch(Message::SearchPopup(false), window, cx);
+                    return;
+                }
+                if app.state.search_open && stroke.key == "escape" {
+                    cx.stop_propagation();
+                    app.dispatch(Message::SearchPopup(false), window, cx);
+                    return;
+                }
+                if !editing
+                    && context == "LoganaLogs"
+                    && stroke.key == "/"
+                    && !stroke.modifiers.control
+                    && !stroke.modifiers.platform
+                    && !stroke.modifiers.alt
+                {
+                    cx.stop_propagation();
+                    app.dispatch(Message::SearchPopup(true), window, cx);
+                    return;
+                }
                 if app.loading.focus.is_focused(window) && app.picker_key(&stroke.key, cx) {
                     cx.stop_propagation();
                     return;
@@ -1238,8 +1476,8 @@ impl Render for App {
                 }
                 if stroke.key == "escape" {
                     if app.state.editor.is_some() {
-                        cx.stop_propagation();
-                        app.dispatch(Message::EditorCancel, window, cx);
+                        // Let a Select or date picker dismiss its popup first.
+                        return;
                     } else if app.state.palette.visible() {
                         cx.stop_propagation();
                         app.dispatch(Message::PaletteClose, window, cx);
@@ -1303,6 +1541,12 @@ impl Render for App {
                 if shortcut || (colon && !editing) {
                     cx.stop_propagation();
                     app.dispatch(Message::OpenCommands, window, cx);
+                }
+            }))
+            .on_key_down(cx.listener(|app, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && app.state.editor.is_some() {
+                    cx.stop_propagation();
+                    app.dispatch(Message::EditorCancel, window, cx);
                 }
             }))
             .child(crate::gui::view::view(self, window, cx))

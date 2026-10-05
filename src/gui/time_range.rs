@@ -56,6 +56,32 @@ pub fn date_filter_expression(
     ))
 }
 
+/// Split a stored timestamp expression without changing its precision or spelling.
+pub fn timestamp_parts(pattern: &str) -> (&str, &str, &str) {
+    let expression = pattern
+        .strip_prefix(crate::filters::DATE_PREFIX)
+        .unwrap_or(pattern)
+        .trim();
+    if let Some((start, end)) = expression.split_once("..") {
+        return ("..", start.trim(), end.trim());
+    }
+    for operator in [">=", "<=", ">", "<"] {
+        if let Some(start) = expression.strip_prefix(operator) {
+            return (operator, start.trim(), "");
+        }
+    }
+    ("=", expression, "")
+}
+
+pub fn timestamp_pattern(operator: &str, start: &str, end: &str) -> String {
+    let expression = match operator {
+        ".." => format!("{start} .. {end}"),
+        "=" => start.to_owned(),
+        _ => format!("{operator} {start}"),
+    };
+    format!("{}{expression}", crate::filters::DATE_PREFIX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

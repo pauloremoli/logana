@@ -607,12 +607,7 @@ fn line_row_with_selection(
     let number_cell = fixed_cell(
         widths.line_no,
         format!(
-            "{}{}",
-            if tab.mark_manager.is_marked(line_idx) {
-                "◆"
-            } else {
-                " "
-            },
+            "{}",
             if tab.display.relative_line_numbers {
                 let selected = tab
                     .filter
@@ -767,6 +762,46 @@ pub(crate) fn raw_log_text(text: &str) -> String {
         .to_string()
 }
 
+fn search_highlights(
+    text: &str,
+    search: &crate::utils::search::Search,
+    theme: &TuiTheme,
+    highlights: Vec<(std::ops::Range<usize>, gpui_kit::gpui::HighlightStyle)>,
+) -> Vec<(std::ops::Range<usize>, gpui_kit::gpui::HighlightStyle)> {
+    let Some(pattern) = search.get_compiled_pattern() else {
+        return highlights;
+    };
+    let matches: Vec<_> = pattern
+        .find_iter(text)
+        .filter(|m| m.start() < m.end())
+        .map(|m| m.range())
+        .collect();
+    if matches.is_empty() {
+        return highlights;
+    }
+    let mut boundaries = vec![0, text.len()];
+    for range in highlights.iter().map(|(range, _)| range).chain(&matches) {
+        boundaries.extend([range.start, range.end]);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    boundaries
+        .windows(2)
+        .map(|pair| {
+            let mut style = highlights
+                .iter()
+                .find(|(range, _)| range.contains(&pair[0]))
+                .map(|(_, style)| *style)
+                .unwrap_or_default();
+            if matches.iter().any(|range| range.contains(&pair[0])) {
+                style.color = color_to_gpui(theme.search_fg).map(Into::into);
+                style.background_color = color_to_gpui(theme.text_highlight_fg).map(Into::into);
+            }
+            (pair[0]..pair[1], style)
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn selectable_cell(
     tab: &TabState,
@@ -831,6 +866,7 @@ fn selectable_cell(
             ));
         }
     }
+    highlights = search_highlights(text, &tab.search.query, theme, highlights);
     let selection = document.borrow().range(position, column, text.len());
     let chunks = if tab.display.wrap {
         wrap_text(text, (width - 16.).max(8.))
@@ -1017,6 +1053,38 @@ mod tests {
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, None).await;
         TabState::new(reader, log_manager, "test.log".to_string())
+    }
+
+    #[test]
+    fn search_highlights_regex_matches_and_preserves_other_styles() {
+        use gpui_kit::gpui::HighlightStyle;
+        let theme = TuiTheme::default();
+        let original = HighlightStyle {
+            color: color_to_gpui(theme.text).map(Into::into),
+            ..Default::default()
+        };
+        let mut search = crate::utils::search::Search::new();
+        search.set_pattern(regex::Regex::new("(?i)érr(or)?").unwrap(), true);
+        let text = "éRRor plain érr";
+        let highlights = search_highlights(text, &search, &theme, vec![(0..text.len(), original)]);
+        for (range, style) in &highlights {
+            if text[range.clone()].starts_with('é') {
+                assert_eq!(style.color, color_to_gpui(theme.search_fg).map(Into::into));
+                assert_eq!(
+                    style.background_color,
+                    color_to_gpui(theme.text_highlight_fg).map(Into::into)
+                );
+            } else {
+                assert_eq!(style.color, original.color);
+                assert_eq!(style.background_color, None);
+            }
+        }
+        assert_eq!(highlights.len(), 3);
+        search.clear();
+        assert_eq!(
+            search_highlights(text, &search, &theme, vec![(0..text.len(), original)]).len(),
+            1
+        );
     }
 
     #[tokio::test]

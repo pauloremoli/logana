@@ -93,7 +93,13 @@ fn single_line_inputs_leave_room_for_text_and_padding(cx: &mut TestAppContext) {
     cx.update_window(handle.into(), |_, window, cx| {
         add_log_tab(&app, cx, true);
         window.render_frame(cx);
+        window.click("open-search", cx);
+        window.render_frame(cx);
         assert!(window.find("log-search-input").bounds().size.height >= px(36.));
+        if !app.read(cx).state.search_open {
+            window.click("open-search", cx);
+            window.render_frame(cx);
+        }
         window.click("log-search-input", cx);
         window.input("gyp Åé 東京", cx);
         assert_eq!(
@@ -260,6 +266,14 @@ fn clicking_tab_names_switches_tabs(cx: &mut TestAppContext) {
 fn view_mode_switches_between_logs_and_bookmarks(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
     cx.update(|cx| add_log_tab(&app, cx, false));
+    app.update(cx, |app, _| {
+        let tab = &mut app.state.tabs[0];
+        tab.file_reader =
+            crate::ingestion::FileReader::from_bytes(b"first\nsecond\nthird\n".to_vec());
+        tab.filter.visible_indices = crate::shared::VisibleLines::All(3);
+        tab.filter.enabled = false;
+        tab.mark_manager.mark(1);
+    });
     for (item, page) in [
         (1usize, super::state::NavPage::Bookmarks),
         (0, super::state::NavPage::Logs),
@@ -271,8 +285,70 @@ fn view_mode_switches_between_logs_and_bookmarks(cx: &mut TestAppContext) {
             window.within("popup-menu").click(item, cx);
         })
         .unwrap();
-        cx.update(|cx| assert_eq!(app.read(cx).state.nav_page, page));
+        cx.update(|cx| {
+            let state = &app.read(cx).state;
+            assert_eq!(state.nav_page, page);
+            let lines: Vec<_> = state.tabs[0].filter.visible_indices.iter().collect();
+            assert_eq!(
+                lines,
+                if page == super::state::NavPage::Bookmarks {
+                    vec![1]
+                } else {
+                    vec![0, 1, 2]
+                }
+            );
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find(("log-row", 0usize)).is_some());
+            if page == super::state::NavPage::Bookmarks {
+                assert!(window.try_find(("log-row", 1usize)).is_none());
+                app.update(cx, |app, cx| {
+                    app.dispatch(super::message::Message::SelectLog(0, false), window, cx);
+                    app.dispatch(
+                        super::message::Message::GuiAction(super::actions::Action::Bookmark),
+                        window,
+                        cx,
+                    );
+                    assert!(app.state.tabs[0].filter.visible_indices.is_empty());
+                });
+                window.render_frame(cx);
+                assert!(window.try_find(("log-row", 0usize)).is_none());
+            }
+        })
+        .unwrap();
     }
+}
+
+#[gpui_kit::test]
+fn slash_opens_search_popup_and_escape_preserves_query(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| app.root_focus.focus(window, cx));
+        window.render_frame(cx);
+        assert!(window.try_find("log-search-input").is_none());
+        assert!(window.try_find("filter-panel-toggle").is_some());
+        window.press("/", cx);
+        window.render_frame(cx);
+        assert!(app.read(cx).state.search_open);
+        assert_eq!(window.find("log-search-input").focused(), Some(true));
+        window.input("plain/line", cx);
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert!(!app.read(cx).state.search_open);
+        assert!(window.try_find("log-search-input").is_none());
+        assert_eq!(
+            app.read(cx).state.tabs[0].search.query.get_pattern(),
+            Some("plain/line")
+        );
+        window.press("/", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("log-search-input").value(), Some("plain/line"));
+        window.press("enter", cx);
+        assert!(!app.read(cx).state.search_open);
+    })
+    .unwrap();
 }
 
 fn add_log_tab(app: &Entity<App>, cx: &mut gpui::App, structured: bool) {
@@ -351,6 +427,10 @@ fn colon_types_in_native_inputs_and_opens_launcher_on_logs(cx: &mut TestAppConte
     cx.update_window(handle.into(), |_, window, cx| {
         add_log_tab(&app, cx, false);
         window.render_frame(cx);
+        if !app.read(cx).state.search_open {
+            window.click("open-search", cx);
+            window.render_frame(cx);
+        }
         window.click("log-search-input", cx);
         window.input("value:東京", cx);
         assert!(!app.read(cx).state.palette.open);
@@ -465,6 +545,10 @@ fn notifications_are_dismissible_and_expire_five_seconds_after_each_event(cx: &m
     cx.update_window(handle.into(), |_, window, cx| {
         add_log_tab(&app, cx, false);
         window.render_frame(cx);
+        if !app.read(cx).state.search_open {
+            window.click("open-search", cx);
+            window.render_frame(cx);
+        }
         window.click("log-search-input", cx);
         app.update(cx, |app, cx| {
             app.dispatch(
@@ -552,9 +636,35 @@ fn filter_editor_prefills_native_inputs_and_color_pickers_without_command_output
             app.dispatch(Message::EditFilter(id), window, cx);
         });
         window.render_frame(cx);
-        for (index, expected) in [(0usize, "hello"), (1, "level"), (2, "INFO")] {
+        window.click("filter-custom-style", cx);
+        window.render_frame(cx);
+        for (index, expected) in [(0usize, "hello"), (2, "INFO")] {
             assert_eq!(window.find(("editor-input", index)).value(), Some(expected));
         }
+        assert_eq!(
+            app.read(cx)
+                .editor_field_select
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .selected_value()
+                .map(String::as_str),
+            Some("level")
+        );
+        assert!(window.try_find(("editor-input", 1usize)).is_none());
+        window.click(("filter-kind", 1usize), cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().kind,
+            crate::filters::FilterType::Exclude
+        );
+        window.render_frame(cx);
+        assert!(window.try_find(("color-reset", 0usize)).is_none());
+        window.click(("filter-kind", 2usize), cx);
+        window.render_frame(cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().kind,
+            crate::filters::FilterType::Highlight
+        );
         assert!(window.try_find("editor-copy").is_none());
         assert!(window.try_find("editor-clear").is_none());
         assert_eq!(app.read(cx).editor_colors.len(), 2);
@@ -595,6 +705,214 @@ fn filter_editor_prefills_native_inputs_and_color_pickers_without_command_output
             assert!(app.state.editor.is_none());
             assert!(!app.state.palette.open);
         });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn filter_editor_selects_fields_and_clears_groups(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (1100., 1100.), "github-light");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx);
+            let editor = app.state.editor.as_mut().unwrap();
+            editor.values[3] = "Existing group".into();
+            editor.discovery.names = vec!["level".into(), "service".into()];
+            cx.notify();
+        });
+        window.render_frame(cx);
+        window.click("filter-advanced", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            app.read(cx)
+                .editor_group_select
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .selected_value()
+                .map(String::as_str),
+            Some("Existing group")
+        );
+        window.within("filter-group-select").click("clean", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(app.read(cx).state.editor.as_ref().unwrap().values[3].is_empty());
+        window.within("filter-field-select").click("input", cx);
+        window.render_frame(cx);
+        window.press("escape", cx);
+        assert!(app.read(cx).state.editor.is_some());
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("filter-field-select").click("input", cx);
+        window.render_frame(cx);
+        window.input("service", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().values[1],
+            "service"
+        );
+        assert_eq!(
+            app.read(cx)
+                .editor_field_select
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .selected_value()
+                .map(String::as_str),
+            Some("service")
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn filter_editor_timestamp_components_prefill_and_save(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    use gpui_kit::component::date_picker::{DatePickerEvent, DateTime};
+    let (handle, app) = palette_window(cx, (1100., 900.), "dracula");
+    let original = format!(
+        "{}2024-06-15 12:30:00 .. 2024-06-16 13:45:00",
+        crate::filters::DATE_PREFIX
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx);
+            app.state.editor.as_mut().unwrap().values[0] = original.clone();
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(window.try_find(("timestamp-date", 0usize)).is_some());
+        assert!(window.try_find(("timestamp-date", 1usize)).is_some());
+        assert!(window.try_find("filter-field-select").is_none());
+        for (index, expected) in ["2024-06-15 12:30:00", "2024-06-16 13:45:00"]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                app.read(cx).editor_dates[index]
+                    .read(cx)
+                    .date_time()
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .unwrap()
+                    .as_ref(),
+                expected
+            );
+        }
+        let picker = app.read(cx).editor_dates[0].clone();
+        picker.update(cx, |_, cx| {
+            cx.emit(DatePickerEvent::Change(DateTime::Single(
+                "2024-06-15T14:00:00".parse().ok(),
+            )));
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let expected = format!(
+            "{}2024-06-15 14:00:00 .. 2024-06-16 13:45:00",
+            crate::filters::DATE_PREFIX
+        );
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().values[0],
+            expected
+        );
+        app.update(cx, |app, _| {
+            let crate::gui::effect::Effect::SaveGuiFilter { pattern, .. } =
+                crate::gui::update::update(&mut app.state, Message::EditorApply)
+            else {
+                panic!("expected date filter save")
+            };
+            assert_eq!(pattern, expected);
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn filter_editor_timestamp_time_only_uses_segmented_time_control(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (900., 700.), "github-light");
+    let original = format!("{}>= 09:30:00", crate::filters::DATE_PREFIX);
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx);
+            app.state.editor.as_mut().unwrap().values[0] = original.clone();
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(window.try_find(("timestamp-time", 0usize)).is_some());
+        assert!(window.try_find(("timestamp-date", 0usize)).is_none());
+        assert_eq!(
+            app.read(cx).editor_times[0]
+                .read(cx)
+                .time()
+                .format("%H:%M:%S")
+                .to_string(),
+            "09:30:00"
+        );
+        window.click(("timestamp-time", 0usize), cx);
+        window.press("up", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let pattern = &app.read(cx).state.editor.as_ref().unwrap().values[0];
+        assert_ne!(pattern, &original);
+        assert!(
+            crate::filters::parse_date_filter(
+                pattern.strip_prefix(crate::filters::DATE_PREFIX).unwrap()
+            )
+            .is_ok()
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn filter_editor_common_case_is_compact_and_auto_styled(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (800., 650.), "github-light");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx)
+        });
+        window.render_frame(cx);
+        assert!(window.find("editor-content").bounds().size.height < px(350.));
+        assert!(window.try_find("filter-field-select").is_some());
+        assert!(window.try_find("filter-group-select").is_none());
+        assert!(window.try_find(("color-reset", 0usize)).is_none());
+        assert!(window.try_find(("filter-option", 0usize)).is_none());
+        assert!(app.read(cx).state.editor.as_ref().unwrap().auto_style);
+        window.click("filter-auto-style", cx);
+        assert_eq!(app.read(cx).state.editor.as_ref().unwrap().style_seed, 1);
+        window.click("filter-advanced", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("filter-group-select").is_some());
+        window.click(("filter-option", 0usize), cx);
+        assert!(app.read(cx).state.editor.as_ref().unwrap().regex);
     })
     .unwrap();
 }
@@ -966,6 +1284,10 @@ fn bookmark_annotation_shortcuts_and_enter_are_scoped_to_their_interfaces(cx: &m
         window.press("ctrl-b", cx);
         assert!(app.read(cx).state.tabs[0].mark_manager.is_marked(line));
         window.press("escape", cx);
+        if !app.read(cx).state.search_open {
+            window.click("open-search", cx);
+            window.render_frame(cx);
+        }
         window.click("log-search-input", cx);
         window.press("ctrl-b", cx);
         assert!(app.read(cx).state.tabs[0].mark_manager.is_marked(line));

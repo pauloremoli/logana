@@ -43,6 +43,10 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
                 app.dispatch(Message::OpenFileDialog, window, cx);
             })),
     )
+    .child(super::search_bar::search_button(cx))
+    .child(super::search_bar::filter_button(cx))
+    .child(super::search_bar::live_indicator(state, cx))
+    .child(super::search_bar::view_mode_control(state, cx))
     .child(
         Button::new("open-commands")
             .ghost()

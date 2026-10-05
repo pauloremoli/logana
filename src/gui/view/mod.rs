@@ -55,11 +55,6 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
                     .flex_1()
                     .min_w(px(0.))
                     .child(tab_bar::tab_bar(&app.state, cx))
-                    .child(search_bar::search_bar(
-                        &app.state,
-                        app.log_search.as_ref(),
-                        cx,
-                    ))
                     .child(
                         div()
                             .flex()
@@ -72,6 +67,9 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
         );
     if let Some(operations) = loading::operations(app, cx) {
         root = root.child(operations);
+    }
+    if let Some(search) = search_bar::search_popup(app, cx) {
+        root = root.child(search);
     }
     if let Some(palette) = command_palette::command_palette(app, viewport, cx) {
         root = root.child(palette);
@@ -89,10 +87,7 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
     if app.state.nav_page == NavPage::Annotations {
         return annotations::page(app, cx).into_any_element();
     }
-    if app.state.nav_page == NavPage::Bookmarks {
-        return bookmarks::page(app, cx).into_any_element();
-    }
-    if app.state.nav_page != NavPage::Logs {
+    if !matches!(app.state.nav_page, NavPage::Logs | NavPage::Bookmarks) {
         return div()
             .flex_1()
             .flex()
