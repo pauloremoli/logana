@@ -54,8 +54,7 @@ pub enum StatusMessage {
     Info(String),
 }
 
-/// The left nav rail's current page. Only `Logs` has real content today —
-/// the others render a plain placeholder (see `gui::view::nav_rail`).
+/// The current content view, selected through the toolbar or application actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NavPage {
     #[default]

@@ -256,6 +256,25 @@ fn clicking_tab_names_switches_tabs(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+#[gpui_kit::test]
+fn view_mode_switches_between_logs_and_bookmarks(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update(|cx| add_log_tab(&app, cx, false));
+    for (item, page) in [
+        (1usize, super::state::NavPage::Bookmarks),
+        (0, super::state::NavPage::Logs),
+    ] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("time-range-toggle").is_none());
+            window.click("view-mode", cx);
+            window.within("popup-menu").click(item, cx);
+        })
+        .unwrap();
+        cx.update(|cx| assert_eq!(app.read(cx).state.nav_page, page));
+    }
+}
+
 fn add_log_tab(app: &Entity<App>, cx: &mut gpui::App, structured: bool) {
     let manager = runtime::handle().block_on(crate::db::LogManager::new(
         app.read(cx).state.db.clone(),

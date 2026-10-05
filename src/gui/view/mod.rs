@@ -7,7 +7,6 @@ pub mod filter_pane;
 pub mod group_pane;
 pub mod loading;
 pub mod log_pane;
-pub mod nav_rail;
 pub mod notification;
 pub mod search_bar;
 pub mod sidebar;
@@ -49,36 +48,33 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
         )
         .child(div().h(px(32.)).flex_shrink_0().child(app.menu_bar.clone()))
         .child(
-            div()
-                .flex()
-                .flex_1()
-                .min_h(px(0.))
-                .child(nav_rail::nav_rail(&app.state, cx))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .child(tab_bar::tab_bar(&app.state, cx))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_1()
-                                .min_h(px(0.))
-                                .child(body(app, window, cx))
-                                .children(loading::picker(app, cx)),
-                        ),
-                ),
+            div().flex().flex_1().min_h(px(0.)).child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .child(tab_bar::tab_bar(&app.state, cx))
+                    .child(search_bar::search_bar(
+                        &app.state,
+                        app.log_search.as_ref(),
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .child(body(app, window, cx))
+                            .children(loading::picker(app, cx)),
+                    ),
+            ),
         );
     if let Some(operations) = loading::operations(app, cx) {
         root = root.child(operations);
     }
     if let Some(palette) = command_palette::command_palette(app, viewport, cx) {
         root = root.child(palette);
-    }
-    if let Some(overlay) = search_bar::time_range_overlay(&app.state, viewport, cx) {
-        root = root.child(overlay);
     }
     if let Some(editor) = action_editor::editor(app, viewport, cx) {
         root = root.child(editor);
@@ -121,7 +117,6 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                 app.state.column_widths,
             );
             let available_width = f32::from(window.viewport_size().width)
-                - nav_rail::NAV_RAIL_WIDTH
                 - if tab.display.show_sidebar {
                     sidebar::SIDEBAR_WIDTH
                 } else {
@@ -133,9 +128,7 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                     .and_then(|id| app.loading.operations.iter().find(|op| op.id == id))
                     .is_some_and(|op| op.picker.is_some())
                 {
-                    420_f32.min(
-                        (f32::from(window.viewport_size().width) - nav_rail::NAV_RAIL_WIDTH) * 0.5,
-                    )
+                    420_f32.min(f32::from(window.viewport_size().width) * 0.5)
                 } else {
                     0.
                 }
@@ -158,11 +151,6 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                 .flex_1()
                 .min_w(px(0.))
                 .min_h(px(0.))
-                .child(search_bar::search_bar(
-                    &app.state,
-                    app.log_search.as_ref(),
-                    cx,
-                ))
                 .child(
                     div()
                         .flex()
