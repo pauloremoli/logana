@@ -67,13 +67,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             || Message::EditorCancel,
             cx,
         ));
-    let mut body = div()
-        .id("editor-content")
-        .max_h(px((height - 130.).max(48.)))
-        .overflow_y_scroll()
-        .flex()
-        .flex_col()
-        .gap_3();
+    let mut body = div().flex().flex_col().flex_shrink_0().gap_3();
     match e.action {
         Action::Help => {
             for (label, keys) in crate::gui::keyboard::shortcuts(&app.state) {
@@ -804,13 +798,22 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         .shadow_lg()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(header)
-        .child(body)
+        .child(
+            div()
+                .id("editor-content")
+                .max_h(px((height - 130.).max(48.)))
+                .overflow_y_scroll()
+                .track_scroll(&app.command_scroll)
+                .test_support()
+                .child(body),
+        )
         .child(footer);
     Some(
         deferred(
             anchored().position(point(px(0.), px(0.))).child(
                 div()
                     .id("editor-backdrop")
+                    .occlude()
                     .w(viewport.width)
                     .h(viewport.height)
                     .flex()

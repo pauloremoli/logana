@@ -36,7 +36,6 @@ pub fn command_palette(
         .border_1()
         .border_color(cx.theme().border)
         .shadow_lg()
-        .overflow_y_scroll()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             div()
@@ -67,8 +66,7 @@ pub fn command_palette(
         .max_h(px(height * 0.45))
         .overflow_y_scroll()
         .track_scroll(&app.command_scroll)
-        .flex()
-        .flex_col();
+        .test_support();
     let suggestions = crate::gui::actions::matching(&palette.input);
     for (index, descriptor) in suggestions.iter().enumerate() {
         let missing = descriptor.unavailable(&app.state).is_some();
@@ -102,6 +100,7 @@ pub fn command_palette(
             anchored().position(point(px(0.), px(0.))).child(
                 div()
                     .id("command-backdrop")
+                    .occlude()
                     .w(viewport.width)
                     .h(viewport.height)
                     .flex()

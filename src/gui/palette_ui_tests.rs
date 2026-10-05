@@ -47,6 +47,55 @@ fn palette_window(
     })
 }
 #[gpui_kit::test]
+fn actions_scroll_without_moving_background_logs(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 600.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            let tab = &mut app.state.tabs[0];
+            tab.file_reader = crate::ingestion::FileReader::from_bytes(b"row\n".repeat(1000));
+            tab.filter.visible_indices = crate::shared::VisibleLines::All(1000);
+            app.dispatch(super::message::Message::OpenCommands, window, cx);
+        });
+        window.render_frame(cx);
+        let logs = app.read(cx).log_scroll.logical_scroll_top();
+        for delta in [
+            gpui::ScrollDelta::Lines(point(0., -3.)),
+            gpui::ScrollDelta::Pixels(point(px(0.), px(-500.))),
+        ] {
+            window.scroll("command-suggestions", delta, cx);
+            assert!(app.read(cx).command_scroll.offset().y < px(0.));
+            let current = app.read(cx).log_scroll.logical_scroll_top();
+            assert_eq!(
+                (current.item_ix, current.offset_in_item),
+                (logs.item_ix, logs.offset_in_item)
+            );
+        }
+        app.update(cx, |app, cx| {
+            app.dispatch(super::message::Message::PaletteClose, window, cx);
+            app.dispatch(
+                super::message::Message::GuiAction(super::actions::Action::Appearance),
+                window,
+                cx,
+            );
+        });
+        window.render_frame(cx);
+        window.scroll(
+            "editor-content",
+            gpui::ScrollDelta::Lines(point(0., -8.)),
+            cx,
+        );
+        assert!(app.read(cx).command_scroll.offset().y < px(0.));
+        let current = app.read(cx).log_scroll.logical_scroll_top();
+        assert_eq!(
+            (current.item_ix, current.offset_in_item),
+            (logs.item_ix, logs.offset_in_item)
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn sidebar_tabs_switch_between_filters_and_groups(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
     cx.update_window(handle.into(), |_, window, cx| {
