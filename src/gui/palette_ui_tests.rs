@@ -47,6 +47,34 @@ fn palette_window(
     })
 }
 #[gpui_kit::test]
+fn sidebar_tabs_switch_between_filters_and_groups(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            app.state.tabs[0].display.show_sidebar = true;
+            cx.notify();
+        });
+        for (id, tab) in [
+            ("sidebar-groups", super::state::SidebarTab::Groups),
+            ("sidebar-filters", super::state::SidebarTab::Filters),
+            ("sidebar-groups", super::state::SidebarTab::Groups),
+        ] {
+            window.render_frame(cx);
+            window.click(id, cx);
+            assert_eq!(app.read(cx).state.sidebar_tab, tab);
+        }
+        window.render_frame(cx);
+        window.click("add-group", cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().action,
+            super::actions::Action::Group
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn clicking_tab_names_switches_tabs(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (900., 600.), "dracula");
     cx.update(|cx| {

@@ -10,7 +10,6 @@ use gpui_kit::base::Selectable;
 use gpui_kit::component::Icon;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::InputState;
-use gpui_kit::component::tab::Tab;
 use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Entity, Window, div, px};
@@ -147,15 +146,19 @@ fn sidebar_tab_button(args: SidebarTabButtonArgs, cx: &mut Context<App>) -> impl
         tab,
         active,
     } = args;
-    let mut button = Tab::new()
-        .underline()
-        .prefix(Icon::new(icon))
-        .label(label)
-        .on_click(
-            cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
-                app.dispatch(Message::SidebarTabSelected(tab), window, cx);
-            }),
-        );
+    let mut button = Button::new(match tab {
+        SidebarTab::Filters => "sidebar-filters",
+        SidebarTab::Groups => "sidebar-groups",
+    })
+    .ghost()
+    .small()
+    .icon(icon)
+    .label(label)
+    .on_click(
+        cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
+            app.dispatch(Message::SidebarTabSelected(tab), window, cx);
+        }),
+    );
     if active {
         button = button.selected(true);
     }
