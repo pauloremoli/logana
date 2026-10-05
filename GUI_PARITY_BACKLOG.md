@@ -18,8 +18,8 @@ GUI-only builds must not acquire terminal dependencies.
 - [x] Value/level color controls and theme-aware rendering.
 - [x] Display controls: wrapping, absolute/relative line numbers, keys, raw view,
       collapse/expand, sidebar visibility and position (currently tab-local).
-- [x] Pause/resume/stop file watching and toggle follow mode. Incoming file
-      growth is not yet consumed; see the streaming gap below.
+- [x] Pause/resume/stop file watching and toggle follow mode. Incoming snapshots
+      are consumed in background tasks, including paused-stream catch-up.
 - [x] Mouse row selection and Shift-click ranges; cursor and row backgrounds.
 - [x] Mouse text selection across columns/rows, forward/reverse, wrapped text,
       Unicode, edge scrolling, and virtualized rows outside the viewport.
@@ -39,7 +39,7 @@ GUI-only builds must not acquire terminal dependencies.
 - [ ] Re-home saved temporary/stream tabs and migrate their context to the permanent path.
 - [x] Save/load/append/import filter files using native dialogs.
 - [x] Template exports with editable footer fields and output dialogs.
-- [ ] Consume live file growth, preserve filters and source indices, follow the
+- [x] Consume live file growth, preserve filters and source indices, follow the
       newest visible row, and handle truncation/rotation and pause/resume.
 - [ ] Persist and restore display settings, per-file context, and sessions with
       the existing restore policies.

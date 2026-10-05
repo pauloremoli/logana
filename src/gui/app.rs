@@ -23,6 +23,7 @@ actions!(logana_gui, [OpenFile, OpenCommands, Quit]);
 /// GPUI widget ownership and asynchronous effect execution.
 pub struct App {
     pub state: GuiState,
+    pub(super) stream_pending: std::collections::HashSet<crate::shared::TabId>,
     pub editor_inputs: Vec<Entity<InputState>>,
     pub editor_textareas:
         std::collections::HashMap<usize, Entity<gpui_kit::component::input::TextareaState>>,
@@ -89,10 +90,15 @@ impl App {
                     .await;
                 if this
                     .update_in(cx, |app, _window, cx| {
+                        app.poll_streams(cx);
                         let mut filtering = false;
                         for tab in &mut app.state.tabs {
                             if tab.filter.handle.is_some() {
                                 tab.advance_filter_computation();
+                                if tab.stream.tail_mode && !tab.stream.paused {
+                                    tab.scroll.scroll_offset =
+                                        tab.filter.visible_indices.len().saturating_sub(1);
+                                }
                                 filtering = true;
                             }
                         }
@@ -122,6 +128,13 @@ impl App {
                             }
                         }
                         if filtering {
+                            if app
+                                .state
+                                .active_tab()
+                                .is_some_and(|tab| tab.stream.tail_mode && !tab.stream.paused)
+                            {
+                                app.sync_log_scroll();
+                            }
                             cx.notify();
                         }
                     })
@@ -135,6 +148,7 @@ impl App {
         Self {
             filter_edits,
             state: GuiState::new(db).with_theme(theme),
+            stream_pending: Default::default(),
             editor_inputs: Vec::new(),
             editor_textareas: Default::default(),
             editor_epoch: 0,
