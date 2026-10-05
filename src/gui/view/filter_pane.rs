@@ -98,10 +98,10 @@ pub(crate) fn display_pattern(pattern: &str) -> String {
         let mut parts: Vec<String> = expr
             .0
             .into_iter()
-            .map(|(k, v)| format!("{k} contains {v}"))
+            .map(|(k, v)| format!("{k}: {v}"))
             .collect();
         if let Some(text) = expr.1 {
-            parts.push(format!("text contains {text}"));
+            parts.push(format!("text: {text}"));
         }
         parts.join(" · ")
     } else if let Some(date) = pattern.strip_prefix(crate::filters::DATE_PREFIX) {
@@ -238,6 +238,22 @@ fn filter_type_label(filter_type: &FilterType) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn field_filters_display_compact_field_value_labels() {
+        let pattern = crate::filters::encode_field_filter(
+            &[
+                ("service".into(), "payments".into()),
+                ("level".into(), "ERROR".into()),
+            ],
+            Some("request timeout"),
+        );
+        assert_eq!(
+            display_pattern(&pattern),
+            "service: payments · level: ERROR · text: request timeout"
+        );
+        assert_eq!(display_pattern("timeout"), "timeout");
+    }
+
     #[test]
     fn filter_types_have_discrete_symbols_and_explicit_tooltips() {
         for (kind, symbol, label) in [
