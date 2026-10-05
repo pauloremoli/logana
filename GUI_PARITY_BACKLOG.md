@@ -51,7 +51,7 @@ GUI-only builds must not acquire terminal dependencies.
 - [ ] Docker container selection and log streaming.
 - [ ] DLT source selection and streaming.
 - [ ] OTEL receiver configuration and streaming.
-- [ ] Run subprocess output in a log tab with stop/pause lifecycle.
+- [x] Run subprocess output in a log tab with stop/pause lifecycle.
 - [ ] Enable/disable MCP with the existing server lifecycle.
 - [ ] Reset settings/database with explicit scope and restore-policy handling.
 

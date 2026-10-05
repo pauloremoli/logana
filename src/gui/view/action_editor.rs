@@ -70,6 +70,14 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         .flex_col()
         .gap_3();
     match e.action {
+        Action::Run => {
+            body = body.child(text(app, 0, "Executable", cx)).child(text(
+                app,
+                1,
+                "Arguments (one argument per line; spaces stay inside an argument)",
+                cx,
+            ));
+        }
         Action::Export => {
             body = body.child("Choose a template and fill its optional fields.");
             for (index, name) in crate::commands::list_templates().into_iter().enumerate() {

@@ -1508,6 +1508,7 @@ impl FileReader {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
             .spawn()?;
 
         let stdout = child.stdout.take();
@@ -1604,6 +1605,11 @@ impl FileReader {
 
             loop {
                 tokio::select! {
+                    _ = tx.closed() => {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        return;
+                    }
                     chunk = line_rx.recv() => {
                         match chunk {
                             Some((data, is_stderr)) => {
@@ -1636,6 +1642,7 @@ impl FileReader {
                                     let _ = f.flush();
                                 }
                                 let _ = tx.send(());
+                                let _ = child.wait().await;
                                 return;
                             }
                         }

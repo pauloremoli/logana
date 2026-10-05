@@ -318,6 +318,7 @@ impl App {
 
     fn apply_effect(&mut self, effect: Effect, _window: &mut Window, cx: &mut Context<Self>) {
         match effect {
+            Effect::ConnectSource(source) => self.connect_source(source, cx),
             Effect::ExportDialog {
                 tab_id,
                 template,
@@ -946,6 +947,7 @@ impl Render for App {
                     .detach();
                     self.editor_inputs.push(input);
                     if (editor_action == crate::gui::actions::Action::Annotation && index == 0)
+                        || (editor_action == crate::gui::actions::Action::Run && index == 1)
                         || (editor_action == crate::gui::actions::Action::Export && index >= 6)
                     {
                         let value = self.state.editor.as_ref().unwrap().values[index].clone();

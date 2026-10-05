@@ -29,6 +29,17 @@ use std::sync::atomic::AtomicBool;
 /// `app.rs`) still needs to perform. Never touches a gpui type itself.
 pub fn update(state: &mut GuiState, message: Message) -> Effect {
     match message {
+        Message::SourceLoaded(result) => {
+            match result {
+                Ok(tab) => {
+                    state.tabs.push(*tab);
+                    state.active_tab = state.tabs.len() - 1;
+                    state.nav_page = crate::gui::state::NavPage::Logs;
+                }
+                Err(error) => state.notify(StatusMessage::Error(error)),
+            }
+            Effect::None
+        }
         Message::EditAnnotation(index) => crate::gui::actions::open(
             state,
             crate::gui::actions::Action::Annotation,

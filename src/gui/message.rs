@@ -7,6 +7,7 @@ use crate::input::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
 
 pub enum Message {
+    SourceLoaded(Result<Box<crate::shared::TabState>, String>),
     DismissNotification(u64),
     GuiFinished(u64, Result<String, String>),
     GuiAction(crate::gui::actions::Action),

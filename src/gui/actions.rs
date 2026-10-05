@@ -8,6 +8,7 @@ use crate::shared::TabId;
 pub enum Action {
     Open,
     Annotation,
+    Run,
     Export,
     SaveLogs,
     SaveMarked,
@@ -49,6 +50,13 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::Run,
+        label: "Run command",
+        description: "Stream a program's output into a log tab",
+        aliases: "run subprocess",
+        tab: false,
+    },
     Descriptor {
         action: Action::Export,
         label: "Export analysis",
@@ -557,6 +565,18 @@ pub fn apply(state: &mut GuiState) -> Effect {
     if let Some(error) = invalid {
         state.editor.as_mut().unwrap().error = Some(error);
         return Effect::None;
+    }
+    if e.action == Action::Run {
+        if e.values[0].trim().is_empty() {
+            state.editor.as_mut().unwrap().error = Some("Choose an executable.".into());
+            return Effect::None;
+        }
+        let source = crate::gui::sources::Source::Run {
+            program: e.values[0].clone(),
+            args: e.values[1].lines().map(str::to_string).collect(),
+        };
+        close(state, true);
+        return Effect::ConnectSource(source);
     }
     if e.action == Action::Export {
         if let Err(error) = crate::commands::load_template(&e.values[0]) {
