@@ -389,7 +389,7 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             close_tab_at(state, idx);
             Effect::None
         }
-        Message::KeyPressed(_, _) => Effect::None,
+        Message::KeyPressed(key, modifiers) => crate::gui::keyboard::apply(state, key, modifiers),
         Message::SearchEdited(query) => {
             if state.editor.is_none() && !state.palette.visible() {
                 if let Some(tab) = state.active_tab_mut() {
@@ -1142,6 +1142,11 @@ fn push_tab(state: &mut GuiState, loaded: FileLoaded) {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| loaded.path.display().to_string());
     let mut tab = TabState::new(loaded.reader, loaded.log_manager, title);
+    tab.interaction.keybindings = std::sync::Arc::new(
+        crate::config::Config::load()
+            .unwrap_or_default()
+            .keybindings,
+    );
     tab.display.hidden_fields.clear();
     tab.stream.watch = Some(loaded.watch);
     force_recompute(&mut tab);

@@ -70,6 +70,36 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         .flex_col()
         .gap_3();
     match e.action {
+        Action::Help => {
+            for (label, keys) in crate::gui::keyboard::shortcuts(&app.state) {
+                body = body.child(format!("{keys} — {label}"));
+            }
+        }
+        Action::SwitchFile => {
+            body = body.child(text(app, 0, "Search open files", cx));
+            for (index, tab) in app.state.tabs.iter().enumerate() {
+                if !tab
+                    .title
+                    .to_lowercase()
+                    .contains(&e.values[0].to_lowercase())
+                {
+                    continue;
+                }
+                let id = tab.id;
+                body = body.child(
+                    Button::new(("switch-file", index))
+                        .label(tab.title.clone())
+                        .selected(index == app.state.active_tab)
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            if let Some(index) = app.state.tabs.iter().position(|tab| tab.id == id)
+                            {
+                                crate::gui::actions::close(&mut app.state, true);
+                                app.dispatch(Message::TabSelected(index), window, cx);
+                            }
+                        })),
+                );
+            }
+        }
         Action::EnableMcp => {
             body = body.child(text(app, 0, "MCP HTTP port", cx));
         }

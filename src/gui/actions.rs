@@ -8,6 +8,8 @@ use crate::shared::TabId;
 pub enum Action {
     Open,
     Annotation,
+    Help,
+    SwitchFile,
     EnableMcp,
     DisableMcp,
     DefaultFilters,
@@ -56,6 +58,20 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::Help,
+        label: "Keyboard shortcuts",
+        description: "Show GUI keyboard controls",
+        aliases: "help shortcuts",
+        tab: false,
+    },
+    Descriptor {
+        action: Action::SwitchFile,
+        label: "Switch file",
+        description: "Choose an open tab",
+        aliases: "file-switcher tabs",
+        tab: false,
+    },
     Descriptor {
         action: Action::EnableMcp,
         label: "Enable MCP server",

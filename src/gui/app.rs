@@ -237,7 +237,8 @@ impl App {
         let selecting = matches!(message, Message::SelectLog(..));
         let scroll_requested = matches!(
             message,
-            Message::SearchNext(_)
+            Message::KeyPressed(..)
+                | Message::SearchNext(_)
                 | Message::TabSelected(_)
                 | Message::TabClosed(_)
                 | Message::FileLoaded(_)
@@ -1087,6 +1088,20 @@ impl Render for App {
                         cx.stop_propagation();
                         app.dispatch(Message::GuiAction(action), window, cx);
                         return;
+                    }
+                }
+                if !editing && context == "LoganaLogs" {
+                    if let Some((key, modifiers)) = crate::gui::key::from_gpui_keystroke(stroke) {
+                        if crate::gui::keyboard::handled(&app.state, key, modifiers) {
+                            if let Some(tab) = app.state.active_tab_mut() {
+                                tab.scroll.visible_height =
+                                    ((f32::from(window.viewport_size().height) - 160.) / 28.)
+                                        .max(1.) as usize;
+                            }
+                            cx.stop_propagation();
+                            app.dispatch(Message::KeyPressed(key, modifiers), window, cx);
+                            return;
+                        }
                     }
                 }
                 if context == "LoganaDialog" || context == "LoganaActions" {

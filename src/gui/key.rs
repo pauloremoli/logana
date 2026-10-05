@@ -16,7 +16,7 @@ pub fn from_gpui_keystroke(keystroke: &Keystroke) -> Option<(KeyCode, KeyModifie
     if keystroke.modifiers.shift {
         modifiers |= KeyModifiers::SHIFT;
     }
-    if keystroke.modifiers.control {
+    if keystroke.modifiers.control || keystroke.modifiers.platform {
         modifiers |= KeyModifiers::CONTROL;
     }
     if keystroke.modifiers.alt {

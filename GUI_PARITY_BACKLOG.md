@@ -43,8 +43,8 @@ GUI-only builds must not acquire terminal dependencies.
       newest visible row, and handle truncation/rotation and pause/resume.
 - [ ] Persist and restore display settings, per-file context, and sessions with
       the existing restore policies.
-- [ ] Keyboard navigation, tab shortcuts, bookmark shortcuts, file switching,
-      and discoverable shortcut help. Legacy `KeyPressed` is currently ignored.
+- [x] Keyboard navigation, tab shortcuts, bookmark shortcuts, file switching,
+      and discoverable shortcut help. Shared bindings drive native GUI navigation.
 - [x] Default-filter configuration and automatic schema-default loading.
 - [ ] Merge-file picker and merged-source lifecycle.
 - [ ] Archive-entry picker and extraction workflow.

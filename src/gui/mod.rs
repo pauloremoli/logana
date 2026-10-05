@@ -32,3 +32,5 @@ mod sources;
 mod defaults;
 
 mod mcp;
+
+mod keyboard;

@@ -46,7 +46,7 @@ pub enum Message {
     FileLoaded(Result<FileLoaded, String>),
     TabSelected(usize),
     TabClosed(usize),
-    /// Legacy key messages are ignored; native controls own GUI input.
+    /// Shared navigation bindings are adapted to native GUI controls.
     KeyPressed(KeyCode, KeyModifiers),
     /// Native input edits reuse the same incremental search engine.
     SearchEdited(String),
