@@ -3,6 +3,7 @@ use gpui_kit::gpui::Context;
 
 #[derive(Debug)]
 pub enum Source {
+    Stdin,
     Docker { container: String },
     Dlt { host: String, port: u16 },
     Otel { port: u16, grpc: bool },
@@ -14,6 +15,12 @@ impl Source {
         db: std::sync::Arc<crate::db::Database>,
     ) -> Result<Box<crate::shared::TabState>, String> {
         let (label, connect, no_retry) = match self {
+            Self::Stdin => {
+                let connect: crate::shared::ConnectFn = std::sync::Arc::new(|| {
+                    Box::pin(async { Ok(crate::ingestion::FileReader::stream_stdin().await) })
+                });
+                ("stdin".into(), connect, true)
+            }
             Self::Docker { container } => (
                 format!("docker://{container}"),
                 crate::shared::docker_connect_fn(container),
@@ -67,10 +74,27 @@ impl Source {
 }
 impl App {
     pub(super) fn connect_source(&self, source: Source, cx: &mut Context<Self>) {
+        self.connect_source_with_args(source, None, cx);
+    }
+    pub(super) fn connect_source_with_args(
+        &self,
+        source: Source,
+        args: Option<crate::cli::Args>,
+        cx: &mut Context<Self>,
+    ) {
         let db = self.state.db.clone();
+        let background = crate::gui::theme::GuiPalette::from_theme(&self.state.theme).background;
         cx.spawn(async move |this, cx| {
             let result = crate::gui::runtime::handle()
-                .spawn(source.open(db))
+                .spawn(async move {
+                    let mut tab = source.open(db).await?;
+                    if let Some(args) = args {
+                        tab.log_manager =
+                            crate::gui::startup::apply_filters(tab.log_manager, args, background)
+                                .await?;
+                    }
+                    Ok::<_, String>(tab)
+                })
                 .await
                 .unwrap_or_else(|e| Err(e.to_string()));
             this.update_in(cx, |app, window, cx| {

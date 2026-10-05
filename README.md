@@ -59,6 +59,29 @@ Build only the GUI with `cargo build --no-default-features --features gui --bin 
 or both frontends with `cargo build --features gui`. See
 [frontend build configurations](CONTRIBUTING.md#frontend-features).
 
+The GUI accepts the same arguments as the TUI, including filters, tail mode,
+MCP, subprocess streams, archive extraction, merging, and headless output:
+
+```sh
+logana-gui app.log "logs/another file.log" bundle.zip
+logana-gui --tail -i "error" app.log
+logana-gui --merge a.log b.log --output merged.log
+logana-gui --headless -o "debug" app.log
+```
+
+Explicit paths take precedence over restoring the previous session. Use `--`
+before a path that starts with a dash, for example `logana-gui -- -app.log`.
+
+The desktop GUI loads and indexes logs in the background. A persistent progress
+panel shows the current phase and lets you cancel active or queued operations.
+Opening an archive displays an entry picker, including nested archives; select
+files and choose **Extract and open**. Files opened through the GUI picker
+stream to temporary files; command-line archives extract permanently into
+`--out` (the current directory by default). Cancellation keeps completed tabs
+while discarding unfinished output. Temporary files remain available until
+their tabs close.
+
+
 ---
 
 ## Documentation

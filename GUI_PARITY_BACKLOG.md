@@ -51,7 +51,10 @@ GUI-only builds must not acquire terminal dependencies.
       and discoverable shortcut help. Shared bindings drive native GUI navigation.
 - [x] Default-filter configuration and automatic schema-default loading.
 - [ ] Merge-file picker and merged-source lifecycle.
-- [ ] Archive-entry picker and extraction workflow.
+- [x] Archive-entry picker and extraction workflow: virtualized entry selection,
+      lazy nested expansion, bounded streaming extraction, persistent progress,
+      and cancellation that retains completed tabs. File indexing and display
+      preparation run in background workers; queued opens are cancelable.
 - [x] Docker container selection and log streaming.
 - [x] DLT source selection and streaming.
 - [x] OTEL receiver configuration and streaming.
@@ -67,3 +70,7 @@ independence/config precedence, filtered cursor restoration, column layout,
 bookmarks/annotations, ordered sessions, temporary sources, coalesced saves,
 display edits, closing the last tab, and native viewport restoration after
 asynchronous filtering.
+
+Loading validation covers native picker/progress/cancel controls, all supported
+archive formats, nested and corrupt entries, retained completed output, queued
+cancellation, and cancellation after progress while indexing a 2 GiB sparse file.

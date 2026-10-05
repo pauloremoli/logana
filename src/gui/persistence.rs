@@ -3,11 +3,9 @@ use crate::config::{Config, RestoreSessionPolicy};
 use crate::db::{
     AppSettingsStore, Database, FileContext, FileContextStore, SessionStore, SettingsKey,
 };
-use crate::gui::{
-    app::App,
-    message::{FileLoaded, Message},
-    state::StatusMessage,
-};
+#[cfg(test)]
+use crate::gui::message::Message;
+use crate::gui::{app::App, message::FileLoaded, state::StatusMessage};
 use crate::shared::{SidebarSide, TabState};
 use gpui_kit::gpui::{AsyncApp, Context, PromptLevel, WeakEntity, Window};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
@@ -366,6 +364,16 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.restore_session_with_args(preferences, files, None, window, cx);
+    }
+    pub(super) fn restore_session_with_args(
+        &mut self,
+        preferences: Preferences,
+        files: Vec<String>,
+        args: Option<crate::cli::Args>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.state.preferences = preferences;
         if files.is_empty() || self.state.preferences.restore_session == RestoreSessionPolicy::Never
         {
@@ -382,35 +390,24 @@ impl App {
                     cx,
                 )
             });
-        let db = self.state.db.clone();
         cx.spawn(async move |this, cx| {
             let restore = match prompt {
                 Some(prompt) => prompt.await.ok() == Some(0),
                 None => true,
             };
             if restore {
-                for file in files {
-                    let db = db.clone();
-                    let result = crate::gui::runtime::handle()
-                        .spawn(async move {
-                            crate::gui::update::load_file(PathBuf::from(file), db).await
-                        })
-                        .await;
-                    match result {
-                        Ok(result) => accept_loaded(&this, cx, result).await,
-                        Err(error) => {
-                            this.update(cx, |app, cx| {
-                                app.state.notify(StatusMessage::Error(error.to_string()));
-                                cx.notify();
-                            })
-                            .ok();
-                        }
+                this.update(cx, |app, cx| {
+                    for file in files {
+                        app.queue_file_with_args(PathBuf::from(file), args.clone(), cx);
                     }
-                }
+                })
+                .ok();
             }
             this.update(cx, |app, _| {
-                app.persistence.restoring = false;
-                app.save_session_state();
+                if app.loading.operations.is_empty() {
+                    app.persistence.restoring = false;
+                    app.save_session_state();
+                }
             })
             .ok();
         })
@@ -418,22 +415,13 @@ impl App {
     }
 }
 
-pub(super) async fn accept_loaded(
-    this: &WeakEntity<App>,
-    cx: &mut AsyncApp,
-    result: Result<FileLoaded, String>,
-) {
-    let result = prepare_loaded(this, cx, result).await;
-    this.update_in(cx, |app, window, cx| {
-        app.dispatch(Message::FileLoaded(result), window, cx)
-    })
-    .ok();
-}
-async fn prepare_loaded(
+pub(super) async fn prepare_loaded(
     this: &WeakEntity<App>,
     cx: &mut AsyncApp,
     mut result: Result<FileLoaded, String>,
+    control: &crate::ingestion::archive_job::Control,
 ) -> Result<FileLoaded, String> {
+    control.check().map_err(|e| e.to_string())?;
     let policy = this
         .update(cx, |app, _| app.state.preferences.restore_file)
         .ok();
@@ -451,7 +439,23 @@ async fn prepare_loaded(
                     )
                 });
                 let accepted = match prompt {
-                    Ok(prompt) => prompt.await.ok() == Some(0),
+                    Ok(prompt) => {
+                        let control = control.clone();
+                        let mut canceled = crate::gui::runtime::handle().spawn(async move {
+                            loop {
+                                if control.cancelled() {
+                                    return;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            }
+                        });
+                        let accepted = tokio::select! {
+                            answer = prompt => answer.ok() == Some(0),
+                            _ = &mut canceled => false,
+                        };
+                        canceled.abort();
+                        accepted
+                    }
                     Err(_) => false,
                 };
                 if !accepted {
@@ -461,6 +465,7 @@ async fn prepare_loaded(
             _ => loaded.context = None,
         }
     }
+    control.check().map_err(|e| e.to_string())?;
     result
 }
 
@@ -712,7 +717,13 @@ mod native_tests {
             app.update(cx, |app, _| app.state.preferences.restore_file = policy);
             let this = app.downgrade();
             cx.spawn(async move |mut cx| {
-                let result = prepare_loaded(&this, &mut cx, Ok(loaded)).await;
+                let result = prepare_loaded(
+                    &this,
+                    &mut cx,
+                    Ok(loaded),
+                    &crate::ingestion::archive_job::Control::new().0,
+                )
+                .await;
                 this.update(&mut cx, |app, _| {
                     let handle = crate::gui::runtime::handle();
                     let _guard = handle.enter();

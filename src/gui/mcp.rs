@@ -15,12 +15,7 @@ pub(super) struct Server {
     handle: Option<McpServerHandle>,
     receiver: Option<tokio::sync::mpsc::Receiver<McpCommand>>,
     snapshot: std::sync::Arc<tokio::sync::RwLock<McpSnapshot>>,
-    key: Option<(
-        crate::shared::TabId,
-        u64,
-        Vec<usize>,
-        Vec<crate::db::Comment>,
-    )>,
+    key: Option<SnapshotKey>,
 }
 impl Drop for Server {
     fn drop(&mut self) {

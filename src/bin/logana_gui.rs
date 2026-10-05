@@ -1,6 +1,8 @@
+use clap::Parser;
 use gpui_kit::component::{GlobalState, TitleBar};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{KeyBinding, Menu, MenuItem};
+use logana::cli::{Args, expand_cli_files, run_headless_mode, validate_startup_args};
 use logana::db::{Database, SessionStore, default_db_path};
 use logana::gui::app::{App, OpenCommands, OpenFile, Quit};
 use logana::gui::persistence::Preferences;
@@ -10,6 +12,22 @@ use logana::theme::Theme as TuiTheme;
 use std::sync::Arc;
 
 fn main() {
+    let mut args = Args::parse();
+    args.files = expand_cli_files(args.files).unwrap_or_else(|error| fail(error));
+    validate_startup_args(&args).unwrap_or_else(|error| fail(error));
+    if args.headless {
+        runtime::handle()
+            .block_on(run_headless_mode(args))
+            .unwrap_or_else(|error| fail(error.to_string()));
+        return;
+    }
+    let mut schema_warnings = logana::config::init_schemas();
+    schema_warnings.extend(logana::parser::validate_custom_schemas(
+        logana::config::custom_schemas(),
+    ));
+    for warning in schema_warnings {
+        eprintln!("Warning: {warning}");
+    }
     let (db, theme) = runtime::handle().block_on(open_database_and_theme());
     let (preferences, files) = runtime::handle().block_on(async {
         let config = logana::config::Config::load().unwrap_or_default();
@@ -19,10 +37,14 @@ fn main() {
                 eprintln!("Cannot load GUI settings: {error}");
                 Preferences::default()
             });
-        let files = db.load_session().await.unwrap_or_else(|error| {
-            eprintln!("Cannot load previous session: {error}");
+        let files = if args.files.is_empty() {
+            db.load_session().await.unwrap_or_else(|error| {
+                eprintln!("Cannot load previous session: {error}");
+                Vec::new()
+            })
+        } else {
             Vec::new()
-        });
+        };
         (preferences, files)
     });
 
@@ -63,7 +85,7 @@ fn main() {
             gpui_kit::open_window(TitleBar::window_options(), cx, |window, cx| {
                 let app = cx.new(|cx| App::new(Arc::clone(&db), theme.clone(), cx));
                 app.update(cx, |app, cx| {
-                    app.restore_session(preferences.clone(), files.clone(), window, cx)
+                    app.start_cli(args.clone(), preferences.clone(), files.clone(), window, cx);
                 });
                 let closing_app = app.downgrade();
                 window.on_window_should_close(cx, move |_, cx| {
@@ -84,6 +106,11 @@ fn main() {
             .expect("failed to open window");
             cx.activate(true);
         });
+}
+
+fn fail(error: String) -> ! {
+    eprintln!("{error}");
+    std::process::exit(1);
 }
 
 async fn open_database_and_theme() -> (Arc<Database>, TuiTheme) {

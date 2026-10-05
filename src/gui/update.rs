@@ -439,6 +439,15 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             );
             Effect::None
         }
+        Message::TabPrepared(tab, widths, activate) => {
+            let was_empty = state.tabs.is_empty();
+            state.tabs.push(*tab);
+            if activate || was_empty {
+                state.column_widths = widths;
+                state.active_tab = state.tabs.len() - 1;
+            }
+            Effect::None
+        }
         Message::FileLoaded(Ok(loaded)) => {
             push_tab(state, loaded);
             gui_outcome(
@@ -1221,20 +1230,49 @@ fn next_active_tab(active: usize, delta: isize, len: usize) -> usize {
 }
 
 fn push_tab(state: &mut GuiState, loaded: FileLoaded) {
+    if let Ok((tab, widths)) = prepare_tab(loaded, &state.preferences, &AtomicBool::new(false)) {
+        state.column_widths = widths;
+        state.tabs.push(tab);
+        state.active_tab = state.tabs.len() - 1;
+    }
+}
+
+pub(super) fn prepare_tab(
+    loaded: FileLoaded,
+    preferences: &crate::gui::persistence::Preferences,
+    cancel: &AtomicBool,
+) -> Result<(TabState, crate::gui::column_widths::ColumnWidths), String> {
+    prepare_tab_with_merge(loaded, preferences, cancel, None)
+}
+
+pub(super) fn prepare_tab_with_merge(
+    loaded: FileLoaded,
+    preferences: &crate::gui::persistence::Preferences,
+    cancel: &AtomicBool,
+    merged: Option<crate::shared::MergedState>,
+) -> Result<(TabState, crate::gui::column_widths::ColumnWidths), String> {
     let title = loaded
         .path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| loaded.path.display().to_string());
-    let mut tab = TabState::new(loaded.reader, loaded.log_manager, title);
+    let mut tab = TabState::new_controlled(loaded.reader, loaded.log_manager, title, cancel)
+        .ok_or("Operation canceled")?;
     tab.interaction.keybindings = std::sync::Arc::new(
         crate::config::Config::load()
             .unwrap_or_default()
             .keybindings,
     );
     tab.display.hidden_fields.clear();
-    state.preferences.apply(&mut tab);
+    preferences.apply(&mut tab);
     tab.stream.watch = Some(loaded.watch);
+    if let Some(merged) = merged {
+        tab.display.format = None;
+        tab.continuation_map = None;
+        tab.year_map = None;
+        tab.stream.watch = None;
+        tab.merged = Some(merged);
+    }
     if let Some(context) = &loaded.context {
         tab.apply_file_context(context);
     }
@@ -1245,7 +1283,7 @@ fn push_tab(state: &mut GuiState, loaded: FileLoaded) {
         .flat_map(|note| note.line_indices.iter().copied())
         .collect::<Vec<_>>();
     tab.mark_lines(&annotated_lines);
-    force_recompute(&mut tab);
+    tab.prepare_visible_controlled(cancel);
     if let Some(context) = &loaded.context {
         if let Some(handle) = &mut tab.filter.handle {
             handle.scroll_anchor = Some(context.scroll_offset);
@@ -1256,9 +1294,11 @@ fn push_tab(state: &mut GuiState, loaded: FileLoaded) {
             tab.begin_search(&context.search_query, true, false);
         }
     }
-    state.column_widths = crate::gui::column_widths::fit_column_widths(&tab);
-    state.tabs.push(tab);
-    state.active_tab = state.tabs.len() - 1;
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("Operation canceled".into());
+    }
+    let widths = crate::gui::column_widths::fit_column_widths(&tab);
+    Ok((tab, widths))
 }
 
 fn apply_log_manager(state: &mut GuiState, tab_idx: usize, log_manager: LogManager) {
@@ -1283,38 +1323,56 @@ fn force_recompute(tab: &mut TabState) {
 /// full `TabState` (format detection, continuation/year maps, etc.) via
 /// the TUI's own `TabState::new`.
 pub async fn load_file(path: PathBuf, db: Arc<Database>) -> Result<FileLoaded, String> {
+    let (control, _rx) = crate::ingestion::archive_job::Control::new();
+    load_file_controlled(path, db, control, None).await
+}
+
+pub(super) async fn load_file_controlled(
+    path: PathBuf,
+    db: Arc<Database>,
+    control: crate::ingestion::archive_job::Control,
+    source: Option<String>,
+) -> Result<FileLoaded, String> {
+    control.check().map_err(|e| e.to_string())?;
     let path = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
     let path_str = path.to_string_lossy().into_owned();
-    let handle = FileReader::load(
-        path_str.clone(),
-        None,
-        false,
-        Arc::new(AtomicBool::new(false)),
-        false,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let mut handle = FileReader::load(path_str.clone(), None, false, control.cancel.clone(), false)
+        .await
+        .map_err(|e| e.to_string())?;
     let total_bytes = handle.total_bytes;
-    let result = handle
-        .result_rx
-        .await
-        .map_err(|_| "file load was cancelled".to_string())?
-        .map_err(|e| e.to_string())?;
+    control.phase(
+        "Loading",
+        source.clone().unwrap_or_else(|| path_str.clone()),
+        Some(total_bytes),
+    );
+    let result = loop {
+        tokio::select! {
+            result = &mut handle.result_rx => break result.map_err(|_| "File load worker stopped".to_string())?.map_err(|e| e.to_string())?,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                let fraction = *handle.progress_rx.borrow_and_update();
+                control.bytes((fraction * total_bytes as f64) as u64);
+            }
+        }
+    };
+    control.check().map_err(|e| e.to_string())?;
+    control.bytes(total_bytes);
     use crate::db::FileContextStore;
+    let provenance = source.clone().unwrap_or_else(|| path_str.clone());
     let context = db
-        .load_file_context(&path_str)
+        .load_file_context(&provenance)
         .await
         .map_err(|e| e.to_string())?;
-    let log_manager = LogManager::new(db, Some(path_str.clone())).await;
-    // Same watcher the TUI spawns on every real file open (`src/ingestion/
-    // loading.rs`) — makes `tab.stream.watch`/`is_tab_live` real instead of
-    // always `None`. Consuming its ticks to actually refresh the view on
-    // growth is separate, still-unimplemented follow-up work.
-    let watch_rx = FileReader::spawn_file_watcher(path_str.clone(), total_bytes).await;
+    let log_manager = LogManager::new(db, Some(provenance)).await;
+    let watch_rx = if source.is_some() {
+        tokio::sync::watch::channel(()).1
+    } else {
+        FileReader::spawn_file_watcher(path_str.clone(), total_bytes).await
+    };
     let watch = crate::shared::watch_state_from_file(watch_rx, path_str);
+    let path = source.map(PathBuf::from).unwrap_or(path);
     Ok(FileLoaded {
-        context,
         path,
+        context,
         reader: result.reader,
         log_manager,
         watch,

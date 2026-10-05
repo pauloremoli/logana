@@ -46,6 +46,11 @@ pub enum Message {
     OpenFileDialog,
     FileDialogResult(Option<PathBuf>),
     FileLoaded(Result<FileLoaded, String>),
+    TabPrepared(
+        Box<crate::shared::TabState>,
+        crate::gui::column_widths::ColumnWidths,
+        bool,
+    ),
     TabSelected(usize),
     TabClosed(usize),
     /// Shared navigation bindings are adapted to native GUI controls.

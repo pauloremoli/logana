@@ -37,3 +37,7 @@ mod mcp;
 mod keyboard;
 
 pub mod persistence;
+
+mod loading;
+
+mod startup;

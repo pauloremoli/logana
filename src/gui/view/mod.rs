@@ -5,6 +5,7 @@ pub mod command_palette;
 pub mod field_facets;
 pub mod filter_pane;
 pub mod group_pane;
+pub mod loading;
 pub mod log_pane;
 pub mod nav_rail;
 pub mod notification;
@@ -48,9 +49,19 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
                         .flex_1()
                         .min_w(px(0.))
                         .child(tab_bar::tab_bar(&app.state, cx))
-                        .child(body(app, window, cx)),
+                        .child(
+                            div()
+                                .flex()
+                                .flex_1()
+                                .min_h(px(0.))
+                                .child(body(app, window, cx))
+                                .children(loading::picker(app, cx)),
+                        ),
                 ),
         );
+    if let Some(operations) = loading::operations(app, cx) {
+        root = root.child(operations);
+    }
     if let Some(palette) = command_palette::command_palette(app, viewport, cx) {
         root = root.child(palette);
     }
@@ -101,6 +112,18 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                 - nav_rail::NAV_RAIL_WIDTH
                 - if tab.display.show_sidebar {
                     sidebar::SIDEBAR_WIDTH
+                } else {
+                    0.
+                }
+                - if app
+                    .loading
+                    .selected_picker
+                    .and_then(|id| app.loading.operations.iter().find(|op| op.id == id))
+                    .is_some_and(|op| op.picker.is_some())
+                {
+                    420_f32.min(
+                        (f32::from(window.viewport_size().width) - nav_rail::NAV_RAIL_WIDTH) * 0.5,
+                    )
                 } else {
                     0.
                 }
@@ -166,7 +189,7 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                 )
                 .into_any_element()
             };
-            let mut row = div().flex().flex_1().min_h(px(0.));
+            let mut row = div().flex().flex_1().min_w(px(0.)).min_h(px(0.));
             row = if !show_sidebar {
                 row.child(table)
             } else if sidebar_on_left {

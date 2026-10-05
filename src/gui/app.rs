@@ -23,6 +23,7 @@ actions!(logana_gui, [OpenFile, OpenCommands, Quit]);
 /// GPUI widget ownership and asynchronous effect execution.
 pub struct App {
     pub state: GuiState,
+    pub(super) loading: crate::gui::loading::Loading,
     pub(super) persistence: crate::gui::persistence::Persistence,
     context_scroll_pending: std::collections::HashSet<crate::shared::TabId>,
     pub(super) mcp: crate::gui::mcp::Server,
@@ -108,6 +109,7 @@ impl App {
                     .await;
                 if this
                     .update_in(cx, |app, _window, cx| {
+                        app.poll_loading(cx);
                         app.poll_streams(cx);
                         app.poll_persistence(cx);
                         app.poll_defaults(cx);
@@ -179,6 +181,7 @@ impl App {
         let text_handle = crate::gui::text_selection::new_handle(text_document.clone(), cx);
         Self {
             persistence,
+            loading: crate::gui::loading::Loading::new(cx),
             context_scroll_pending: Default::default(),
             text_document,
             text_handle,
@@ -230,8 +233,12 @@ impl App {
     }
 
     pub fn dispatch(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
-        let restoring_context =
-            matches!(&message, Message::FileLoaded(Ok(loaded)) if loaded.context.is_some());
+        let prepared_restore_id = match &message {
+            Message::TabPrepared(tab, _, _) => Some(tab.id),
+            _ => None,
+        };
+        let restoring_context = matches!(&message, Message::FileLoaded(Ok(loaded)) if loaded.context.is_some())
+            || matches!(&message, Message::TabPrepared(tab, _, _) if tab.filter.handle.as_ref().is_some_and(|h| h.scroll_anchor.is_some()));
         if matches!(
             message,
             Message::KeyPressed(..) | Message::SelectLog(..) | Message::SearchNext(..)
@@ -305,7 +312,9 @@ impl App {
         let _runtime_guard = runtime_handle.enter();
         let effect = update::update(&mut self.state, message);
         if restoring_context
-            && let Some(tab) = self.state.active_tab()
+            && let Some(tab) = prepared_restore_id
+                .and_then(|id| self.state.tabs.iter().find(|tab| tab.id == id))
+                .or_else(|| self.state.active_tab())
             && tab.filter.handle.is_some()
         {
             self.context_scroll_pending.insert(tab.id);
@@ -338,7 +347,7 @@ impl App {
         cx.notify();
     }
 
-    fn sync_notification_timer(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn sync_notification_timer(&mut self, cx: &mut Context<Self>) {
         let revision = self.state.notification_revision;
         if self.state.status.is_none() || self.notification_timer_revision == revision {
             return;
@@ -659,16 +668,8 @@ impl App {
         .detach();
     }
 
-    fn spawn_load_file(&self, path: PathBuf, cx: &mut Context<Self>) {
-        let db = Arc::clone(&self.state.db);
-        cx.spawn(async move |this, cx| {
-            let result = runtime::handle()
-                .spawn(async move { update::load_file(path, db).await })
-                .await
-                .expect("load_file task panicked");
-            crate::gui::persistence::accept_loaded(&this, cx, result).await;
-        })
-        .detach();
+    fn spawn_load_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.queue_file(path, cx);
     }
 
     fn refresh_facet_counts(&mut self, cx: &mut Context<Self>) {
@@ -1194,6 +1195,10 @@ impl Render for App {
             .on_action(cx.listener(Self::on_quit_action))
             .capture_key_down(cx.listener(move |app, event: &KeyDownEvent, window, cx| {
                 let stroke = &event.keystroke;
+                if app.loading.focus.is_focused(window) && app.picker_key(&stroke.key, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if !editing
                     && context == "LoganaLogs"
                     && stroke.key == "c"

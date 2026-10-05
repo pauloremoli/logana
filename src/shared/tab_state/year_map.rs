@@ -25,18 +25,35 @@ impl YearMap {
         parser: &P,
         start_year: i32,
     ) -> Self {
+        Self::build_controlled(
+            file_reader,
+            parser,
+            start_year,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+    }
+    pub(crate) fn build_controlled<P: LogFormatParser + ?Sized>(
+        file_reader: &FileReader,
+        parser: &P,
+        start_year: i32,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Self {
         let count = file_reader.line_count();
 
         // Phase 1: parallel extraction
         let months: Vec<Option<u32>> = (0..count)
             .into_par_iter()
             .map(|i| {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(());
+                }
                 let line = file_reader.get_line(i);
-                parser
+                Ok(parser
                     .parse_timestamp(&line)
-                    .and_then(bsd_month_from_timestamp)
+                    .and_then(bsd_month_from_timestamp))
             })
-            .collect();
+            .collect::<Result<Vec<_>, ()>>()
+            .unwrap_or_default();
 
         // Phase 2: sequential transitions
         let mut transitions = Vec::with_capacity(16);
@@ -46,6 +63,9 @@ impl YearMap {
         let mut prev_month = 0;
 
         for (i, month_opt) in months.iter().enumerate() {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
             if let Some(month) = month_opt {
                 let month = *month;
 

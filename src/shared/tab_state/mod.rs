@@ -546,6 +546,14 @@ pub fn display_text_for_line(
 }
 
 pub fn build_continuation_map(reader: &FileReader, parser: &dyn LogFormatParser) -> Vec<usize> {
+    build_continuation_map_controlled(reader, parser, &AtomicBool::new(false))
+}
+
+fn build_continuation_map_controlled(
+    reader: &FileReader,
+    parser: &dyn LogFormatParser,
+    cancel: &AtomicBool,
+) -> Vec<usize> {
     let count = reader.line_count();
 
     // Continuation-group merging needs a genuine `&'a [u8]` borrow per line
@@ -554,7 +562,9 @@ pub fn build_continuation_map(reader: &FileReader, parser: &dyn LogFormatParser)
     // map (every line is its own record) degrades gracefully to "treat
     // every line as standalone" instead.
     if reader.is_paged() {
-        return (0..count).collect();
+        return (0..count)
+            .take_while(|_| !cancel.load(Ordering::Relaxed))
+            .collect();
     }
 
     let chunk_size = 1024;
@@ -569,6 +579,9 @@ pub fn build_continuation_map(reader: &FileReader, parser: &dyn LogFormatParser)
             let mut last_parent = start;
 
             for i in start..end {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(());
+                }
                 let line = reader.get_line(i);
                 let line: &[u8] = &line;
                 // A line matching the schema's declared `continuation.end_pattern`
@@ -587,15 +600,19 @@ pub fn build_continuation_map(reader: &FileReader, parser: &dyn LogFormatParser)
                 local.push(last_parent);
             }
 
-            (local, last_parent)
+            Ok((local, last_parent))
         })
-        .collect();
+        .collect::<Result<Vec<_>, ()>>()
+        .unwrap_or_default();
 
     // Phase 2: fix dependencies between chunks
     let mut result = Vec::with_capacity(count);
     let mut prev_last = 0;
 
     for (chunk, last) in chunks.iter_mut() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
         for v in chunk.iter_mut() {
             if *v < prev_last {
                 *v = prev_last;
@@ -861,6 +878,29 @@ pub struct TabState {
 
 impl TabState {
     pub fn new(file_reader: FileReader, log_manager: LogManager, title: String) -> Self {
+        Self::new_inner(file_reader, log_manager, title, None).expect("uncanceled tab construction")
+    }
+
+    pub fn new_controlled(
+        file_reader: FileReader,
+        log_manager: LogManager,
+        title: String,
+        cancel: &AtomicBool,
+    ) -> Option<Self> {
+        Self::new_inner(file_reader, log_manager, title, Some(cancel))
+    }
+
+    fn new_inner(
+        file_reader: FileReader,
+        log_manager: LogManager,
+        title: String,
+        cancellation: Option<&AtomicBool>,
+    ) -> Option<Self> {
+        let never_cancel = AtomicBool::new(false);
+        let cancel = cancellation.unwrap_or(&never_cancel);
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
         // Sample up to 200 lines for format detection.
         let sample_limit = file_reader.line_count().min(200);
         let sample_lines: Vec<_> = (0..sample_limit).map(|i| file_reader.get_line(i)).collect();
@@ -877,7 +917,7 @@ impl TabState {
 
         let continuation_map = detected_format
             .as_deref()
-            .map(|p| Arc::new(build_continuation_map(&file_reader, p)));
+            .map(|p| Arc::new(build_continuation_map_controlled(&file_reader, p, cancel)));
 
         let year_map = detected_format.as_deref().and_then(|p| {
             if p.timestamp_has_year() {
@@ -887,13 +927,17 @@ impl TabState {
             let start_year = system_time_to_date(file_reader.mtime())
                 .map(|d| d.year())
                 .unwrap_or_else(|| time::OffsetDateTime::now_utc().year());
-            Some(Arc::new(year_map::YearMap::build(
+            Some(Arc::new(year_map::YearMap::build_controlled(
                 &file_reader,
                 p,
                 start_year,
+                cancel,
             )))
         });
 
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
         let mut tab = TabState {
             id: TabId::next(),
             file_reader,
@@ -940,8 +984,16 @@ impl TabState {
             merged: None,
             source_path: None,
         };
-        tab.refresh_visible();
-        tab
+        if cancellation.is_some() {
+            tab.filter.visible_indices = tab.compute_unfiltered_visible_controlled(cancel);
+        } else {
+            tab.refresh_visible();
+        }
+        if cancel.load(Ordering::Relaxed) {
+            None
+        } else {
+            Some(tab)
+        }
     }
 
     /// Whether this tab's content lives only in a temp file rather than a
@@ -1092,24 +1144,44 @@ impl TabState {
     /// When a structured format is detected, empty lines (e.g. SSE delimiters)
     /// are excluded; otherwise all lines are visible.
     fn compute_unfiltered_visible(&self) -> VisibleLines {
+        self.compute_unfiltered_visible_controlled(&AtomicBool::new(false))
+    }
+
+    fn compute_unfiltered_visible_controlled(&self, cancel: &AtomicBool) -> VisibleLines {
         let n = self.file_reader.line_count();
         if self.display.format.is_none() || self.display.raw_mode {
             return VisibleLines::All(n);
         }
         // Fast path: scan for the first blank line.  If none exist (the common
         // case for log files) return All without allocating a Vec at all.
-        let first_empty = (0..n).find(|&i| self.file_reader.get_line(i).is_empty());
+        let first_empty = (0..n)
+            .take_while(|_| !cancel.load(Ordering::Relaxed))
+            .find(|&i| self.file_reader.get_line(i).is_empty());
         let Some(first_empty) = first_empty else {
             return VisibleLines::All(n);
         };
         // Slow path: at least one blank line — collect non-empty indices.
         let mut vis = Vec::with_capacity(n - 1);
         for i in 0..n {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
             if i != first_empty && !self.file_reader.get_line(i).is_empty() {
                 vis.push(i);
             }
         }
         VisibleLines::Filtered(vis)
+    }
+
+    pub fn prepare_visible_controlled(&mut self, cancel: &AtomicBool) {
+        if self.filter.show_marks_only || self.log_manager.get_filters().iter().any(|f| f.enabled) {
+            self.begin_filter_refresh();
+        } else {
+            self.filter.visible_indices = self.compute_unfiltered_visible_controlled(cancel);
+            if !cancel.load(Ordering::Relaxed) {
+                self.sync_collapse_mask_controlled(cancel);
+            }
+        }
     }
 
     /// Scan forward from `from` (exclusive) for the next visible ERROR/FATAL line.
@@ -2739,6 +2811,39 @@ impl TabState {
                 &self.filter.overridden_groups,
             );
         }
+    }
+
+    fn sync_collapse_mask_controlled(&mut self, cancel: &AtomicBool) {
+        if !self.display.collapse_continuations && self.filter.overridden_groups.is_empty() {
+            return;
+        }
+        let baseline = match &self.filter.visible_indices {
+            VisibleLines::All(n) => VisibleLines::All(*n),
+            VisibleLines::Filtered(indices) => {
+                let mut copy = Vec::with_capacity(indices.len());
+                for chunk in indices.chunks(1024) {
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    copy.extend_from_slice(chunk);
+                }
+                VisibleLines::Filtered(copy)
+            }
+        };
+        if let Some(cmap) = self.active_continuation_map() {
+            let indices = baseline
+                .iter()
+                .take_while(|_| !cancel.load(Ordering::Relaxed))
+                .filter(|&idx| {
+                    idx >= cmap.len()
+                        || cmap[idx] == idx
+                        || !(self.display.collapse_continuations
+                            ^ self.filter.overridden_groups.contains(&cmap[idx]))
+                })
+                .collect();
+            self.filter.visible_indices = VisibleLines::Filtered(indices);
+        }
+        self.filter.pre_collapse_visible = Some(baseline);
     }
 
     /// Reapplies the collapse mask from `pre_collapse_visible` after

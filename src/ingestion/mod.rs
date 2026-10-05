@@ -24,3 +24,5 @@ pub use otlp_receiver::{
     otlp_export_request_to_lines, otlp_payload_to_lines, otlp_protobuf_to_lines,
     spawn_otlp_grpc_receiver, spawn_otlp_http_receiver,
 };
+
+pub mod archive_job;

@@ -61,17 +61,48 @@ pub fn build_merged_index(
     year_maps: &[Option<Arc<YearMap>>],
     continuation_maps: &[Option<Arc<Vec<usize>>>],
 ) -> Vec<MergedEntry> {
+    build_merged_index_controlled(sources, parsers, year_maps, continuation_maps, None)
+        .expect("uncanceled merge")
+}
+
+pub fn build_merged_index_controlled(
+    sources: &[FileReader],
+    parsers: &[Option<Arc<dyn LogFormatParser>>],
+    year_maps: &[Option<Arc<YearMap>>],
+    continuation_maps: &[Option<Arc<Vec<usize>>>],
+    control: Option<&crate::ingestion::archive_job::Control>,
+) -> std::io::Result<Vec<MergedEntry>> {
     let mut entries = Vec::new();
     for (source_idx, source) in sources.iter().enumerate() {
         let parser = parsers[source_idx].as_deref();
         let year_map = year_maps[source_idx].as_deref();
         let cmap = continuation_maps[source_idx].as_deref();
-        append_source_entries(&mut entries, source, parser, year_map, cmap, source_idx, 0);
+        if let Some(c) = control {
+            c.check()?;
+            c.phase(
+                "Merging",
+                format!("Source {} / {}", source_idx + 1, sources.len()),
+                Some(source.line_count() as u64),
+            );
+        }
+        append_source_entries_controlled(
+            &mut entries,
+            source,
+            parser,
+            year_map,
+            cmap,
+            source_idx,
+            0,
+            control,
+        )?;
     }
     // Stable: entries with equal sort_key (e.g. many lines within the same
     // second) must keep each source's original chronological order.
     entries.sort_by_key(|a| a.sort_key);
-    entries
+    if let Some(c) = control {
+        c.check()?;
+    }
+    Ok(entries)
 }
 
 /// Append new entries from a grown source (lines `from_line..`) into an
@@ -206,10 +237,40 @@ fn append_source_entries(
     source_idx: usize,
     from_line: usize,
 ) {
+    append_source_entries_controlled(
+        entries,
+        source,
+        parser,
+        year_map,
+        continuation_map,
+        source_idx,
+        from_line,
+        None,
+    )
+    .expect("uncanceled merge");
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_source_entries_controlled(
+    entries: &mut Vec<MergedEntry>,
+    source: &FileReader,
+    parser: Option<&dyn LogFormatParser>,
+    year_map: Option<&YearMap>,
+    continuation_map: Option<&Vec<usize>>,
+    source_idx: usize,
+    from_line: usize,
+    control: Option<&crate::ingestion::archive_job::Control>,
+) -> std::io::Result<()> {
     let count = source.line_count();
     let mut current_key = seed_current_key(source, parser, year_map, continuation_map, from_line);
 
     for line_idx in from_line..count {
+        if line_idx.is_multiple_of(1024)
+            && let Some(c) = control
+        {
+            c.check()?;
+            c.bytes(line_idx as u64);
+        }
         let line = source.get_line(line_idx);
         let ts = parser.and_then(|p| p.parse_timestamp(&line));
 
@@ -238,6 +299,7 @@ fn append_source_entries(
             });
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
