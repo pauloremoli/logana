@@ -9,7 +9,7 @@ use gpui_kit::base::{Disableable, FocusTrapElement, Selectable, TestSupportExt};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::color_picker::ColorPicker;
-use gpui_kit::component::input::{Input, Textarea};
+use gpui_kit::component::input::Textarea;
 use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::gpui::{
     AnyElement, ClipboardItem, Context, MouseButton, Pixels, Size, anchored, deferred, div, point,
@@ -32,7 +32,7 @@ fn text(app: &App, index: usize, label: &str, _cx: &mut Context<App>) -> AnyElem
         .gap_1()
         .child(label.to_string())
         .children(app.editor_inputs.get(index).map(|input| {
-            Input::new(input).id(("editor-input", index)).disabled(
+            super::input(input).id(("editor-input", index)).disabled(
                 app.state
                     .editor
                     .as_ref()

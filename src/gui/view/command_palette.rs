@@ -3,7 +3,6 @@ use crate::gui::message::Message;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{FocusTrapElement, TestSupportExt};
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::Input;
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::gpui::prelude::*;
@@ -54,7 +53,7 @@ pub fn command_palette(
                 ),
         )
         .children(app.command_input.as_ref().map(|input| {
-            Input::new(input)
+            super::input(input)
                 .id("command-input")
                 .prefix(Icon::new(IconName::Search))
                 .bg(cx.theme().secondary)

@@ -5,7 +5,7 @@ use crate::gui::update::filter_id_for_field_equality;
 use crate::shared::FieldValueCounts;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::InputState;
 use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Entity, Rgba, Window, div, px};
@@ -48,7 +48,7 @@ pub fn field_facets(
         .unwrap_or_default();
     if let Some(input) = search {
         col = col.child(
-            Input::new(input)
+            super::input(input)
                 .id("facet-search-input")
                 .bg(cx.theme().secondary)
                 .text_color(cx.theme().foreground)

@@ -20,6 +20,17 @@ use gpui_kit::component::TitleBar;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div, px};
 
+/// Leave enough room for the native editor's line height plus both borders.
+/// The component's default 32px height with 8px vertical padding clips glyphs.
+pub(super) fn input(
+    state: &gpui_kit::gpui::Entity<gpui_kit::component::input::InputState>,
+) -> gpui_kit::component::input::Input {
+    gpui_kit::component::input::Input::new(state)
+        .min_h(px(36.))
+        .py(px(4.))
+        .flex_shrink_0()
+}
+
 pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoElement {
     let viewport = window.viewport_size();
     let mut root = div()

@@ -47,6 +47,45 @@ fn palette_window(
     })
 }
 #[gpui_kit::test]
+fn single_line_inputs_leave_room_for_text_and_padding(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        window.render_frame(cx);
+        assert!(window.find("log-search-input").bounds().size.height >= px(36.));
+        window.click("log-search-input", cx);
+        window.input("gyp Åé 東京", cx);
+        assert_eq!(
+            app.read(cx).log_search.as_ref().unwrap().read(cx).value(),
+            "gyp Åé 東京"
+        );
+        app.update(cx, |app, cx| {
+            app.dispatch(super::message::Message::OpenCommands, window, cx)
+        });
+        window.render_frame(cx);
+        assert!(window.find("command-input").bounds().size.height >= px(36.));
+        app.update(cx, |app, cx| {
+            app.dispatch(super::message::Message::PaletteClose, window, cx);
+            app.dispatch(
+                super::message::Message::GuiAction(super::actions::Action::Filter),
+                window,
+                cx,
+            );
+        });
+        window.render_frame(cx);
+        assert!(window.find(("editor-input", 0usize)).bounds().size.height >= px(36.));
+        app.update(cx, |app, cx| {
+            app.dispatch(super::message::Message::EditorCancel, window, cx);
+            app.state.tabs[0].display.show_sidebar = true;
+            app.dispatch(super::message::Message::FacetBrowserToggled, window, cx);
+        });
+        window.render_frame(cx);
+        assert!(window.find("facet-search-input").bounds().size.height >= px(36.));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn settings_open_without_a_file_and_save_restore_preferences(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
     cx.update_window(handle.into(), |_, window, cx| {

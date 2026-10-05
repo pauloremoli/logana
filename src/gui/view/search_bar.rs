@@ -7,7 +7,7 @@ use crate::gui::view::tab_bar::TAB_BAR_HEIGHT;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::InputState;
 use gpui_kit::component::{ActiveTheme, Icon, TITLE_BAR_HEIGHT};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{
@@ -44,7 +44,7 @@ pub fn search_bar(
         .border_b_1()
         .border_color(cx.theme().border)
         .child(div().flex_1().min_w(px(0.)).children(input.map(|input| {
-            Input::new(input)
+            super::input(input)
                 .id("log-search-input")
                 .bg(cx.theme().secondary)
                 .text_color(cx.theme().foreground)
