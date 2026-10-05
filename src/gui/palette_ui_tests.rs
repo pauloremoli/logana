@@ -884,7 +884,10 @@ fn merge_picker_has_native_selection_search_and_cancel_controls(cx: &mut TestApp
             cx.notify();
         });
         window.render_frame(cx);
-        window.click("merge-files", cx);
+        assert!(window.try_find("merge-files").is_none());
+        window.click("open-commands", cx);
+        window.input("merge", cx);
+        window.press("enter", cx);
         window.render_frame(cx);
         assert_eq!(
             app.read(cx).state.editor.as_ref().unwrap().action,

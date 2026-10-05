@@ -44,19 +44,6 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
             })),
     )
     .child(
-        Button::new("merge-files")
-            .ghost()
-            .label("Merge")
-            .tooltip("Merge open files in timestamp order")
-            .on_click(cx.listener(|app: &mut App, _, window, cx| {
-                app.dispatch(
-                    Message::GuiAction(crate::gui::actions::Action::Merge),
-                    window,
-                    cx,
-                )
-            })),
-    )
-    .child(
         Button::new("open-commands")
             .ghost()
             .icon(Icon::new(IconName::Search))
