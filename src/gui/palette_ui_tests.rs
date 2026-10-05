@@ -46,6 +46,27 @@ fn palette_window(
         (window.downcast::<Root>().unwrap(), app)
     })
 }
+#[gpui_kit::test]
+fn clicking_tab_names_switches_tabs(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (900., 600.), "dracula");
+    cx.update(|cx| {
+        add_log_tab(&app, cx, false);
+        add_log_tab(&app, cx, false);
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        for index in [1usize, 0, 1] {
+            window.render_frame(cx);
+            window.click_at(("file-tab", index), point(px(45.), px(18.)), cx);
+            assert_eq!(app.read(cx).state.active_tab, index);
+        }
+        window.render_frame(cx);
+        window.click(("tab-close", 0usize), cx);
+        assert_eq!(app.read(cx).state.tabs.len(), 1);
+        assert_eq!(app.read(cx).state.active_tab, 0);
+    })
+    .unwrap();
+}
+
 fn add_log_tab(app: &Entity<App>, cx: &mut gpui::App, structured: bool) {
     let manager = runtime::handle().block_on(crate::db::LogManager::new(
         app.read(cx).state.db.clone(),

@@ -135,6 +135,9 @@ pub(super) async fn install_loaded(
     let preferences = this
         .update(cx, |app, _| app.state.preferences.clone())
         .map_err(|e| e.to_string())?;
+    let active_before_prepare = this
+        .update(cx, |app, _| app.state.active_tab().map(|tab| tab.id))
+        .map_err(|e| e.to_string())?;
     let mut loaded = result?;
     let preview = this
         .update(cx, |app, _| {
@@ -266,7 +269,12 @@ pub(super) async fn install_loaded(
                     }
                 }
                 app.dispatch(
-                    Message::TabPrepared(Box::new(result.0), result.1, activate),
+                    Message::TabPrepared(
+                        Box::new(result.0),
+                        result.1,
+                        activate
+                            && app.state.active_tab().map(|tab| tab.id) == active_before_prepare,
+                    ),
                     window,
                     cx,
                 );
@@ -1226,6 +1234,87 @@ mod ui_tests {
         gpui::{AppContext, TestAppContext},
         test::TestWindowExt,
     };
+    #[gpui_kit::test]
+    fn pending_file_load_allows_tab_switching_and_actions(cx: &mut TestAppContext) {
+        let db = Arc::new(
+            runtime::handle()
+                .block_on(crate::db::Database::in_memory())
+                .unwrap(),
+        );
+        let manager = runtime::handle().block_on(crate::db::LogManager::new(db.clone(), None));
+        let theme = crate::theme::Theme::default();
+        let (handle, app) = cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::gui::theme::install(&theme, cx);
+            gpui_kit::open_window(Default::default(), cx, |_, cx| {
+                cx.new(|cx| App::new(db.clone(), theme.clone(), cx))
+            })
+            .unwrap()
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            app.update(cx, |app, cx| {
+                for title in ["first", "second"] {
+                    app.state.tabs.push(crate::shared::TabState::new(
+                        crate::ingestion::FileReader::from_bytes(b"existing\n".to_vec()),
+                        manager.clone(),
+                        title.into(),
+                    ));
+                }
+                let path = PathBuf::from("new.log");
+                assert!(matches!(
+                    crate::gui::update::update(
+                        &mut app.state,
+                        Message::FileDialogResult(Some(path.clone()))
+                    ),
+                    crate::gui::effect::Effect::LoadFile(_)
+                ));
+                let (control, rx) = Control::new();
+                app.loading.operations.push(Operation {
+                    id: 1,
+                    path,
+                    control,
+                    rx,
+                    progress: Progress::default(),
+                    picker: None,
+                    args: None,
+                    preview: None,
+                });
+                app.dispatch(Message::TabSelected(1), window, cx);
+                app.dispatch(
+                    Message::GuiAction(crate::gui::actions::Action::ShowBookmarks),
+                    window,
+                    cx,
+                );
+                assert_eq!(app.state.active_tab, 1);
+                assert_eq!(app.state.nav_page, crate::gui::state::NavPage::Bookmarks);
+                assert!(!app.state.palette.pending());
+                assert_eq!(app.loading.operations.len(), 1);
+            });
+            window.render_frame(cx);
+            window.click("open-commands", cx);
+            assert!(app.read(cx).state.palette.open);
+            app.update(cx, |app, cx| {
+                let tab = crate::shared::TabState::new(
+                    crate::ingestion::FileReader::from_bytes(b"new file\n".to_vec()),
+                    manager.clone(),
+                    "new.log".into(),
+                );
+                app.dispatch(
+                    Message::TabPrepared(Box::new(tab), Default::default(), false),
+                    window,
+                    cx,
+                );
+                app.finish_loading(1, Ok(()), cx);
+            });
+        })
+        .unwrap();
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.state.tabs.len(), 3);
+            assert_eq!(app.state.active_tab, 1);
+            assert_eq!(app.state.nav_page, crate::gui::state::NavPage::Bookmarks);
+            assert!(app.state.palette.open);
+        });
+    }
     #[gpui_kit::test]
     fn progress_cancel_and_archive_picker_controls_are_native(cx: &mut TestAppContext) {
         let db = Arc::new(

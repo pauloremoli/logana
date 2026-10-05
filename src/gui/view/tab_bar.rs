@@ -2,7 +2,7 @@ use crate::gui::app::App;
 use crate::gui::message::Message;
 use crate::gui::state::GuiState;
 use gpui_kit::assets::IconName;
-use gpui_kit::base::Selectable;
+use gpui_kit::base::{Selectable, TestSupportExt};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::Icon;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -61,6 +61,8 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
 fn tab_label(idx: usize, title: String, active: bool, cx: &mut Context<App>) -> impl IntoElement {
     let entity = cx.entity();
     div()
+        .id(("file-tab", idx))
+        .test_support()
         .context_menu(move |menu, _, _| {
             let close = entity.clone();
             menu.item(
