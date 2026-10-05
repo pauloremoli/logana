@@ -1,10 +1,10 @@
 use clap::Parser;
-use gpui_kit::component::{GlobalState, TitleBar};
+use gpui_kit::component::TitleBar;
+use gpui_kit::gpui::KeyBinding;
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{KeyBinding, Menu, MenuItem};
 use logana::cli::{Args, expand_cli_files, run_headless_mode, validate_startup_args};
 use logana::db::{Database, SessionStore, default_db_path};
-use logana::gui::app::{App, OpenCommands, OpenFile, Quit};
+use logana::gui::app::{App, OpenCommands};
 use logana::gui::persistence::Preferences;
 use logana::gui::runtime;
 use logana::gui::theme as gui_theme;
@@ -66,15 +66,6 @@ fn main() {
                 OpenCommands,
                 Some("LoganaLogs"),
             )]);
-            GlobalState::global_mut(cx).set_app_menus(vec![
-                Menu::new("File")
-                    .items([
-                        MenuItem::action("Open...", OpenFile),
-                        MenuItem::separator(),
-                        MenuItem::action("Quit", Quit),
-                    ])
-                    .owned(),
-            ]);
             // `TitleBar::window_options()` requests client-side decorations
             // (a custom titlebar the app draws and drags itself) so
             // `component::TitleBar` below can render real minimize/

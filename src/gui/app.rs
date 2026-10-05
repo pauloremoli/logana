@@ -70,6 +70,7 @@ pub struct FacetCache {
 
 impl App {
     pub fn new(db: Arc<Database>, theme: TuiTheme, cx: &mut Context<Self>) -> Self {
+        crate::gui::menus::install(cx);
         let persistence = crate::gui::persistence::Persistence::new(db.clone());
         cx.on_app_quit(|app, _| {
             let flushed = app.flush_persistence();
@@ -1201,6 +1202,14 @@ impl Render for App {
             .flex_col()
             .on_action(cx.listener(Self::on_open_file_action))
             .on_action(cx.listener(Self::on_open_commands_action))
+            .on_action(cx.listener(
+                |app, action: &crate::gui::menus::InvokeAction, window, cx| {
+                    // Editors opened from a menu must return to a surviving
+                    // focus handle rather than the dismissed popup's handle.
+                    app.root_focus.focus(window, cx);
+                    app.dispatch(Message::GuiAction(action.action), window, cx);
+                },
+            ))
             .on_action(cx.listener(Self::on_quit_action))
             .capture_key_down(cx.listener(move |app, event: &KeyDownEvent, window, cx| {
                 let stroke = &event.keystroke;

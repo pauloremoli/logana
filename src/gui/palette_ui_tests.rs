@@ -47,6 +47,47 @@ fn palette_window(
     })
 }
 #[gpui_kit::test]
+fn application_menus_dispatch_filter_view_export_and_close_actions(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
+    cx.update(|cx| add_log_tab(&app, cx, false));
+    for (step, menu, item) in [
+        (0, 1usize, 0usize),
+        (1, 1, 0),
+        (2, 2, 2),
+        (3, 0, 6),
+        (4, 0, 7),
+    ] {
+        if step == 4 {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.click("editor-cancel", cx);
+            })
+            .unwrap();
+        }
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within("app-menu-bar").within(menu).click("menu", cx);
+            window.within("popup-menu").click(item, cx);
+        })
+        .unwrap();
+        // Menu actions are dispatched by GPUI after the window update returns.
+        cx.update(|cx| {
+            let state = &app.read(cx).state;
+            match step {
+                0 => assert!(!state.tabs[0].filter.enabled),
+                1 => assert!(state.tabs[0].filter.enabled),
+                2 => assert!(state.tabs[0].filter.show_marks_only),
+                3 => assert_eq!(
+                    state.editor.as_ref().unwrap().action,
+                    super::actions::Action::Export
+                ),
+                _ => assert!(state.tabs.is_empty()),
+            }
+        });
+    }
+}
+
+#[gpui_kit::test]
 fn single_line_inputs_leave_room_for_text_and_padding(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
     cx.update_window(handle.into(), |_, window, cx| {

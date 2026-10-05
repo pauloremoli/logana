@@ -5,6 +5,7 @@ pub mod column_widths;
 pub mod effect;
 pub mod key;
 pub mod level;
+pub mod menus;
 pub mod message;
 pub mod runtime;
 pub mod state;

@@ -47,6 +47,7 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
                 .on_close_window(cx.listener(|app, _, _, cx| app.request_quit(cx)))
                 .child("logana"),
         )
+        .child(div().h(px(32.)).flex_shrink_0().child(app.menu_bar.clone()))
         .child(
             div()
                 .flex()

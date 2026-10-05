@@ -8,6 +8,9 @@ use crate::shared::TabId;
 pub enum Action {
     Open,
     OpenDirectory,
+    CloseFile,
+    ToggleFiltering,
+    MarksOnly,
     Annotation,
     Bookmark,
     ShowBookmarks,
@@ -75,6 +78,27 @@ pub const CATALOG: &[Descriptor] = &[
         description: "Choose a directory and browse its log files",
         aliases: "open-directory open-folder",
         tab: false,
+    },
+    Descriptor {
+        action: Action::CloseFile,
+        label: "Close file",
+        description: "Close the active log tab",
+        aliases: "close-file close-tab",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::ToggleFiltering,
+        label: "Enable or disable filtering",
+        description: "Temporarily bypass filters without changing their definitions",
+        aliases: "filtering filter-mode",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::MarksOnly,
+        label: "Show only bookmarked logs",
+        description: "Toggle bookmarked rows in the log table",
+        aliases: "marks-only bookmarks-only",
+        tab: true,
     },
     Descriptor {
         action: Action::Settings,
@@ -443,6 +467,22 @@ pub fn open(
     }
     state.palette.open = false;
     match action {
+        Action::CloseFile => {
+            return crate::gui::update::update(
+                state,
+                crate::gui::message::Message::TabClosed(state.active_tab),
+            );
+        }
+        Action::ToggleFiltering | Action::MarksOnly => {
+            let tab = state.active_tab_mut().unwrap();
+            if action == Action::ToggleFiltering {
+                tab.filter.enabled = !tab.filter.enabled;
+            } else {
+                tab.filter.show_marks_only = !tab.filter.show_marks_only;
+            }
+            tab.begin_filter_refresh();
+            return Effect::None;
+        }
         Action::ShowLogs => {
             state.nav_page = crate::gui::state::NavPage::Logs;
             return Effect::None;
