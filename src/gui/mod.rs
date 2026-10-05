@@ -18,3 +18,5 @@ pub mod palette;
 
 #[cfg(all(test, feature = "gui-test"))]
 mod palette_ui_tests;
+
+mod file_actions;

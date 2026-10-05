@@ -36,7 +36,7 @@ GUI-only builds must not acquire terminal dependencies.
 - [x] Bookmark management page: list, jump, toggle/remove, and clear bookmarks.
 - [x] Annotation editor and page: attach notes to source rows, edit/delete, jump.
 - [ ] Save current logs and marked logs using native save dialogs.
-- [ ] Save/load/append/import filter files using native dialogs.
+- [x] Save/load/append/import filter files using native dialogs.
 - [ ] Template exports with editable footer fields and output dialogs.
 - [ ] Consume live file growth, preserve filters and source indices, follow the
       newest visible row, and handle truncation/rotation and pause/resume.

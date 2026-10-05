@@ -291,6 +291,9 @@ impl App {
 
     fn apply_effect(&mut self, effect: Effect, _window: &mut Window, cx: &mut Context<Self>) {
         match effect {
+            Effect::FilterFileDialog { action, tab_id } => {
+                self.prompt_filter_file(action, tab_id, cx)
+            }
             Effect::ClearGuiDates {
                 request_id,
                 tab_id,

@@ -8,6 +8,10 @@ use crate::shared::TabId;
 pub enum Action {
     Open,
     Annotation,
+    SaveFilters,
+    LoadFilters,
+    AppendFilters,
+    ImportFilters,
     Filter,
     Group,
     Columns,
@@ -42,6 +46,34 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::SaveFilters,
+        label: "Save filters",
+        description: "Save filters and groups to JSON",
+        aliases: "save-filters",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::LoadFilters,
+        label: "Load filters",
+        description: "Replace filters and groups from JSON",
+        aliases: "load-filters",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::AppendFilters,
+        label: "Append filters",
+        description: "Merge a JSON filter file into this tab",
+        aliases: "append-filters",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::ImportFilters,
+        label: "Import Notepad++ filters",
+        description: "Import AnalyseDoc or User Defined Language XML",
+        aliases: "import-filters npp",
+        tab: true,
+    },
     Descriptor {
         action: Action::Annotation,
         label: "Add annotation",
@@ -210,6 +242,15 @@ pub fn open(
     state.palette.open = false;
     if action == Action::Open {
         return Effect::OpenFileDialog;
+    }
+    if matches!(
+        action,
+        Action::SaveFilters | Action::LoadFilters | Action::AppendFilters | Action::ImportFilters
+    ) {
+        return Effect::FilterFileDialog {
+            action,
+            tab_id: state.active_tab().unwrap().id,
+        };
     }
     let cmd = match action {
         Action::ClearFilters => Some(Commands::ClearFilters),

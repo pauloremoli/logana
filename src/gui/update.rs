@@ -1256,6 +1256,23 @@ pub async fn execute_command(
                 .add_filter_with_color(stored_pattern, FilterType::Highlight, options)
                 .await;
         }
+        Commands::SaveFilters { path } => {
+            log_manager
+                .save_filters(&crate::commands::auto_complete::expand_tilde(&path))
+                .map_err(|e| e.to_string())?;
+        }
+        Commands::LoadFilters { path, append } => {
+            log_manager
+                .load_filters(&crate::commands::auto_complete::expand_tilde(&path), append)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Commands::ImportFilters { path, append } => {
+            log_manager
+                .import_npp_filters(&crate::commands::auto_complete::expand_tilde(&path), append)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
         Commands::ClearFilters => log_manager.clear_filters().await,
         Commands::DisableFilters => log_manager.disable_all_filters().await,
         Commands::EnableFilters => log_manager.enable_all_filters().await,
