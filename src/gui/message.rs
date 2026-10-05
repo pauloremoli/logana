@@ -11,6 +11,7 @@ pub enum Message {
     GuiFinished(u64, Result<String, String>),
     GuiAction(crate::gui::actions::Action),
     EditFilter(usize),
+    EditAnnotation(usize),
     EditGroup(String),
     EditorText(usize, String),
     EditorToggle(usize),

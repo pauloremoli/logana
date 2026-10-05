@@ -61,6 +61,11 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         .flex_col()
         .gap_3();
     match e.action {
+        Action::Annotation => {
+            body = body
+                .child(format!("Note attached to {} source rows", e.members.len()))
+                .child(text(app, 0, "Annotation", cx));
+        }
         Action::Filter => {
             let mut kinds = div().flex().gap_2();
             for (i, (kind, label)) in [

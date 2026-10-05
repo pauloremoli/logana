@@ -7,6 +7,7 @@ use crate::shared::TabId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Open,
+    Annotation,
     Filter,
     Group,
     Columns,
@@ -41,6 +42,13 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::Annotation,
+        label: "Add annotation",
+        description: "Attach a note to selected log rows",
+        aliases: "annotation comment note",
+        tab: true,
+    },
     Descriptor {
         action: Action::Open,
         label: "Open file",
@@ -365,6 +373,22 @@ pub fn open(
             .collect();
         }
     }
+    if action == Action::Annotation {
+        let tab = state.active_tab().unwrap();
+        if let Some(comment) = edit_id.and_then(|i| tab.comment_manager.get().get(i)) {
+            e.values[0] = comment.text.clone();
+            e.members = comment
+                .line_indices
+                .iter()
+                .map(|&line| (line, String::new(), true))
+                .collect();
+        } else {
+            e.members = crate::gui::view::annotations::selected_lines(state)
+                .into_iter()
+                .map(|line| (line, String::new(), true))
+                .collect();
+        }
+    }
     if action == Action::ValueColors {
         e.fields = state
             .theme
@@ -458,6 +482,29 @@ pub fn apply(state: &mut GuiState) -> Effect {
     };
     if let Some(error) = invalid {
         state.editor.as_mut().unwrap().error = Some(error);
+        return Effect::None;
+    }
+    if e.action == Action::Annotation {
+        if e.values[0].trim().is_empty() || e.members.is_empty() {
+            state.editor.as_mut().unwrap().error =
+                Some("Enter a note and select at least one log row.".into());
+            return Effect::None;
+        }
+        let tab = state.active_tab_mut().unwrap();
+        if let Some(index) = e.edit_id {
+            let mut comments = tab.comment_manager.get().to_vec();
+            if let Some(comment) = comments.get_mut(index) {
+                comment.text = e.values[0].clone();
+            }
+            tab.comment_manager.set(comments);
+        } else {
+            tab.comment_manager.add(
+                e.values[0].clone(),
+                e.members.iter().map(|(line, _, _)| *line).collect(),
+            );
+        }
+        close(state, true);
+        state.nav_page = crate::gui::state::NavPage::Annotations;
         return Effect::None;
     }
     let command = match e.action {
