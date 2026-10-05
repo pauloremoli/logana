@@ -24,6 +24,7 @@ actions!(logana_gui, [OpenFile, OpenCommands, Quit]);
 pub struct App {
     pub state: GuiState,
     pub(super) persistence: crate::gui::persistence::Persistence,
+    context_scroll_pending: std::collections::HashSet<crate::shared::TabId>,
     pub(super) mcp: crate::gui::mcp::Server,
     pub(super) default_formats: std::collections::HashMap<crate::shared::TabId, String>,
     pub(super) stream_pending: std::collections::HashSet<crate::shared::TabId>,
@@ -153,6 +154,7 @@ impl App {
                                 }
                             }
                         }
+                        app.finish_context_scroll();
                         if filtering {
                             if app
                                 .state
@@ -177,6 +179,7 @@ impl App {
         let text_handle = crate::gui::text_selection::new_handle(text_document.clone(), cx);
         Self {
             persistence,
+            context_scroll_pending: Default::default(),
             text_document,
             text_handle,
             text_context: None,
@@ -227,6 +230,15 @@ impl App {
     }
 
     pub fn dispatch(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
+        let restoring_context =
+            matches!(&message, Message::FileLoaded(Ok(loaded)) if loaded.context.is_some());
+        if matches!(
+            message,
+            Message::KeyPressed(..) | Message::SelectLog(..) | Message::SearchNext(..)
+        ) && let Some(tab) = self.state.active_tab()
+        {
+            self.context_scroll_pending.remove(&tab.id);
+        }
         if self.state.editor.is_none()
             && !self.state.palette.visible()
             && matches!(
@@ -292,6 +304,12 @@ impl App {
         let runtime_handle = runtime::handle();
         let _runtime_guard = runtime_handle.enter();
         let effect = update::update(&mut self.state, message);
+        if restoring_context
+            && let Some(tab) = self.state.active_tab()
+            && tab.filter.handle.is_some()
+        {
+            self.context_scroll_pending.insert(tab.id);
+        }
         self.save_display_change(previous_display);
         self.save_session_state();
         if previous_theme != self.state.theme {
@@ -348,6 +366,23 @@ impl App {
         if window.focused(cx).is_none() {
             self.root_focus.focus(window, cx);
         }
+    }
+
+    /// Restore the viewport only once the saved source cursor has a final visible position.
+    pub(super) fn finish_context_scroll(&mut self) -> bool {
+        let ready = self.state.active_tab().is_some_and(|tab| {
+            tab.filter.handle.is_none() && self.context_scroll_pending.contains(&tab.id)
+        });
+        self.context_scroll_pending.retain(|id| {
+            self.state
+                .tabs
+                .iter()
+                .any(|tab| tab.id == *id && tab.filter.handle.is_some())
+        });
+        if ready {
+            self.sync_log_scroll();
+        }
+        ready
     }
 
     /// Scroll only for explicit navigation, preserving mouse scrolling during edits.

@@ -65,4 +65,5 @@ Update the relevant checkbox and validation evidence in each feature commit.
 Persistence has database round-trip and native prompt tests covering policy
 independence/config precedence, filtered cursor restoration, column layout,
 bookmarks/annotations, ordered sessions, temporary sources, coalesced saves,
-display edits, and closing the last tab.
+display edits, closing the last tab, and native viewport restoration after
+asynchronous filtering.

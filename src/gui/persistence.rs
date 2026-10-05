@@ -636,7 +636,8 @@ mod tests {
 #[cfg(all(test, feature = "gui-test"))]
 mod native_tests {
     use super::*;
-    use gpui_kit::gpui::{AppContext, Entity, TestAppContext};
+    use gpui_kit::gpui::{AppContext, Entity, TestAppContext, px};
+    use gpui_kit::test::TestWindowExt;
 
     fn app(cx: &mut TestAppContext) -> Entity<App> {
         let db = Arc::new(
@@ -786,6 +787,68 @@ mod native_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[gpui_kit::test]
+    fn filtered_context_restores_native_viewport_after_background_scan(cx: &mut TestAppContext) {
+        let app = app(cx);
+        let mut loaded = loaded(&app, cx);
+        let bytes = (0..10_000)
+            .map(|i| if i % 10 == 0 { "keep\n" } else { "drop\n" })
+            .collect::<String>();
+        loaded.reader = crate::ingestion::FileReader::from_bytes(bytes.into_bytes());
+        loaded.log_manager = crate::gui::runtime::handle()
+            .block_on(crate::gui::update::execute_command(
+                loaded.log_manager,
+                crate::gui::update::parse_command("filter keep")
+                    .unwrap()
+                    .unwrap(),
+                (0, 0, 0),
+                None,
+            ))
+            .unwrap();
+        let context = loaded.context.as_mut().unwrap();
+        context.scroll_offset = 5000;
+        context.marked_lines.clear();
+        context.comments.clear();
+        let window = cx.windows().last().copied().unwrap();
+        cx.update_window(window, |_, window, cx| {
+            app.update(cx, |app, cx| {
+                app.dispatch(Message::FileLoaded(Ok(loaded)), window, cx);
+                cache_facets(app);
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let before = app.read_with(cx, |app, _| app.log_scroll.offset().y);
+        for _ in 0..100 {
+            let done = app.update(cx, |app, _| {
+                app.state.tabs[0].advance_filter_computation();
+                app.state.tabs[0].filter.handle.is_none()
+            });
+            if done {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        cx.update_window(window, |_, window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(app.state.tabs[0].filter.handle.is_none());
+                assert_eq!(app.state.tabs[0].scroll.scroll_offset, 500);
+                assert!(app.finish_context_scroll());
+                cx.notify();
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        app.read_with(cx, |app, _| {
+            let after = app.log_scroll.offset().y;
+            assert_ne!(after, before);
+            let cursor_top = px(500. * 30.) + after;
+            let viewport_height = app.log_scroll.bounds().size.height;
+            assert!(cursor_top >= px(0.));
+            assert!(cursor_top + px(30.) <= viewport_height + px(1.));
+        });
     }
 
     #[gpui_kit::test]
