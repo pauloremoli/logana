@@ -109,6 +109,9 @@ impl App {
                     .await;
                 if this
                     .update_in(cx, |app, _window, cx| {
+                        // Polling can restart searches, which spawn Tokio blocking tasks.
+                        let runtime_handle = runtime::handle();
+                        let _runtime_guard = runtime_handle.enter();
                         app.poll_loading(cx);
                         app.poll_streams(cx);
                         app.poll_merges(cx);
