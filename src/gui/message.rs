@@ -10,6 +10,7 @@ pub enum Message {
     DefaultMappingsLoaded(u64, std::collections::HashMap<String, String>),
     DockerListed(u64, Result<Vec<(String, String)>, String>),
     SourceLoaded(Result<Box<crate::shared::TabState>, String>),
+    LogRowAction(crate::shared::TabId, usize, crate::gui::actions::Action),
     DismissNotification(u64),
     GuiFinished(u64, Result<String, String>),
     GuiAction(crate::gui::actions::Action),
@@ -25,6 +26,7 @@ pub enum Message {
     EditorAll(bool),
     EditorReset,
     EditorConditionAdd,
+    EditorConditionEdit(usize),
     EditorConditionRemove(usize),
     EditorPreview(String),
     EditorApply,
@@ -72,6 +74,7 @@ pub enum Message {
 
     SidebarTabSelected(SidebarTab),
     SidebarToggled,
+    FacetBrowserToggled,
     ClearAllFilters(usize),
     FilterRemoved(usize, usize),
 
@@ -90,6 +93,7 @@ pub enum Message {
 }
 
 pub struct FileLoaded {
+    pub context: Option<crate::db::FileContext>,
     pub path: PathBuf,
     pub reader: FileReader,
     pub log_manager: LogManager,

@@ -8,6 +8,7 @@ use crate::gui::{
 use gpui_kit::base::{Disableable, FocusTrapElement, Selectable, TestSupportExt};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::color_picker::ColorPicker;
 use gpui_kit::component::input::{Input, Textarea};
 use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::gpui::{
@@ -55,7 +56,11 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         .flex()
         .justify_between()
         .items_center()
-        .child(CATALOG.iter().find(|d| d.action == e.action).unwrap().label)
+        .child(if e.action == Action::Filter && e.edit_id.is_some() {
+            "Edit filter"
+        } else {
+            CATALOG.iter().find(|d| d.action == e.action).unwrap().label
+        })
         .child(button(
             "editor-close",
             "Close",
@@ -230,12 +235,45 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                         })),
                 );
             }
-            body = body.child(kinds).child(text(
-                app,
-                0,
-                "Text to match (optional with field conditions)",
-                cx,
-            ));
+            body = body
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
+                                .child("Filter behavior"),
+                        )
+                        .child(kinds)
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(match e.kind {
+                                    FilterType::Include => "Keep matching lines in view.",
+                                    FilterType::Exclude => "Hide matching lines from view.",
+                                    FilterType::Highlight => {
+                                        "Color matching lines without hiding other logs."
+                                    }
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .mt_3()
+                        .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
+                        .child("Match conditions"),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Text and field conditions must all match. Use either or both."),
+                )
+                .child(text(app, 0, "Text pattern", cx));
+            let mut options = div().flex().flex_wrap().gap_4();
             for (i, (label, on)) in [
                 ("Regular expression", e.regex),
                 ("Ignore case", e.ignore_case),
@@ -243,7 +281,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             .into_iter()
             .enumerate()
             {
-                body = body.child(
+                options = options.child(
                     Checkbox::new(("filter-option", i))
                         .label(label)
                         .checked(on)
@@ -252,7 +290,11 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                         })),
                 );
             }
-            body = body.child(text(app, 1, "Field", cx));
+            body = body
+                .child(options)
+                .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                    .child("Regex and ignore case apply to text-only filters. Field conditions use case-sensitive substring matching."))
+                .child(div().mt_2().child(text(app, 1, "Field name", cx)));
             let mut names = div().flex().flex_wrap().gap_1();
             for (i, name) in e
                 .discovery
@@ -273,7 +315,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                         })),
                 );
             }
-            body = body.child(names).child(text(app, 2, "Equals value", cx));
+            body = body.child(names).child(text(app, 2, "Contains value", cx));
             let mut values = div().flex().flex_wrap().gap_1();
             if let Some(discovered) = e.discovery.values.get(&e.values[1]) {
                 for (i, value) in discovered
@@ -296,7 +338,11 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             }
             body = body.child(values).child(button(
                 "condition-add",
-                "Add condition",
+                if e.condition_edit.is_some() {
+                    "Update condition"
+                } else {
+                    "Add condition"
+                },
                 || Message::EditorConditionAdd,
                 cx,
             ));
@@ -305,7 +351,25 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     div()
                         .flex()
                         .justify_between()
-                        .child(format!("{field} equals {value}"))
+                        .items_center()
+                        .gap_2()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(format!("{field} contains {value}")),
+                        )
+                        .child(
+                            Button::new(("condition-edit", i))
+                                .ghost()
+                                .label("Edit")
+                                .on_click(cx.listener(move |app, _, window, cx| {
+                                    app.dispatch(Message::EditorConditionEdit(i), window, cx)
+                                })),
+                        )
                         .child(
                             Button::new(("condition-remove", i))
                                 .ghost()
@@ -316,7 +380,14 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                         ),
                 );
             }
-            body = body.child(text(app, 3, "Group (optional)", cx));
+            body = body
+                .child(
+                    div()
+                        .mt_3()
+                        .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
+                        .child("Organization"),
+                )
+                .child(text(app, 3, "Group (optional)", cx));
             if let Some(tab) = app.state.active_tab() {
                 let mut groups = div().flex().flex_wrap().gap_1();
                 for (i, name) in tab.log_manager.group_names().into_iter().enumerate() {
@@ -598,49 +669,40 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         _ => {}
     }
     if matches!(e.action, Action::Filter | Action::Group) && e.kind != FilterType::Exclude {
-        body = body
-            .child(text(app, 4, "Text color (name or #RRGGBB, optional)", cx))
-            .child(text(app, 5, "Background color (optional)", cx));
-        let mut colors = div().flex().flex_wrap().gap_1();
-        for (i, color) in [
-            "red", "orange", "yellow", "green", "cyan", "blue", "magenta", "white",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let parsed =
-                crate::theme::parse_color(color).and_then(crate::gui::color::color_to_gpui);
-            colors = colors.child(
-                Button::new(("color-choice", i))
-                    .ghost()
-                    .small()
-                    .label(color)
-                    .when_some(parsed, |b, c| b.child(div().size(px(12.)).bg(c)))
-                    .on_click(cx.listener(move |app, _, window, cx| {
-                        app.dispatch(Message::EditorText(4, color.into()), window, cx)
-                    })),
+        if e.action == Action::Filter {
+            body = body.child(
+                div()
+                    .mt_3()
+                    .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
+                    .child("Match appearance"),
             );
         }
-        let mut backgrounds = div().flex().flex_wrap().gap_1();
-        for (i, color) in ["", "black", "red", "green", "blue", "#202030"]
-            .into_iter()
-            .enumerate()
-        {
-            backgrounds = backgrounds.child(
-                Button::new(("background-choice", i))
-                    .ghost()
-                    .small()
-                    .label(if color.is_empty() {
-                        "Default background"
-                    } else {
-                        color
-                    })
-                    .on_click(cx.listener(move |app, _, window, cx| {
-                        app.dispatch(Message::EditorText(5, color.into()), window, cx)
-                    })),
-            );
+        let mut colors = div().flex().flex_wrap().gap_3();
+        for (index, label) in [(0, "Text color"), (1, "Background color")] {
+            if let Some(picker) = app.editor_colors.get(index) {
+                colors = colors.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(ColorPicker::new(picker).label(label))
+                        .child(
+                            Button::new(("color-reset", index))
+                                .ghost()
+                                .small()
+                                .label("Default")
+                                .on_click(cx.listener(move |app, _, window, cx| {
+                                    app.dispatch(
+                                        Message::EditorText(index + 4, String::new()),
+                                        window,
+                                        cx,
+                                    )
+                                })),
+                        ),
+                );
+            }
         }
-        body = body.child(colors).child(backgrounds).child(
+        body = body.child(colors).child(
             Checkbox::new("whole-line")
                 .label("Color whole line")
                 .checked(e.whole_line)
@@ -651,52 +713,6 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
     }
     if let Some(error) = &e.error {
         body = body.child(div().text_color(cx.theme().danger).child(error.clone()));
-    }
-    if let Some(result) = &app.state.palette.outcome {
-        let output = result.output.clone();
-        body = body.child(
-            div()
-                .border_t_1()
-                .border_color(cx.theme().border)
-                .pt_2()
-                .child(format!(
-                    "{:?} · {}{}",
-                    result.state,
-                    result.invocation,
-                    result
-                        .source_label
-                        .as_ref()
-                        .map(|s| format!(" · {s}"))
-                        .unwrap_or_default()
-                ))
-                .child(
-                    div()
-                        .id("editor-result")
-                        .max_h(px(140.))
-                        .overflow_y_scroll()
-                        .child(output.clone()),
-                )
-                .child(
-                    Button::new("editor-copy")
-                        .ghost()
-                        .small()
-                        .label("Copy output")
-                        .disabled(app.state.palette.pending())
-                        .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(output.clone()))
-                        }),
-                )
-                .child(
-                    Button::new("editor-clear")
-                        .ghost()
-                        .small()
-                        .label("Clear result")
-                        .disabled(app.state.palette.pending())
-                        .on_click(cx.listener(|app, _, window, cx| {
-                            app.dispatch(Message::PaletteClear, window, cx)
-                        })),
-                ),
-        );
     }
     let footer =
         div()
@@ -714,6 +730,12 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     .primary()
                     .label(if matches!(e.action, Action::FileInfo | Action::View) {
                         "Done"
+                    } else if e.action == Action::Filter {
+                        if e.edit_id.is_some() {
+                            "Save filter"
+                        } else {
+                            "Add filter"
+                        }
                     } else {
                         "Apply"
                     })

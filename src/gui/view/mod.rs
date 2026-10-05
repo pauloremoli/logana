@@ -30,7 +30,11 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
         // internally — native traffic lights on macOS, skipped entirely
         // under server-side decorations) and owns window dragging; see
         // `TitleBar::window_options()` in `logana_gui.rs`'s window setup.
-        .child(TitleBar::new().child("logana"))
+        .child(
+            TitleBar::new()
+                .on_close_window(cx.listener(|app, _, _, cx| app.request_quit(cx)))
+                .child("logana"),
+        )
         .child(
             div()
                 .flex()
@@ -138,6 +142,8 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                             &fields,
                             item_sizes,
                             message_width,
+                            app.text_handle.clone(),
+                            app.text_document.clone(),
                             cx,
                         )),
                 )
@@ -150,6 +156,7 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                     active_tab,
                     tab,
                     sidebar_tab,
+                    app.state.facet_browser_open,
                     &app.state.facet_expanded,
                     app.facet_search.as_ref(),
                     app.facet_counts

@@ -7,11 +7,11 @@ use crate::gui::state::SidebarTab;
 use crate::shared::TabState;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Selectable;
-use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::Icon;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::tab::Tab;
+use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Entity, Window, div, px};
 use std::collections::HashMap;
@@ -23,6 +23,7 @@ pub fn sidebar(
     tab_idx: usize,
     tab: &TabState,
     sidebar_tab: SidebarTab,
+    facet_browser_open: bool,
     facet_expanded: &HashMap<String, bool>,
     facet_search: Option<&Entity<InputState>>,
     facet_counts: Option<&crate::shared::FieldValueCounts>,
@@ -53,6 +54,18 @@ pub fn sidebar(
                 group_defs,
                 cx,
             ));
+            if !facet_browser_open {
+                return col;
+            }
+            let col = col.child(
+                Button::new("close-field-browser")
+                    .ghost()
+                    .small()
+                    .label("Close field picker")
+                    .on_click(cx.listener(|app, _, window, cx| {
+                        app.dispatch(Message::FacetBrowserToggled, window, cx)
+                    })),
+            );
             match facet_counts {
                 Some(counts) => col.child(field_facets::field_facets(
                     tab_idx,

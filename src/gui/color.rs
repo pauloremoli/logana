@@ -15,6 +15,7 @@ pub struct LineStyle {
     pub fg: Option<Rgba>,
     pub bg: Option<Rgba>,
     pub spans: Vec<(usize, usize)>,
+    pub whole_line: bool,
 }
 
 /// The foreground color a filter row (or group row) should render with,
@@ -93,11 +94,60 @@ pub fn resolve_line_style(
                 return None;
             }
             Some(LineStyle {
+                whole_line: !cc.match_only,
                 fg: cc.fg.and_then(color_to_gpui),
                 bg: cc.bg.and_then(color_to_gpui),
                 spans: collector.spans.iter().map(|s| (s.start, s.end)).collect(),
             })
         })
+}
+
+/// Match against the original line, preserving the filter's match-only setting.
+pub fn resolve_row_style(
+    line: &[u8],
+    filter_defs: &[FilterDef],
+    group_defs: &[GroupDef],
+) -> Option<LineStyle> {
+    resolve_line_style(line, filter_defs, group_defs)
+}
+
+/// Project raw-line match spans into a displayed field. Whole-line styling covers every cell.
+pub fn cell_style_spans(raw: &[u8], text: &str, style: &LineStyle) -> Vec<std::ops::Range<usize>> {
+    if style.whole_line {
+        return if text.is_empty() {
+            vec![]
+        } else {
+            vec![0..text.len()]
+        };
+    }
+    let mut ranges = Vec::new();
+    for &(start, end) in &style.spans {
+        let Some(matched) = raw
+            .get(start..end)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        else {
+            continue;
+        };
+        if matched.is_empty() {
+            continue;
+        }
+        ranges.extend(
+            text.match_indices(matched)
+                .map(|(offset, value)| offset..offset + value.len()),
+        );
+    }
+    ranges.sort_by_key(|range| (range.start, range.end));
+    let mut merged: Vec<std::ops::Range<usize>> = Vec::new();
+    for range in ranges {
+        if let Some(last) = merged.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
 }
 
 pub fn color_to_gpui(color: Color) -> Option<Rgba> {
@@ -355,6 +405,31 @@ mod tests {
     }
 
     #[test]
+    fn row_style_matches_fields_outside_the_message_and_respects_style_scope() {
+        let line = b"2026-10-04T00:54:38.686174+02:00\t\tintune-agent\tpaulo-mini\t1682074\tAttempting to shutdown the auth library";
+        let defs = [filter_def_with_colors(
+            "paulo",
+            Some(Color::Red),
+            Some(Color::Blue),
+        )];
+        let style = resolve_row_style(line, &defs, &[]).unwrap();
+        assert!(!style.whole_line);
+        assert_eq!(cell_style_spans(line, "paulo-mini", &style), vec![0..5]);
+        assert!(
+            cell_style_spans(line, "Attempting to shutdown the auth library", &style).is_empty()
+        );
+        let mut whole_defs = defs.clone();
+        whole_defs[0].color_config.as_mut().unwrap().match_only = false;
+        let whole = resolve_row_style(line, &whole_defs, &[]).unwrap();
+        assert!(whole.whole_line);
+        assert_eq!(cell_style_spans(line, "intune-agent", &whole), vec![0..12]);
+        assert_eq!(whole.spans, vec![(0, line.len())]);
+        assert_eq!(style.fg, Some(rgba_from_u8(128, 0, 0)));
+        assert_eq!(style.bg, Some(rgba_from_u8(0, 0, 128)));
+        assert!(resolve_row_style(b"unrelated", &defs, &[]).is_none());
+    }
+
+    #[test]
     fn resolve_line_style_returns_both_fg_and_bg_from_the_same_filter() {
         let defs = vec![filter_def_with_colors(
             "ERROR",
@@ -386,10 +461,7 @@ mod tests {
 
     #[test]
     fn resolve_line_style_defaults_to_match_only_spans() {
-        // `FilterDef`'s own `color_config`/`FilterOptions` default to
-        // `match_only: true` unless `-l` was passed — the GUI must only
-        // highlight the matched substring, not the whole line, exactly
-        // like the TUI.
+        // Shared matching preserves match-only spans; GUI row rendering expands them.
         let defs = vec![filter_def("ERROR", Some(Color::Red), None)];
         let line = b"before ERROR after";
         let style = resolve_line_style(line, &defs, &[]).unwrap();

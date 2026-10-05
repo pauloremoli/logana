@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct GuiState {
+    pub preferences: crate::gui::persistence::Preferences,
     pub editor: Option<crate::gui::actions::Editor>,
     pub log_selection: Option<(crate::shared::TabId, usize, usize)>,
     pub field_discovery: Option<(
@@ -26,6 +27,8 @@ pub struct GuiState {
     pub time_range_open: bool,
     pub time_range_preset: TimeRangePreset,
     pub sidebar_tab: SidebarTab,
+    /// Field-value picker is hidden until explicitly opened from the filter menu.
+    pub facet_browser_open: bool,
     /// Per-field expand/collapse state for the sidebar's "Available
     /// Filters" facet categories — level/target/service start expanded; other newly-seen fields
     /// start collapsed. A search temporarily expands matching categories.
@@ -75,6 +78,7 @@ pub enum SidebarTab {
 impl GuiState {
     pub fn new(db: Arc<Database>) -> Self {
         Self {
+            preferences: Default::default(),
             palette: Default::default(),
             editor: None,
             log_selection: None,
@@ -89,6 +93,7 @@ impl GuiState {
             time_range_open: false,
             time_range_preset: TimeRangePreset::default(),
             sidebar_tab: SidebarTab::default(),
+            facet_browser_open: false,
             facet_expanded: HashMap::new(),
             column_widths: ColumnWidths::default(),
             column_resize_last_x: None,

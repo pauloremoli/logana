@@ -9,6 +9,7 @@ pub mod message;
 pub mod runtime;
 pub mod state;
 pub mod status;
+pub mod text_selection;
 pub mod theme;
 pub mod time_range;
 pub mod update;
@@ -34,3 +35,5 @@ mod defaults;
 mod mcp;
 
 mod keyboard;
+
+pub mod persistence;

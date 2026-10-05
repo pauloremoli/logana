@@ -8,6 +8,10 @@ use crate::shared::TabId;
 pub enum Action {
     Open,
     Annotation,
+    Bookmark,
+    ShowBookmarks,
+    ShowLogs,
+    ToggleBookmarks,
     Help,
     SwitchFile,
     EnableMcp,
@@ -52,6 +56,10 @@ impl Descriptor {
     pub fn unavailable(&self, state: &GuiState) -> Option<&'static str> {
         if self.tab && state.active_tab().is_none() {
             Some("Open a log file first")
+        } else if matches!(self.action, Action::Bookmark | Action::Annotation)
+            && crate::gui::view::annotations::selected_lines(state).is_empty()
+        {
+            Some("Select a log line first")
         } else {
             None
         }
@@ -132,7 +140,7 @@ pub const CATALOG: &[Descriptor] = &[
         action: Action::SaveLogs,
         label: "Save logs",
         description: "Save visible source log entries",
-        aliases: "save logs",
+        aliases: "save-logs",
         tab: true,
     },
     Descriptor {
@@ -164,6 +172,34 @@ pub const CATALOG: &[Descriptor] = &[
         tab: true,
     },
     Descriptor {
+        action: Action::Bookmark,
+        label: "Toggle bookmark",
+        description: "Bookmark or unbookmark selected log lines · Ctrl+B",
+        aliases: "bookmark mark",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::ShowBookmarks,
+        label: "Show bookmarks",
+        description: "View bookmarked log lines",
+        aliases: "bookmarks",
+        tab: false,
+    },
+    Descriptor {
+        action: Action::ShowLogs,
+        label: "Show logs",
+        description: "Return to the log table",
+        aliases: "logs",
+        tab: false,
+    },
+    Descriptor {
+        action: Action::ToggleBookmarks,
+        label: "Switch Logs / Bookmarks",
+        description: "Switch between logs and bookmarks · Ctrl+Shift+B",
+        aliases: "toggle-bookmarks",
+        tab: false,
+    },
+    Descriptor {
         action: Action::ImportFilters,
         label: "Import Notepad++ filters",
         description: "Import AnalyseDoc or User Defined Language XML",
@@ -173,8 +209,8 @@ pub const CATALOG: &[Descriptor] = &[
     Descriptor {
         action: Action::Annotation,
         label: "Add annotation",
-        description: "Attach a note to selected log rows",
-        aliases: "annotation comment note",
+        description: "Attach a note to selected log rows · Ctrl+Shift+A",
+        aliases: "annotation annotate comment note",
         tab: true,
     },
     Descriptor {
@@ -291,22 +327,56 @@ pub const CATALOG: &[Descriptor] = &[
     },
 ];
 pub fn matching(query: &str) -> Vec<&'static Descriptor> {
-    let query = query.trim();
-    CATALOG
+    let query = query.trim().to_lowercase();
+    let rank = |text: &str| {
+        let text = text.to_lowercase();
+        if !crate::commands::auto_complete::fuzzy_match(&query, &text) {
+            return None;
+        }
+        let kind = if text == query {
+            0
+        } else if text.starts_with(&query) {
+            1
+        } else if text.contains(&query) {
+            2
+        } else {
+            3
+        };
+        Some((
+            kind,
+            text.chars().count().saturating_sub(query.chars().count()),
+        ))
+    };
+    let mut matches: Vec<_> = CATALOG
         .iter()
-        .filter(|d| {
-            crate::commands::auto_complete::fuzzy_match(query, d.label)
-                || d.aliases
-                    .split_whitespace()
-                    .any(|alias| crate::commands::auto_complete::fuzzy_match(query, alias))
+        .filter_map(|descriptor| {
+            let score = std::iter::once(descriptor.label)
+                .chain(descriptor.aliases.split_whitespace())
+                .filter_map(rank)
+                .min()?;
+            Some((score, descriptor))
         })
+        .collect();
+    if !query.is_empty() {
+        matches.sort_by_key(|(score, _)| *score);
+    }
+    matches
+        .into_iter()
+        .map(|(_, descriptor)| descriptor)
         .collect()
+}
+pub fn select_best(state: &mut GuiState) {
+    state.palette.selected = matching(&state.palette.input)
+        .iter()
+        .position(|d| d.unavailable(state).is_none())
+        .unwrap_or(0);
 }
 #[derive(Clone, Debug)]
 pub struct Editor {
     pub action: Action,
     pub source: Option<TabId>,
     pub epoch: u64,
+    pub condition_edit: Option<usize>,
     pub values: Vec<String>,
     pub kind: FilterType,
     pub regex: bool,
@@ -328,14 +398,60 @@ pub fn open(
     edit_id: Option<usize>,
     group: Option<String>,
 ) -> Effect {
-    if state.editor.is_some() || state.palette.pending() {
+    if state.editor.is_some()
+        || (state.palette.pending()
+            && !matches!(
+                action,
+                Action::ShowLogs
+                    | Action::ShowBookmarks
+                    | Action::ToggleBookmarks
+                    | Action::Bookmark
+            ))
+    {
         return Effect::None;
     }
     let descriptor = CATALOG.iter().find(|d| d.action == action).unwrap();
-    if descriptor.unavailable(state).is_some() {
+    if descriptor.unavailable(state).is_some()
+        && !(action == Action::Annotation && edit_id.is_some())
+    {
         return Effect::None;
     }
     state.palette.open = false;
+    match action {
+        Action::ShowLogs => {
+            state.nav_page = crate::gui::state::NavPage::Logs;
+            return Effect::None;
+        }
+        Action::ShowBookmarks => {
+            state.nav_page = crate::gui::state::NavPage::Bookmarks;
+            return Effect::None;
+        }
+        Action::ToggleBookmarks => {
+            state.nav_page = if state.nav_page == crate::gui::state::NavPage::Bookmarks {
+                crate::gui::state::NavPage::Logs
+            } else {
+                crate::gui::state::NavPage::Bookmarks
+            };
+            return Effect::None;
+        }
+        Action::Bookmark => {
+            let lines = crate::gui::view::annotations::selected_lines(state);
+            let tab = state.active_tab_mut().unwrap();
+            let mark = lines.iter().any(|line| !tab.mark_manager.is_marked(*line));
+            for line in &lines {
+                if tab.mark_manager.is_marked(*line) != mark {
+                    tab.toggle_mark(*line);
+                }
+            }
+            state.notify(crate::gui::state::StatusMessage::Info(format!(
+                "{} {} line(s).",
+                if mark { "Bookmarked" } else { "Unbookmarked" },
+                lines.len()
+            )));
+            return Effect::None;
+        }
+        _ => {}
+    }
     if action == Action::DisableMcp {
         return Effect::ConfigureMcp(None);
     }
@@ -400,6 +516,7 @@ pub fn open(
             None
         },
         epoch: state.palette.focus_epoch.wrapping_add(1),
+        condition_edit: None,
         values: vec![String::new(); 6],
         kind: FilterType::Include,
         regex: false,
@@ -457,6 +574,11 @@ pub fn open(
                 {
                     e.conditions = expr.0;
                     e.values[0] = expr.1.unwrap_or_default();
+                }
+                if let Some((field, value)) = e.conditions.first() {
+                    e.values[1] = field.clone();
+                    e.values[2] = value.clone();
+                    e.condition_edit = Some(0);
                 }
                 if let Some(c) = &f.color_config {
                     e.values[4] = c.fg.map(|c| c.to_string()).unwrap_or_default();
@@ -636,7 +758,7 @@ pub fn close(state: &mut GuiState, applied: bool) {
     }
 }
 pub fn apply(state: &mut GuiState) -> Effect {
-    let Some(e) = state.editor.clone() else {
+    let Some(mut e) = state.editor.clone() else {
         return Effect::None;
     };
     if state.palette.pending() {
@@ -648,6 +770,17 @@ pub fn apply(state: &mut GuiState) -> Effect {
             return Effect::None;
         };
         state.active_tab = idx;
+    }
+    if e.action == Action::Filter && !e.values[1].trim().is_empty() {
+        let condition = (e.values[1].clone(), e.values[2].clone());
+        if let Some(index) = e
+            .condition_edit
+            .and_then(|index| e.conditions.get_mut(index))
+        {
+            *index = condition;
+        } else {
+            e.conditions.push(condition);
+        }
     }
     let nonempty = |s: &String| {
         if s.trim().is_empty() {
@@ -785,8 +918,14 @@ pub fn apply(state: &mut GuiState) -> Effect {
                 e.members.iter().map(|(line, _, _)| *line).collect(),
             );
         }
+        let annotated_lines = tab
+            .comment_manager
+            .get()
+            .iter()
+            .flat_map(|note| note.line_indices.iter().copied())
+            .collect::<Vec<_>>();
+        tab.mark_lines(&annotated_lines);
         close(state, true);
-        state.nav_page = crate::gui::state::NavPage::Annotations;
         return Effect::None;
     }
     let command = match e.action {
@@ -924,6 +1063,7 @@ pub fn apply(state: &mut GuiState) -> Effect {
             crate::gui::palette::ExecutionState::Running,
             "Saving filter…".into(),
         );
+        close(state, true);
         return Effect::SaveGuiFilter {
             request_id: state.palette.next_request,
             tab_id: e.source.unwrap(),
@@ -941,6 +1081,7 @@ pub fn apply(state: &mut GuiState) -> Effect {
             crate::gui::palette::ExecutionState::Running,
             "Saving group…".into(),
         );
+        close(state, true);
         return Effect::SaveGuiGroup {
             request_id: state.palette.next_request,
             tab_id: e.source.unwrap(),
@@ -1083,6 +1224,152 @@ mod tests {
         palette::ExecutionState,
         update::{gui_outcome, update},
     };
+    #[tokio::test]
+    async fn bookmark_annotation_and_navigation_actions_follow_source_selection() {
+        let mut state = state().await;
+        let source = state.tabs[0].id;
+        update(&mut state, Message::SelectLog(0, false));
+        update(&mut state, Message::SelectLog(1, true));
+        open(&mut state, Action::Bookmark, None, None);
+        assert_eq!(state.tabs[0].mark_manager.get_indices(), vec![0, 1]);
+        open(&mut state, Action::Bookmark, None, None);
+        assert!(state.tabs[0].mark_manager.get_indices().is_empty());
+        update(
+            &mut state,
+            Message::LogRowAction(source, 1, Action::Annotation),
+        );
+        assert_eq!(
+            state
+                .editor
+                .as_ref()
+                .unwrap()
+                .members
+                .iter()
+                .map(|m| m.0)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        close(&mut state, false);
+        state.log_selection = None;
+        update(
+            &mut state,
+            Message::LogRowAction(source, 1, Action::Bookmark),
+        );
+        assert_eq!(state.tabs[0].mark_manager.get_indices(), vec![1]);
+        for (action, expected) in [
+            (Action::ShowBookmarks, crate::gui::state::NavPage::Bookmarks),
+            (Action::ToggleBookmarks, crate::gui::state::NavPage::Logs),
+            (Action::ShowLogs, crate::gui::state::NavPage::Logs),
+        ] {
+            open(&mut state, action, None, None);
+            assert_eq!(state.nav_page, expected);
+        }
+        state.tabs.clear();
+        assert!(matches!(
+            update(
+                &mut state,
+                Message::LogRowAction(source, 1, Action::Bookmark)
+            ),
+            Effect::None
+        ));
+    }
+
+    #[tokio::test]
+    async fn best_matching_action_is_selected_and_enter_executes_it() {
+        let mut state = state().await;
+        for (query, action) in [
+            ("bookmark", Action::Bookmark),
+            ("bookmarks", Action::ShowBookmarks),
+            ("logs", Action::ShowLogs),
+            ("annotate", Action::Annotation),
+            ("th", Action::Appearance),
+        ] {
+            assert_eq!(matching(query)[0].action, action);
+        }
+        update(&mut state, Message::OpenCommands);
+        update(&mut state, Message::PaletteEdited("bookmarks".into()));
+        assert_eq!(state.palette.selected, 0);
+        update(
+            &mut state,
+            Message::PaletteKey(crate::input::KeyCode::Enter, Default::default()),
+        );
+        assert_eq!(state.nav_page, crate::gui::state::NavPage::Bookmarks);
+        assert!(!state.palette.open);
+        state.tabs.clear();
+        update(&mut state, Message::OpenCommands);
+        update(&mut state, Message::PaletteEdited("annotate".into()));
+        update(
+            &mut state,
+            Message::PaletteKey(crate::input::KeyCode::Enter, Default::default()),
+        );
+        assert!(state.editor.is_none());
+        assert!(state.palette.open);
+    }
+
+    #[tokio::test]
+    async fn editing_filter_prefills_content_and_updates_one_condition() {
+        let mut state = state().await;
+        let pattern = crate::filters::encode_field_filter(
+            &[
+                ("service".into(), "payments".into()),
+                ("level".into(), "ERROR".into()),
+            ],
+            Some("timeout"),
+        );
+        state.tabs[0].log_manager = save_filter(
+            state.tabs[0].log_manager.clone(),
+            None,
+            pattern.clone(),
+            FilterType::Highlight,
+            crate::filters::FilterOptions {
+                fg: Some("#123456".into()),
+                bg: Some("#654321".into()),
+                match_only: false,
+                use_regex: true,
+                ignore_case: true,
+                group: Some("alerts".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let id = state.tabs[0].log_manager.get_filters()[0].id;
+        update(&mut state, Message::EditFilter(id));
+        let editor = state.editor.as_ref().unwrap();
+        assert_eq!(
+            editor.values,
+            [
+                "timeout", "service", "payments", "alerts", "#123456", "#654321"
+            ]
+            .map(str::to_string)
+        );
+        assert_eq!(editor.kind, FilterType::Highlight);
+        assert!(editor.regex && editor.ignore_case && editor.whole_line);
+        assert_eq!(editor.condition_edit, Some(0));
+        update(&mut state, Message::EditorText(2, "auth".into()));
+        let Effect::SaveGuiFilter {
+            pattern,
+            options,
+            id: saved_id,
+            ..
+        } = apply(&mut state)
+        else {
+            panic!("expected filter save")
+        };
+        assert_eq!(saved_id, Some(id));
+        let (conditions, text) =
+            crate::filters::parse_field_filter_expr(pattern.strip_prefix(FIELD_PREFIX).unwrap())
+                .unwrap();
+        assert_eq!(
+            conditions,
+            vec![
+                ("service".into(), "auth".into()),
+                ("level".into(), "ERROR".into())
+            ]
+        );
+        assert_eq!(text.as_deref(), Some("timeout"));
+        assert_eq!(options.fg.as_deref(), Some("#123456"));
+        assert_eq!(options.bg.as_deref(), Some("#654321"));
+    }
     async fn state() -> GuiState {
         let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
         let manager = crate::db::LogManager::new(db.clone(), None).await;
@@ -1199,7 +1486,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn validation_pending_draft_and_stable_tab_results() {
+    async fn validation_then_apply_closes_editor_and_preserves_stable_tab_results() {
         let mut state = state().await;
         let source = state.tabs[0].id;
         open(&mut state, Action::Filter, None, None);
@@ -1220,7 +1507,8 @@ mod tests {
         };
         assert_eq!(tab_id, source);
         assert!(matches!(apply(&mut state), Effect::None));
-        update(&mut state, Message::EditorText(0, "next draft".into()));
+        assert!(state.editor.is_none());
+        assert!(!state.palette.open);
         let manager = save_filter(log_manager, id, pattern, kind, options)
             .await
             .unwrap();
@@ -1236,7 +1524,7 @@ mod tests {
             Message::PaletteExecuted(request_id, source, Ok(manager)),
         );
         assert_eq!(state.active_tab, 1);
-        assert_eq!(state.editor.as_ref().unwrap().values[0], "next draft");
+        assert!(state.editor.is_none());
         assert_eq!(
             state.tabs[0].log_manager.get_filters()[0].pattern,
             "hello 東京"
@@ -1270,13 +1558,14 @@ mod tests {
             Message::PaletteExecuted(request_id, tab_id, Ok(log_manager)),
         );
         assert!(state.tabs[0].log_manager.get_filters().is_empty());
+
         assert_eq!(
             state.palette.outcome.as_ref().unwrap().state,
             ExecutionState::Information
         );
     }
     #[tokio::test]
-    async fn stale_failures_clear_and_empty_output_preserve_drafts() {
+    async fn stale_failures_clear_and_empty_output_keep_submitted_editor_closed() {
         let mut state = state().await;
         let source = state.tabs[0].id;
         open(&mut state, Action::Filter, None, None);
@@ -1295,8 +1584,14 @@ mod tests {
             &mut state,
             Message::PaletteExecuted(request_id, source, Err("disk failure\nretry".into())),
         );
-        assert_eq!(state.editor.as_ref().unwrap().values[0], "hello");
-        assert!(state.editor.as_ref().unwrap().error.is_some());
+        assert!(state.editor.is_none());
+        assert!(!state.palette.open);
+        assert_eq!(
+            state.status,
+            Some(crate::gui::state::StatusMessage::Error(
+                "disk failure\nretry".into()
+            ))
+        );
         update(&mut state, Message::PaletteClear);
         assert!(state.palette.outcome.is_none());
         gui_outcome(

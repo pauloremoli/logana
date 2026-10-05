@@ -1,8 +1,9 @@
 use gpui_kit::component::{GlobalState, TitleBar};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{KeyBinding, Menu, MenuItem};
-use logana::db::{Database, default_db_path};
+use logana::db::{Database, SessionStore, default_db_path};
 use logana::gui::app::{App, OpenCommands, OpenFile, Quit};
+use logana::gui::persistence::Preferences;
 use logana::gui::runtime;
 use logana::gui::theme as gui_theme;
 use logana::theme::Theme as TuiTheme;
@@ -10,6 +11,20 @@ use std::sync::Arc;
 
 fn main() {
     let (db, theme) = runtime::handle().block_on(open_database_and_theme());
+    let (preferences, files) = runtime::handle().block_on(async {
+        let config = logana::config::Config::load().unwrap_or_default();
+        let preferences = Preferences::load(&db, &config)
+            .await
+            .unwrap_or_else(|error| {
+                eprintln!("Cannot load GUI settings: {error}");
+                Preferences::default()
+            });
+        let files = db.load_session().await.unwrap_or_else(|error| {
+            eprintln!("Cannot load previous session: {error}");
+            Vec::new()
+        });
+        (preferences, files)
+    });
 
     // Without this, every `Icon::new(IconName::..)` silently renders
     // nothing (just the surrounding Button/div chrome) — the SVG asset
@@ -47,6 +62,14 @@ fn main() {
             // `TitleBar` detects it and skips drawing duplicate controls.
             gpui_kit::open_window(TitleBar::window_options(), cx, |window, cx| {
                 let app = cx.new(|cx| App::new(Arc::clone(&db), theme.clone(), cx));
+                app.update(cx, |app, cx| {
+                    app.restore_session(preferences.clone(), files.clone(), window, cx)
+                });
+                let closing_app = app.downgrade();
+                window.on_window_should_close(cx, move |_, cx| {
+                    closing_app.update(cx, |app, cx| app.request_quit(cx)).ok();
+                    false
+                });
                 // Give the root element initial keyboard focus so key capture
                 // starts working immediately, without requiring a click into
                 // the window first.

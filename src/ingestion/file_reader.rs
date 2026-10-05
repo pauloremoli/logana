@@ -174,8 +174,41 @@ impl Storage {
     }
 }
 
+/// GUI raw copying retains original text only when ingestion normalizes it.
+#[cfg(feature = "gui")]
+#[derive(Clone)]
+struct RawBuffer {
+    data: Vec<u8>,
+    line_starts: Vec<usize>,
+}
+#[cfg(feature = "gui")]
+impl RawBuffer {
+    fn new(data: Vec<u8>) -> Self {
+        let mut line_starts = vec![0];
+        line_starts.extend(memchr_iter(b'\n', &data).map(|pos| pos + 1));
+        Self { data, line_starts }
+    }
+    fn line(&self, index: usize) -> &[u8] {
+        let start = self.line_starts[index];
+        let end = self
+            .line_starts
+            .get(index + 1)
+            .copied()
+            .unwrap_or(self.data.len());
+        let bytes = &self.data[start..end];
+        let bytes = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+        if end > start && self.data[end - 1] == b'\n' {
+            bytes.strip_suffix(b"\r").unwrap_or(bytes)
+        } else {
+            bytes
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct FileReader {
+    #[cfg(feature = "gui")]
+    raw_buffer: Option<Arc<RawBuffer>>,
     storage: Storage,
     line_starts: std::sync::Arc<Vec<usize>>,
     pub is_binary: bool,
@@ -266,6 +299,8 @@ impl FileReader {
         if has_ansi {
             let (stripped, line_starts) = strip_ansi_and_index(&data);
             return Ok(FileReader {
+                #[cfg(feature = "gui")]
+                raw_buffer: Some(Arc::new(RawBuffer::new(data))),
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
                 line_starts: std::sync::Arc::new(line_starts),
                 is_binary: false,
@@ -287,6 +322,8 @@ impl FileReader {
         );
 
         Ok(FileReader {
+            #[cfg(feature = "gui")]
+            raw_buffer: None,
             storage: Storage::File {
                 data: Arc::new(data),
                 file,
@@ -395,6 +432,8 @@ impl FileReader {
         );
 
         Ok(Some(FileReader {
+            #[cfg(feature = "gui")]
+            raw_buffer: None,
             storage: Storage::Paged {
                 paged: Arc::new(paged),
                 path: canonical_path,
@@ -423,6 +462,8 @@ impl FileReader {
         if has_ansi {
             let (stripped, line_starts) = strip_ansi_and_index(&data);
             return FileReader {
+                #[cfg(feature = "gui")]
+                raw_buffer: Some(Arc::new(RawBuffer::new(data))),
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
                 line_starts: std::sync::Arc::new(line_starts),
                 is_binary: false,
@@ -430,6 +471,8 @@ impl FileReader {
         }
 
         FileReader {
+            #[cfg(feature = "gui")]
+            raw_buffer: None,
             storage: Storage::Bytes(std::sync::Arc::new(data)),
             line_starts: std::sync::Arc::new(starts),
             is_binary: false,
@@ -442,6 +485,8 @@ impl FileReader {
     pub fn from_merged(entries: Arc<Vec<MergedEntry>>, sources: Arc<Vec<FileReader>>) -> Self {
         let line_count = entries.len();
         FileReader {
+            #[cfg(feature = "gui")]
+            raw_buffer: None,
             storage: Storage::Merged { entries, sources },
             line_starts: Arc::new((0..=line_count).collect()),
             is_binary: false,
@@ -1095,9 +1140,12 @@ impl FileReader {
 
         let reader = if has_ansi {
             let (stripped, line_starts) = strip_ansi_and_index(&file_data);
+            #[cfg(not(feature = "gui"))]
             drop(file_data);
             let _ = progress_tx.send(1.0);
             FileReader {
+                #[cfg(feature = "gui")]
+                raw_buffer: Some(Arc::new(RawBuffer::new(file_data))),
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
                 line_starts: std::sync::Arc::new(line_starts),
                 is_binary: false,
@@ -1127,6 +1175,8 @@ impl FileReader {
             );
 
             FileReader {
+                #[cfg(feature = "gui")]
+                raw_buffer: None,
                 storage: Storage::File {
                     data: Arc::new(file_data),
                     file,
@@ -1309,6 +1359,39 @@ impl FileReader {
         LineBytes::Borrowed(&self.storage.as_bytes()[self.line_byte_range(idx)])
     }
 
+    /// Original text for GUI copying, without its terminating LF or CRLF.
+    /// Parsing and filtering continue to use the normalized `get_line` view.
+    #[cfg(feature = "gui")]
+    pub fn get_raw_line(&self, index: usize) -> LineBytes<'_> {
+        if let Storage::Merged { entries, sources } = &self.storage {
+            let entry = &entries[index];
+            return sources[entry.source_idx].get_raw_line(entry.line_idx);
+        }
+        if let Some(raw) = &self.raw_buffer {
+            return LineBytes::Borrowed(raw.line(index));
+        }
+        match self.get_line(index) {
+            LineBytes::Borrowed(bytes) => {
+                let bytes = bytes
+                    .strip_suffix(b"\r\n")
+                    .or_else(|| bytes.strip_suffix(b"\n"))
+                    .unwrap_or(bytes);
+                LineBytes::Borrowed(bytes)
+            }
+            LineBytes::Owned(bytes) => {
+                let clean = bytes
+                    .strip_suffix(b"\r\n")
+                    .or_else(|| bytes.strip_suffix(b"\n"))
+                    .unwrap_or(&bytes);
+                if clean.len() == bytes.len() {
+                    LineBytes::Owned(bytes)
+                } else {
+                    LineBytes::Owned(Arc::from(clean))
+                }
+            }
+        }
+    }
+
     /// Byte range of line `idx` within [`data()`] (without the trailing
     /// newline). Only meaningful for non-`Merged` storage — a `Merged`
     /// reader has no single flat buffer for `idx` to index into (see
@@ -1458,6 +1541,15 @@ impl FileReader {
 
         if effective_data.is_empty() {
             return;
+        }
+
+        #[cfg(feature = "gui")]
+        if let Some(raw) = &mut self.raw_buffer {
+            let raw = Arc::make_mut(raw);
+            let offset = raw.data.len();
+            raw.data.extend_from_slice(effective_data);
+            raw.line_starts
+                .extend(memchr_iter(b'\n', effective_data).map(|pos| offset + pos + 1));
         }
 
         let old_storage = std::mem::replace(

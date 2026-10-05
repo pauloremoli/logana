@@ -54,15 +54,10 @@ cargo install logana
 cargo binstall logana
 ```
 
-Source builds enable `tui` by default, including `--headless`. Build only the
-GUI with `cargo build --no-default-features --features gui --bin logana-gui`,
+Source builds enable `tui` by default.
+Build only the GUI with `cargo build --no-default-features --features gui --bin logana-gui`,
 or both frontends with `cargo build --features gui`. See
 [frontend build configurations](CONTRIBUTING.md#frontend-features).
-
-The GUI uses mouse controls and native editors for filters, groups, columns,
-appearance, and schemas. Open the action launcher with its Actions button,
-`:` outside text inputs, or `Ctrl+Shift+P`. TUI mode keybindings apply only to
-the TUI.
 
 ---
 

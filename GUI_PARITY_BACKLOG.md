@@ -17,7 +17,7 @@ GUI-only builds must not acquire terminal dependencies.
 - [x] Theme preview, cancel, apply, and persisted theme choice.
 - [x] Value/level color controls and theme-aware rendering.
 - [x] Display controls: wrapping, absolute/relative line numbers, keys, raw view,
-      collapse/expand, sidebar visibility and position (currently tab-local).
+      collapse/expand, sidebar visibility and position, with persisted defaults.
 - [x] Pause/resume/stop file watching and toggle follow mode. Incoming snapshots
       are consumed in background tasks, including paused-stream catch-up.
 - [x] Mouse row selection and Shift-click ranges; cursor and row backgrounds.
@@ -41,8 +41,12 @@ GUI-only builds must not acquire terminal dependencies.
 - [x] Template exports with editable footer fields and output dialogs.
 - [x] Consume live file growth, preserve filters and source indices, follow the
       newest visible row, and handle truncation/rotation and pause/resume.
-- [ ] Persist and restore display settings, per-file context, and sessions with
-      the existing restore policies.
+- [x] Persist and restore display defaults, per-file context, and ordered sessions.
+      Shared database keys and independent Ask/Always/Never restore policies are
+      honored, with config overrides, native restore prompts, and save flushing
+      before GUI quit/window close. Closing the last tab clears the saved session;
+      declining restoration in an empty window preserves the previous session.
+      Temporary/stream sources are excluded from session reopening.
 - [x] Keyboard navigation, tab shortcuts, bookmark shortcuts, file switching,
       and discoverable shortcut help. Shared bindings drive native GUI navigation.
 - [x] Default-filter configuration and automatic schema-default loading.
@@ -55,18 +59,10 @@ GUI-only builds must not acquire terminal dependencies.
 - [x] Enable/disable MCP with the existing server lifecycle.
 - [ ] Reset settings/database with explicit scope and restore-policy handling.
 
-## Additional GUI pages
-
-The saved-search feature and navigation item were removed at the user’s request.
-
-- [ ] Settings: expose persisted application options in a native page.
-
-## Validation
-
-Mouse selection and raw copying have focused Unicode, wrapping, hidden-column,
-virtualization, and original-byte tests plus native GPUI interaction tests.
-Bookmark background painting has light/dark and selection-precedence tests.
-Default TUI, GUI-only, combined, and no-feature library/schema checks pass.
-Strict GUI Clippy currently reports unrelated existing editor/update lints.
 
 Update the relevant checkbox and validation evidence in each feature commit.
+
+Persistence has database round-trip and native prompt tests covering policy
+independence/config precedence, filtered cursor restoration, column layout,
+bookmarks/annotations, ordered sessions, temporary sources, coalesced saves,
+display edits, and closing the last tab.

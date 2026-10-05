@@ -23,12 +23,17 @@ actions!(logana_gui, [OpenFile, OpenCommands, Quit]);
 /// GPUI widget ownership and asynchronous effect execution.
 pub struct App {
     pub state: GuiState,
+    pub(super) persistence: crate::gui::persistence::Persistence,
     pub(super) mcp: crate::gui::mcp::Server,
     pub(super) default_formats: std::collections::HashMap<crate::shared::TabId, String>,
     pub(super) stream_pending: std::collections::HashSet<crate::shared::TabId>,
+    pub text_document: crate::gui::text_selection::SharedDocument,
+    pub text_handle: gpui_kit::base::TextSelectionHandle,
+    text_context: Option<(crate::shared::TabId, u64, u64, Vec<String>, bool, bool)>,
     pub editor_inputs: Vec<Entity<InputState>>,
     pub editor_textareas:
         std::collections::HashMap<usize, Entity<gpui_kit::component::input::TextareaState>>,
+    pub editor_colors: Vec<Entity<gpui_kit::component::color_picker::ColorPickerState>>,
     editor_epoch: u64,
     editor_synced: Vec<String>,
     filter_edits: tokio::sync::mpsc::UnboundedSender<crate::gui::effect::FilterEdit>,
@@ -63,6 +68,16 @@ pub struct FacetCache {
 
 impl App {
     pub fn new(db: Arc<Database>, theme: TuiTheme, cx: &mut Context<Self>) -> Self {
+        let persistence = crate::gui::persistence::Persistence::new(db.clone());
+        cx.on_app_quit(|app, _| {
+            let flushed = app.flush_persistence();
+            async move {
+                if let Err(error) = flushed.await {
+                    eprintln!("Cannot save GUI session: {error}");
+                }
+            }
+        })
+        .detach();
         let (filter_edits, mut edits) =
             tokio::sync::mpsc::unbounded_channel::<crate::gui::effect::FilterEdit>();
         cx.spawn(async move |this, cx| {
@@ -93,12 +108,19 @@ impl App {
                 if this
                     .update_in(cx, |app, _window, cx| {
                         app.poll_streams(cx);
+                        app.poll_persistence(cx);
                         app.poll_defaults(cx);
                         app.poll_mcp(cx);
                         let mut filtering = false;
                         for tab in &mut app.state.tabs {
                             if tab.filter.handle.is_some() {
                                 tab.advance_filter_computation();
+                                if tab.filter.handle.is_none() {
+                                    let query = tab.search.query.get_pattern().map(str::to_owned);
+                                    if let Some(query) = query {
+                                        tab.begin_search(&query, true, false);
+                                    }
+                                }
                                 if tab.stream.tail_mode && !tab.stream.paused {
                                     tab.scroll.scroll_offset =
                                         tab.filter.visible_indices.len().saturating_sub(1);
@@ -149,7 +171,15 @@ impl App {
             }
         })
         .detach();
+        let text_document = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::gui::text_selection::Document::default(),
+        ));
+        let text_handle = crate::gui::text_selection::new_handle(text_document.clone(), cx);
         Self {
+            persistence,
+            text_document,
+            text_handle,
+            text_context: None,
             filter_edits,
             state: GuiState::new(db).with_theme(theme),
             mcp: Default::default(),
@@ -157,6 +187,7 @@ impl App {
             stream_pending: Default::default(),
             editor_inputs: Vec::new(),
             editor_textareas: Default::default(),
+            editor_colors: Vec::new(),
             editor_epoch: 0,
             editor_synced: Vec::new(),
             log_scroll: VirtualListScrollHandle::new(),
@@ -192,7 +223,7 @@ impl App {
     }
 
     fn on_quit_action(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
-        cx.quit();
+        self.request_quit(cx);
     }
 
     pub fn dispatch(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
@@ -245,6 +276,8 @@ impl App {
                 | Message::GuiAction(crate::gui::actions::Action::Tail)
                 | Message::GuiCommand(Commands::Tail, _)
         );
+        self.save_session_state();
+        let previous_display = self.display_snapshot();
         let had_editor = self.state.editor.is_some();
         let closing_palette = matches!(
             message,
@@ -259,6 +292,8 @@ impl App {
         let runtime_handle = runtime::handle();
         let _runtime_guard = runtime_handle.enter();
         let effect = update::update(&mut self.state, message);
+        self.save_display_change(previous_display);
+        self.save_session_state();
         if previous_theme != self.state.theme {
             crate::gui::theme::install(&self.state.theme, cx);
         }
@@ -509,7 +544,7 @@ impl App {
                 .detach();
             }
             Effect::None => {}
-            Effect::Quit => cx.quit(),
+            Effect::Quit => self.request_quit(cx),
             Effect::OpenFileDialog => self.spawn_open_file_dialog(cx),
             Effect::LoadFile(path) => self.spawn_load_file(path, cx),
             Effect::ToggleFilter {
@@ -596,10 +631,7 @@ impl App {
                 .spawn(async move { update::load_file(path, db).await })
                 .await
                 .expect("load_file task panicked");
-            this.update_in(cx, |app, window, cx| {
-                app.dispatch(Message::FileLoaded(result), window, cx);
-            })
-            .ok();
+            crate::gui::persistence::accept_loaded(&this, cx, result).await;
         })
         .detach();
     }
@@ -987,6 +1019,43 @@ impl Render for App {
                         self.editor_textareas.insert(index, textarea);
                     }
                 }
+                self.editor_colors.clear();
+                for index in 4..6 {
+                    let picker = cx.new(|cx| {
+                        gpui_kit::component::color_picker::ColorPickerState::new(window, cx)
+                    });
+                    cx.subscribe_in(
+                        &picker,
+                        window,
+                        move |app,
+                              _,
+                              event: &gpui_kit::component::color_picker::ColorPickerEvent,
+                              window,
+                              cx| {
+                            if app.state.editor.as_ref().is_some_and(|e| e.epoch == epoch) {
+                                let gpui_kit::component::color_picker::ColorPickerEvent::Change(
+                                    value,
+                                ) = event;
+                                let value = value
+                                    .map(|color| {
+                                        let color: gpui_kit::gpui::Rgba = color.into();
+                                        // Filter colors store opaque RGB. Round channels to avoid
+                                        // losing a byte in the picker's HSL round trip.
+                                        format!(
+                                            "#{:02X}{:02X}{:02X}",
+                                            (color.r * 255.).round() as u8,
+                                            (color.g * 255.).round() as u8,
+                                            (color.b * 255.).round() as u8
+                                        )
+                                    })
+                                    .unwrap_or_default();
+                                app.dispatch(Message::EditorText(index, value), window, cx);
+                            }
+                        },
+                    )
+                    .detach();
+                    self.editor_colors.push(picker);
+                }
                 self.editor_epoch = epoch;
                 let action = self.state.editor.as_ref().unwrap().action;
                 match action {
@@ -1013,10 +1082,53 @@ impl Render for App {
                     }
                 }
             }
+            if let Some(editor) = &self.state.editor {
+                for (picker, value) in self.editor_colors.iter().zip(&editor.values[4..6]) {
+                    let color: Option<gpui_kit::gpui::Hsla> = crate::theme::parse_color(value)
+                        .and_then(crate::gui::color::color_to_gpui)
+                        .map(Into::into);
+                    if picker.read(cx).value() != color {
+                        picker.update(cx, |picker, cx| {
+                            if let Some(color) = color {
+                                picker.set_value(color, window, cx);
+                            } else {
+                                picker.clear_value(window, cx);
+                            }
+                        });
+                    }
+                }
+            }
         } else {
+            self.editor_colors.clear();
             self.editor_inputs.clear();
             self.editor_textareas.clear();
             self.editor_synced.clear();
+        }
+        self.text_document
+            .borrow_mut()
+            .sync(self.text_handle.snapshot(cx));
+        let text_context = self.state.active_tab_mut().map(|tab| {
+            let fields = tab.collect_field_names();
+            let columns = crate::gui::view::log_pane::visible_columns(tab, &fields);
+            (
+                tab.id,
+                tab.cache.parse_gen,
+                tab.cache.render_gen,
+                columns,
+                tab.display.show_keys,
+                tab.display.raw_mode,
+            )
+        });
+        if self.text_context != text_context {
+            gpui_kit::base::TextSelection::clear(window, cx);
+            let mut document = self.text_document.borrow_mut();
+            document.clear();
+            document.tab = text_context.as_ref().map(|c| c.0);
+            document.columns = text_context
+                .as_ref()
+                .map(|c| c.3.clone())
+                .unwrap_or_default();
+            self.text_context = text_context;
         }
         let focused = |input: &Option<Entity<InputState>>| {
             input
@@ -1047,6 +1159,25 @@ impl Render for App {
             .on_action(cx.listener(Self::on_quit_action))
             .capture_key_down(cx.listener(move |app, event: &KeyDownEvent, window, cx| {
                 let stroke = &event.keystroke;
+                if !editing
+                    && context == "LoganaLogs"
+                    && stroke.key == "c"
+                    && (stroke.modifiers.control || stroke.modifiers.platform)
+                {
+                    app.text_document
+                        .borrow_mut()
+                        .sync(app.text_handle.snapshot(cx));
+                    let text = app
+                        .state
+                        .active_tab()
+                        .map(|tab| app.text_document.borrow().copy(tab))
+                        .unwrap_or_default();
+                    if !text.is_empty() {
+                        cx.write_to_clipboard(gpui_kit::gpui::ClipboardItem::new_string(text));
+                        cx.stop_propagation();
+                        return;
+                    }
+                }
                 if stroke.key == "escape" {
                     if app.state.editor.is_some() {
                         cx.stop_propagation();

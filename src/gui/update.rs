@@ -53,7 +53,9 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
         }
         Message::SourceLoaded(result) => {
             match result {
-                Ok(tab) => {
+                Ok(mut tab) => {
+                    state.preferences.apply(&mut tab);
+                    tab.begin_filter_refresh();
                     state.tabs.push(*tab);
                     state.active_tab = state.tabs.len() - 1;
                     state.nav_page = crate::gui::state::NavPage::Logs;
@@ -61,6 +63,30 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
                 Err(error) => state.notify(StatusMessage::Error(error)),
             }
             Effect::None
+        }
+        Message::LogRowAction(source, line, action) => {
+            if state.editor.is_some() || state.palette.pending() {
+                return Effect::None;
+            }
+            let Some(index) = state.tabs.iter().position(|tab| tab.id == source) else {
+                return Effect::None;
+            };
+            let Some(row) = state.tabs[index]
+                .filter
+                .visible_indices
+                .iter()
+                .position(|i| i == line)
+            else {
+                return Effect::None;
+            };
+            state.active_tab = index;
+            if !state
+                .log_selection
+                .is_some_and(|(id, a, b)| id == source && (a.min(b)..=a.max(b)).contains(&row))
+            {
+                state.log_selection = Some((source, row, row));
+            }
+            crate::gui::actions::open(state, action, None, None)
         }
         Message::EditAnnotation(index) => crate::gui::actions::open(
             state,
@@ -194,11 +220,32 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
         Message::EditorConditionAdd => {
             if let Some(e) = &mut state.editor {
                 if !e.values[1].trim().is_empty() {
-                    e.conditions
-                        .push((e.values[1].clone(), e.values[2].clone()));
+                    let condition = (e.values[1].clone(), e.values[2].clone());
+                    if let Some(index) = e
+                        .condition_edit
+                        .and_then(|index| e.conditions.get_mut(index))
+                    {
+                        *index = condition;
+                    } else {
+                        e.conditions.push(condition);
+                    }
+                    e.condition_edit = None;
+                    e.values[1].clear();
+                    e.values[2].clear();
                     e.error = None;
                 } else {
                     e.error = Some("Choose a field first.".into());
+                }
+            }
+            Effect::None
+        }
+        Message::EditorConditionEdit(index) => {
+            if let Some(e) = &mut state.editor {
+                if let Some((field, value)) = e.conditions.get(index) {
+                    e.values[1] = field.clone();
+                    e.values[2] = value.clone();
+                    e.condition_edit = Some(index);
+                    e.error = None;
                 }
             }
             Effect::None
@@ -207,6 +254,15 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             if let Some(e) = &mut state.editor {
                 if index < e.conditions.len() {
                     e.conditions.remove(index);
+                    if e.condition_edit == Some(index) {
+                        e.condition_edit = None;
+                        e.values[1].clear();
+                        e.values[2].clear();
+                    } else if let Some(edit) = e.condition_edit.as_mut() {
+                        if *edit > index {
+                            *edit -= 1;
+                        }
+                    }
                 }
             }
             Effect::None
@@ -301,11 +357,35 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
         }
         Message::PaletteEdited(input) => {
             state.palette.edit(input);
+            crate::gui::actions::select_best(state);
             Effect::None
         }
         Message::PaletteKey(code, _) => {
-            if code == KeyCode::Esc {
-                state.palette.open = false;
+            match code {
+                KeyCode::Esc => state.palette.open = false,
+                KeyCode::Enter => {
+                    return update(state, Message::PaletteInsert(state.palette.selected));
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    let enabled: Vec<_> = crate::gui::actions::matching(&state.palette.input)
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, d)| d.unavailable(state).is_none())
+                        .map(|(i, _)| i)
+                        .collect();
+                    let next = if code == KeyCode::Up {
+                        enabled
+                            .into_iter()
+                            .rev()
+                            .find(|i| *i < state.palette.selected)
+                    } else {
+                        enabled.into_iter().find(|i| *i > state.palette.selected)
+                    };
+                    if let Some(next) = next {
+                        state.palette.selected = next;
+                    }
+                }
+                _ => {}
             }
             Effect::None
         }
@@ -526,6 +606,10 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             state.sidebar_tab = tab;
             Effect::None
         }
+        Message::FacetBrowserToggled => {
+            state.facet_browser_open = !state.facet_browser_open;
+            Effect::None
+        }
         Message::SidebarToggled => {
             toggle_display(state, |d| d.show_sidebar = !d.show_sidebar);
             Effect::None
@@ -673,6 +757,7 @@ fn apply_time_range_preset(
 
 fn open_palette(state: &mut GuiState) -> Effect {
     state.palette.open = true;
+    crate::gui::actions::select_best(state);
     state.palette.focus_epoch = state.palette.focus_epoch.wrapping_add(1);
     state.palette.generation = state.palette.generation.wrapping_add(1);
     Effect::None
@@ -1148,8 +1233,29 @@ fn push_tab(state: &mut GuiState, loaded: FileLoaded) {
             .keybindings,
     );
     tab.display.hidden_fields.clear();
+    state.preferences.apply(&mut tab);
     tab.stream.watch = Some(loaded.watch);
+    if let Some(context) = &loaded.context {
+        tab.apply_file_context(context);
+    }
+    let annotated_lines = tab
+        .comment_manager
+        .get()
+        .iter()
+        .flat_map(|note| note.line_indices.iter().copied())
+        .collect::<Vec<_>>();
+    tab.mark_lines(&annotated_lines);
     force_recompute(&mut tab);
+    if let Some(context) = &loaded.context {
+        if let Some(handle) = &mut tab.filter.handle {
+            handle.scroll_anchor = Some(context.scroll_offset);
+        } else {
+            tab.restore_scroll_to_line(Some(context.scroll_offset));
+        }
+        if !context.search_query.is_empty() {
+            tab.begin_search(&context.search_query, true, false);
+        }
+    }
     state.column_widths = crate::gui::column_widths::fit_column_widths(&tab);
     state.tabs.push(tab);
     state.active_tab = state.tabs.len() - 1;
@@ -1177,6 +1283,7 @@ fn force_recompute(tab: &mut TabState) {
 /// full `TabState` (format detection, continuation/year maps, etc.) via
 /// the TUI's own `TabState::new`.
 pub async fn load_file(path: PathBuf, db: Arc<Database>) -> Result<FileLoaded, String> {
+    let path = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
     let path_str = path.to_string_lossy().into_owned();
     let handle = FileReader::load(
         path_str.clone(),
@@ -1193,6 +1300,11 @@ pub async fn load_file(path: PathBuf, db: Arc<Database>) -> Result<FileLoaded, S
         .await
         .map_err(|_| "file load was cancelled".to_string())?
         .map_err(|e| e.to_string())?;
+    use crate::db::FileContextStore;
+    let context = db
+        .load_file_context(&path_str)
+        .await
+        .map_err(|e| e.to_string())?;
     let log_manager = LogManager::new(db, Some(path_str.clone())).await;
     // Same watcher the TUI spawns on every real file open (`src/ingestion/
     // loading.rs`) — makes `tab.stream.watch`/`is_tab_live` real instead of
@@ -1201,6 +1313,7 @@ pub async fn load_file(path: PathBuf, db: Arc<Database>) -> Result<FileLoaded, S
     let watch_rx = FileReader::spawn_file_watcher(path_str.clone(), total_bytes).await;
     let watch = crate::shared::watch_state_from_file(watch_rx, path_str);
     Ok(FileLoaded {
+        context,
         path,
         reader: result.reader,
         log_manager,

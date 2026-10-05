@@ -102,6 +102,8 @@ mod tests {
         crate::gui::actions::open(&mut state, Action::Annotation, None, None);
         state.editor.as_mut().unwrap().values[0] = "Unicode note α".into();
         crate::gui::actions::apply(&mut state);
+        assert_eq!(state.tabs[0].mark_manager.get_indices(), vec![1, 2]);
+        assert_eq!(state.nav_page, crate::gui::state::NavPage::Logs);
         assert_eq!(
             state.tabs[0].comment_manager.get()[0].line_indices,
             vec![1, 2]

@@ -66,6 +66,7 @@ pub fn command_palette(
         .id("command-suggestions")
         .max_h(px(height * 0.45))
         .overflow_y_scroll()
+        .track_scroll(&app.command_scroll)
         .flex()
         .flex_col();
     let suggestions = crate::gui::actions::matching(&palette.input);
@@ -74,13 +75,14 @@ pub fn command_palette(
         list = list.child(
             ListItem::new(("command-suggestion", index))
                 .disabled(missing)
+                .selected(index == palette.selected)
                 .child(
                     div().flex().flex_col().child(descriptor.label).child(
                         div()
                             .text_size(px(12.))
                             .text_color(cx.theme().muted_foreground)
                             .child(if missing {
-                                "Open a log file first"
+                                descriptor.unavailable(&app.state).unwrap()
                             } else {
                                 descriptor.description
                             }),

@@ -17,6 +17,8 @@ pub fn jump(app: &mut App, line: usize) -> bool {
         return false;
     };
     tab.scroll.scroll_offset = row;
+    let source = tab.id;
+    app.state.log_selection = Some((source, row, row));
     app.state.nav_page = NavPage::Logs;
     app.log_scroll.scroll_to_item(row, ScrollStrategy::Top);
     true
@@ -41,15 +43,15 @@ pub fn page(app: &App, cx: &mut Context<App>) -> impl IntoElement {
             .child("Bookmarks")
             .child(
                 Button::new("bookmark-current")
-                    .label("Toggle current row")
-                    .on_click(cx.listener(|app, _, _, cx| {
-                        if let Some(tab) = app.state.active_tab_mut() {
-                            if tab.scroll.scroll_offset < tab.filter.visible_indices.len() {
-                                let line = tab.filter.visible_indices.get(tab.scroll.scroll_offset);
-                                tab.mark_manager.toggle(line);
-                            }
-                        }
-                        cx.notify();
+                    .label("Toggle selected bookmarks")
+                    .on_click(cx.listener(|app, _, window, cx| {
+                        app.dispatch(
+                            crate::gui::message::Message::GuiAction(
+                                crate::gui::actions::Action::Bookmark,
+                            ),
+                            window,
+                            cx,
+                        );
                     })),
             )
             .child(
@@ -65,7 +67,9 @@ pub fn page(app: &App, cx: &mut Context<App>) -> impl IntoElement {
     );
     let indices = tab.mark_manager.get_indices();
     if indices.is_empty() {
-        content = content.child("No bookmarked rows. Select a row in Logs, then toggle it here.");
+        content = content.child(
+            "No bookmarks yet. Select log lines and press Ctrl+B, or use their context menu.",
+        );
     }
     for line in indices {
         if line >= tab.file_reader.line_count() {

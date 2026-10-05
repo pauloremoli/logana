@@ -1,12 +1,12 @@
 use crate::gui::app::App;
-use crate::gui::color::{LineStyle, color_to_gpui, resolve_line_style};
+use crate::gui::color::{LineStyle, cell_style_spans, color_to_gpui, resolve_row_style};
 use crate::gui::column_widths::{ResizableColumn, TableWidths};
 use crate::gui::level::{classify_line_level, level_pill_colors};
 use crate::gui::message::Message;
 use crate::parser::LogLevel;
 use crate::shared::TabState;
 use crate::theme::Theme as TuiTheme;
-use gpui_kit::base::{VirtualListScrollHandle, v_virtual_list};
+use gpui_kit::base::{TestSupportExt, VirtualListScrollHandle, v_virtual_list};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::menu::ContextMenuExt;
@@ -14,7 +14,7 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{
-    AnyElement, Context, DragMoveEvent, Empty, FontWeight, MouseButton, Rgba, Size, div, px,
+    AnyElement, Context, DragMoveEvent, Empty, FontWeight, MouseButton, Size, div, px,
 };
 use std::rc::Rc;
 
@@ -23,6 +23,7 @@ use std::rc::Rc;
 /// 30px deliberately leaves a few
 /// pixels of breathing room above/below each row's text.
 const ROW_HEIGHT_PX: f32 = 30.0;
+const ANNOTATION_HEIGHT_PX: f32 = 28.0;
 /// Width of the draggable strip between two fixed columns — thin enough
 /// to stay out of the way, wide enough to be a comfortable mouse target.
 const RESIZE_HANDLE_WIDTH_PX: f32 = 6.0;
@@ -51,6 +52,7 @@ pub struct LayoutCache {
         bool,
         bool,
         bool,
+        Vec<Vec<usize>>,
     ),
     sizes: Rc<Vec<Size<gpui_kit::gpui::Pixels>>>,
 }
@@ -75,32 +77,44 @@ pub fn item_sizes(
         tab.display.wrap,
         tab.display.show_keys,
         tab.display.raw_mode,
+        tab.comment_manager
+            .get()
+            .iter()
+            .map(|note| note.line_indices.clone())
+            .collect(),
     );
-    if let Some(cache) = cache {
-        if cache.key == key {
-            return cache.sizes.clone();
-        }
+    if let Some(cache) = cache
+        && cache.key == key
+    {
+        return cache.sizes.clone();
     }
-    let sizes = Rc::new(if tab.display.wrap {
+    let sizes: Rc<Vec<Size<gpui_kit::gpui::Pixels>>> = Rc::new(
         tab.filter
             .visible_indices
             .iter()
             .map(|line| {
-                Size::new(
-                    px(0.),
-                    px(wrapped_height(tab, line, &columns, widths, message_width)),
-                )
+                let log_height = if tab.display.wrap {
+                    wrapped_height(tab, line, &columns, widths, message_width)
+                } else {
+                    ROW_HEIGHT_PX
+                };
+                let notes = tab
+                    .comment_manager
+                    .get()
+                    .iter()
+                    .filter(|note| note.line_indices.contains(&line))
+                    .count();
+                Size::new(px(0.), px(log_height + notes as f32 * ANNOTATION_HEIGHT_PX))
             })
-            .collect()
-    } else {
-        vec![Size::new(px(0.), px(ROW_HEIGHT_PX)); total]
-    });
+            .collect(),
+    );
     *cache = Some(LayoutCache {
         key,
         sizes: sizes.clone(),
     });
     sizes
 }
+#[allow(clippy::too_many_arguments)]
 pub fn log_pane(
     tab_idx: usize,
     tab: &TabState,
@@ -109,6 +123,8 @@ pub fn log_pane(
     fields: &[String],
     item_sizes: Rc<Vec<Size<gpui_kit::gpui::Pixels>>>,
     message_width: f32,
+    text_handle: gpui_kit::base::TextSelectionHandle,
+    text_document: crate::gui::text_selection::SharedDocument,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let columns = visible_columns(tab, fields);
@@ -123,6 +139,7 @@ pub fn log_pane(
     let row_fields = columns.clone();
     let row_widths = widths.clone();
     let view = cx.entity();
+    let row_document = text_document.clone();
     let table = div()
         .flex()
         .flex_col()
@@ -144,80 +161,155 @@ pub fn log_pane(
         ))
         .child(
             div().relative().flex_1().min_h(px(0.)).child(
-                v_virtual_list(
-                    view,
-                    "log-pane",
-                    item_sizes,
-                    move |app: &mut App, range, _window, cx| {
-                        let Some(tab) = app.state.tabs.get(tab_idx) else {
-                            return Vec::new();
-                        };
-                        let selection = app
-                            .state
-                            .log_selection
-                            .filter(|(id, _, _)| *id == tab.id)
-                            .map(|(_, a, b)| (a.min(b), a.max(b), b));
-                        range
-                            .filter_map(|pos| {
-                                tab.filter
-                                    .visible_indices
-                                    .get_opt(pos)
-                                    .map(|line_idx| (pos, line_idx))
-                            })
-                            .map(|(pos, line_idx)| {
-                                let output =
-                                    String::from_utf8_lossy(&tab.file_reader.get_line(line_idx))
-                                        .into_owned();
-                                let entity = cx.entity();
-                                div()
-                                    .id(("log-row", pos))
-                                    .child(line_row(
-                                        tab,
-                                        line_idx,
-                                        selection.is_some_and(|(a, b, _)| (a..=b).contains(&pos)),
-                                        selection
-                                            .map(|(_, _, cursor)| pos == cursor)
-                                            .unwrap_or(pos == tab.scroll.scroll_offset),
-                                        &app.state.theme,
-                                        &row_widths,
-                                        &row_fields,
-                                        message_width,
-                                    ))
-                                    .on_click(cx.listener(
-                                        move |app,
-                                              event: &gpui_kit::gpui::ClickEvent,
-                                              window,
-                                              cx| {
-                                            app.dispatch(
-                                                Message::SelectLog(pos, event.modifiers().shift),
-                                                window,
-                                                cx,
-                                            )
-                                        },
-                                    ))
-                                    .context_menu(move |menu, _, _| {
-                                        let output = output.clone();
-                                        let entity = entity.clone();
-                                        menu.item(
-                                            gpui_kit::component::menu::PopupMenuItem::new(
-                                                "Copy log line",
-                                            )
-                                            .on_click(
-                                                move |_, _, cx| {
+                crate::gui::text_selection::TableSelection {
+                    document: text_document,
+                    handle: text_handle,
+                    scroll: log_scroll.clone(),
+                    child: v_virtual_list(
+                        view,
+                        "log-pane",
+                        item_sizes,
+                        move |app: &mut App, range, _window, cx| {
+                            let Some(tab) = app.state.tabs.get(tab_idx) else {
+                                return Vec::new();
+                            };
+                            let selection = app
+                                .state
+                                .log_selection
+                                .filter(|(id, _, _)| *id == tab.id)
+                                .map(|(_, a, b)| (a.min(b), a.max(b), b));
+                            range
+                                .filter_map(|pos| {
+                                    tab.filter
+                                        .visible_indices
+                                        .get_opt(pos)
+                                        .map(|line_idx| (pos, line_idx))
+                                })
+                                .map(|(pos, line_idx)| {
+                                    let output = raw_log_message(&tab.file_reader, line_idx);
+                                    let displayed =
+                                        displayed_values(tab, line_idx, &row_fields).join("\t");
+                                    let entity = cx.entity();
+                                let source = tab.id;
+                                    div()
+                                        .id(("log-row", pos))
+                                        .test_support()
+                                        .child(line_row_with_selection(
+                                            tab,
+                                            line_idx,
+                                            selection
+                                                .is_some_and(|(a, b, _)| (a..=b).contains(&pos)),
+                                            selection
+                                                .map(|(_, _, cursor)| pos == cursor)
+                                                .unwrap_or(pos == tab.scroll.scroll_offset),
+                                            &app.state.theme,
+                                            &row_widths,
+                                            &row_fields,
+                                            message_width,
+                                            (&row_document, pos),
+                                        ))
+                                        .children(tab.comment_manager.get().iter().enumerate()
+                                            .filter(|(_, note)| note.line_indices.contains(&line_idx))
+                                            .map(|(index, note)| {
+                                                let full_note = note.text.clone();
+                                                div().id(("log-annotation", index)).test_support()
+                                                    .h(px(ANNOTATION_HEIGHT_PX)).w_full().px_3().text_sm().truncate()
+                                                    .text_color(cx.theme().muted_foreground).cursor_pointer()
+                                                    .child(format!("Note: {}", note.text.replace('\n', " ")))
+                                                    .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(full_note.clone()).build(window, cx))
+                                                    .on_click(cx.listener(move |app, _, window, cx| {
+                                                        cx.stop_propagation();
+                                                        app.dispatch(Message::EditAnnotation(index), window, cx);
+                                                    }))
+                                            }))
+                                        .on_click(cx.listener(
+                                            move |app,
+                                                  event: &gpui_kit::gpui::ClickEvent,
+                                                  window,
+                                                  cx| {
+                                                app.text_document
+                                                    .borrow_mut()
+                                                    .sync(app.text_handle.snapshot(cx));
+                                                let moved = matches!(event, gpui_kit::gpui::ClickEvent::Mouse(click)
+                                                    if click.down.position != click.up.position);
+                                                if app.text_document.borrow().dragged && moved {
+                                                    return;
+                                                }
+                                                app.dispatch(
+                                                    Message::SelectLog(
+                                                        pos,
+                                                        event.modifiers().shift,
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                );
+                                                if event.modifiers().shift {
+                                                    gpui_kit::base::TextSelection::clear(window, cx);
+                                                }
+                                            },
+                                        ))
+                                        .context_menu(move |menu, _, cx| {
+                                            let selected = {
+                                                let app = entity.read(cx);
+                                                app.text_document
+                                                    .borrow_mut()
+                                                    .sync(app.text_handle.snapshot(cx));
+                                                app.state
+                                                    .active_tab()
+                                                    .map(|tab| app.text_document.borrow().copy(tab))
+                                                    .unwrap_or_default()
+                                            };
+                                            let displayed = displayed.clone();
+                                            let output = output.clone();
+                                            let entity = entity.clone();
+                                            let bookmark = entity.clone();
+                                            let annotation = entity.clone();
+                                            menu.item(
+                                                gpui_kit::component::menu::PopupMenuItem::new(
+                                                    "Copy raw log message",
+                                                )
+                                                .on_click(move |_, _, cx| {
                                                     cx.write_to_clipboard(
                                                         gpui_kit::gpui::ClipboardItem::new_string(
                                                             output.clone(),
                                                         ),
                                                     )
-                                                },
-                                            ),
-                                        )
-                                        .item(
-                                            gpui_kit::component::menu::PopupMenuItem::new(
-                                                "Add filter",
+                                                }),
                                             )
-                                            .on_click(
-                                                move |_, window, cx| {
+                                            .item(
+                                                gpui_kit::component::menu::PopupMenuItem::new(
+                                                    "Copy displayed row",
+                                                )
+                                                .on_click(move |_, _, cx| {
+                                                    cx.write_to_clipboard(
+                                                        gpui_kit::gpui::ClipboardItem::new_string(
+                                                            displayed.clone(),
+                                                        ),
+                                                    )
+                                                }),
+                                            )
+                                            .item(
+                                                gpui_kit::component::menu::PopupMenuItem::new(
+                                                    "Copy selected text",
+                                                )
+                                                .disabled(selected.is_empty())
+                                                .on_click(move |_, _, cx| {
+                                                    cx.write_to_clipboard(
+                                                        gpui_kit::gpui::ClipboardItem::new_string(
+                                                            selected.clone(),
+                                                        ),
+                                                    )
+                                                }),
+                                            )
+                                            .item(gpui_kit::component::menu::PopupMenuItem::new("Toggle bookmark (Ctrl+B)")
+                                                .on_click(move |_, window, cx| bookmark.update(cx, |app, cx| app.dispatch(Message::LogRowAction(source, line_idx, crate::gui::actions::Action::Bookmark), window, cx))))
+                                            .item(gpui_kit::component::menu::PopupMenuItem::new("Add annotation (Ctrl+Shift+A)")
+                                                .on_click(move |_, window, cx| annotation.update(cx, |app, cx| app.dispatch(Message::LogRowAction(source, line_idx, crate::gui::actions::Action::Annotation), window, cx))))
+                                            .item(
+                                                gpui_kit::component::menu::PopupMenuItem::new(
+                                                    "Add filter",
+                                                )
+                                                .on_click(move |_, window, cx| {
                                                     entity.update(cx, |app, cx| {
                                                         app.dispatch(
                                                             Message::GuiAction(
@@ -227,17 +319,18 @@ pub fn log_pane(
                                                             cx,
                                                         )
                                                     })
-                                                },
-                                            ),
-                                        )
-                                    })
-                                    .into_any_element()
-                            })
-                            .collect()
-                    },
-                )
-                .track_scroll(log_scroll)
-                .size_full(),
+                                                }),
+                                            )
+                                        })
+                                        .into_any_element()
+                                })
+                                .collect()
+                        },
+                    )
+                    .track_scroll(log_scroll)
+                    .size_full()
+                    .into_any_element(),
+                },
             ),
         );
     // Keep the vertical scrollbar on the visible pane, outside the wide
@@ -399,6 +492,7 @@ fn resize_handle(column: ResizableColumn, cx: &mut Context<App>) -> AnyElement {
     };
     div()
         .id(id)
+        .test_support()
         .flex_shrink_0()
         .w(px(RESIZE_HANDLE_WIDTH_PX))
         .h(px(ROW_HEIGHT_PX))
@@ -419,12 +513,6 @@ fn resize_handle(column: ResizableColumn, cx: &mut Context<App>) -> AnyElement {
         )
         .into_any_element()
 }
-
-/// `VisualLineMode`'s selected range, as `(low, high)` visible-position
-/// indices inclusive — `VisualLineMode::anchor` and `tab.scroll.
-/// scroll_offset` (the cursor) are both positions in the same visible-
-/// index space the virtual list addresses rows by, so no translation is
-/// needed beyond ordering the two endpoints.
 
 /// The Time column's text for `bytes` — the detected format's parsed
 /// timestamp, or blank for a tab with no detected format. Pure and
@@ -498,30 +586,12 @@ fn wrapped_height(
     widths: &TableWidths,
     message_width: f32,
 ) -> f32 {
-    let bytes = tab.file_reader.get_line(line);
-    let parts = tab
-        .display
-        .format
-        .as_ref()
-        .and_then(|p| p.parse_line(&bytes));
-    let count = fields
+    let count = displayed_values(tab, line, fields)
         .iter()
-        .map(|field| {
-            let text = if matches!(field.as_str(), "message" | "msg") {
-                String::from_utf8_lossy(row_message_bytes(tab, &bytes)).into_owned()
-            } else {
-                let value = parts
-                    .as_ref()
-                    .and_then(|p| crate::filters::resolve_field(field, p))
-                    .unwrap_or("");
-                if tab.display.show_keys {
-                    format!("{field}={value}")
-                } else {
-                    value.to_string()
-                }
-            };
+        .zip(fields)
+        .map(|(text, field)| {
             wrap_text(
-                &text,
+                text,
                 (column_width(field, widths, message_width) - 16.).max(8.),
             )
             .len()
@@ -531,7 +601,7 @@ fn wrapped_height(
     ROW_HEIGHT_PX * count as f32
 }
 #[allow(clippy::too_many_arguments)]
-fn line_row(
+fn line_row_with_selection(
     tab: &TabState,
     line_idx: usize,
     selected: bool,
@@ -540,14 +610,18 @@ fn line_row(
     widths: &TableWidths,
     fields: &[String],
     message_width: f32,
+    text_selection: (&crate::gui::text_selection::SharedDocument, usize),
 ) -> AnyElement {
     let palette = crate::gui::theme::GuiPalette::from_theme(theme);
     let rgb = |(r, g, b): (u8, u8, u8)| {
         gpui_kit::gpui::rgb((r as u32) << 16 | (g as u32) << 8 | b as u32)
     };
-    let owned_line_bytes = tab.file_reader.get_line(line_idx);
-    let bytes: &[u8] = &owned_line_bytes;
 
+    let filter_style = resolve_row_style(
+        &tab.file_reader.get_raw_line(line_idx),
+        tab.log_manager.get_filters(),
+        tab.log_manager.get_group_styles(),
+    );
     let number_cell = fixed_cell(
         widths.line_no,
         format!(
@@ -575,6 +649,7 @@ fn line_row(
     );
     let mut row = div()
         .flex()
+        .w_full()
         .h(px(if tab.display.wrap {
             wrapped_height(tab, line_idx, fields, widths, message_width)
         } else {
@@ -586,103 +661,45 @@ fn line_row(
     if tab.display.show_line_numbers {
         row = row.child(number_cell).child(column_spacer());
     }
-    let parts = tab
-        .display
-        .format
-        .as_ref()
-        .and_then(|parser| parser.parse_line(bytes));
-    for field in fields {
+    let values = displayed_values(tab, line_idx, fields);
+    for (column, field) in fields.iter().enumerate() {
         let width = column_width(field, widths, message_width);
-        let cell = match field.as_str() {
-            "timestamp" | "time" | "ts" => {
-                fixed_cell(width, row_time_text(tab, bytes).unwrap_or_default())
-            }
-            "level" | "lvl" if !selected => {
-                let level = classify_line_level(tab, bytes);
-                let key = match level {
-                    crate::parser::LogLevel::Trace => "trace",
-                    crate::parser::LogLevel::Debug => "debug",
-                    crate::parser::LogLevel::Info => "info",
-                    crate::parser::LogLevel::Notice => "notice",
-                    crate::parser::LogLevel::Warning => "warning",
-                    crate::parser::LogLevel::Error => "error",
-                    crate::parser::LogLevel::Fatal => "fatal",
-                    _ => "",
-                };
-                if tab.display.level_colors_disabled.contains(key) {
-                    fixed_cell(width, key.to_uppercase())
-                } else {
-                    level_cell(level, theme, width)
-                }
-            }
-            "message" | "msg" => {
-                let message = row_message_bytes(tab, bytes);
-                let content = if tab.display.wrap {
-                    let mut wrapped = div().flex().flex_col();
-                    for chunk in wrap_text(&String::from_utf8_lossy(message), (width - 16.).max(8.))
-                    {
-                        wrapped = wrapped.child(div().h(px(ROW_HEIGHT_PX)).child(message_cell(
-                            tab,
-                            chunk.as_bytes(),
-                            theme,
-                        )));
-                    }
-                    wrapped.into_any_element()
-                } else if selected {
-                    div()
-                        .child(String::from_utf8_lossy(message).into_owned())
-                        .into_any_element()
-                } else {
-                    message_cell(tab, message, theme)
-                };
-                div()
-                    .flex()
-                    .items_center()
-                    .flex_shrink_0()
-                    .w(px(width))
-                    .overflow_hidden()
-                    .child(content)
-                    .into_any_element()
-            }
-            _ => {
-                let value = if field == "source" {
-                    tab.file_reader
-                        .merged_entries()
-                        .and_then(|entries| entries.get(line_idx))
-                        .and_then(|entry| {
-                            tab.merged
-                                .as_ref()
-                                .and_then(|merged| merged.source_labels.get(entry.source_idx))
-                        })
-                        .map(String::as_str)
-                        .unwrap_or("")
-                } else {
-                    parts
-                        .as_ref()
-                        .and_then(|parts| crate::filters::resolve_field(field, parts))
-                        .unwrap_or("")
-                };
-                let value = if tab.display.show_keys && !value.is_empty() {
-                    format!("{field}={value}")
-                } else {
-                    value.to_string()
-                };
-                if tab.display.wrap {
-                    div()
-                        .flex_shrink_0()
-                        .w(px(width))
-                        .pl(px(8.))
-                        .line_height(px(ROW_HEIGHT_PX))
-                        .child(wrap_text(&value, (width - 16.).max(8.)).join("\n"))
-                        .into_any_element()
-                } else {
-                    fixed_cell(width, value)
-                }
-            }
-        };
+        let (document, position) = text_selection;
+        let cell = selectable_cell(
+            tab,
+            line_idx,
+            column,
+            position,
+            field,
+            &values[column],
+            width,
+            theme,
+            filter_style.as_ref(),
+            document,
+        );
         row = row.child(cell).child(column_spacer());
     }
 
+    if let Some(style) = &filter_style
+        && style.whole_line
+    {
+        if let Some(bg) = style.bg {
+            row = row.bg(bg);
+        }
+        if let Some(fg) = style.fg {
+            row = row.text_color(fg);
+        }
+    }
+    if filter_style
+        .as_ref()
+        .filter(|style| style.whole_line)
+        .and_then(|style| style.bg)
+        .is_none()
+        && tab.mark_manager.is_marked(line_idx)
+        && let Some(background) = color_to_gpui(theme.mark_bg)
+    {
+        row = row.bg(background);
+    }
     if selected {
         row = row
             .bg(rgb(palette.selected))
@@ -692,7 +709,7 @@ fn line_row(
         if is_cursor_row {
             row = row.font_weight(FontWeight::BOLD).underline();
         }
-    } else if is_cursor_row {
+    } else if is_cursor_row && !filter_style.as_ref().is_some_and(|style| style.whole_line) {
         // Outside an active selection, the cursor row still needs its
         // own visual indicator — a GUI table has no other way to show
         // "you are here" the way a terminal's native cursor does for the
@@ -705,6 +722,276 @@ fn line_row(
             .text_color(rgb(palette.foreground));
     }
     row.into_any_element()
+}
+
+/// Text used for both table rendering and displayed-row/selection copying.
+pub(crate) fn displayed_values(tab: &TabState, line: usize, fields: &[String]) -> Vec<String> {
+    let bytes = tab.file_reader.get_line(line);
+    let parts = tab
+        .display
+        .format
+        .as_ref()
+        .and_then(|p| p.parse_line(&bytes));
+    fields
+        .iter()
+        .map(|field| match field.as_str() {
+            "timestamp" | "time" | "ts" => row_time_text(tab, &bytes).unwrap_or_default(),
+            "level" | "lvl" => {
+                let level = classify_line_level(tab, &bytes);
+                match level {
+                    LogLevel::Unknown => String::new(),
+                    LogLevel::Warning => "WARN".into(),
+                    other => format!("{other:?}").to_uppercase(),
+                }
+            }
+            "message" | "msg" => {
+                raw_log_text(&String::from_utf8_lossy(row_message_bytes(tab, &bytes)))
+            }
+            _ => {
+                let value = if field == "source" {
+                    tab.file_reader
+                        .merged_entries()
+                        .and_then(|entries| entries.get(line))
+                        .and_then(|entry| {
+                            tab.merged
+                                .as_ref()
+                                .and_then(|m| m.source_labels.get(entry.source_idx))
+                        })
+                        .map(String::as_str)
+                        .unwrap_or("")
+                } else {
+                    parts
+                        .as_ref()
+                        .and_then(|parts| crate::filters::resolve_field(field, parts))
+                        .unwrap_or("")
+                };
+                if tab.display.show_keys && !value.is_empty() {
+                    format!("{field}={value}")
+                } else {
+                    value.into()
+                }
+            }
+        })
+        .collect()
+}
+pub(crate) fn raw_log_message(reader: &crate::ingestion::FileReader, line: usize) -> String {
+    String::from_utf8_lossy(&reader.get_raw_line(line)).into_owned()
+}
+
+pub(crate) fn raw_log_text(text: &str) -> String {
+    text.strip_suffix("\r\n")
+        .or_else(|| text.strip_suffix('\n'))
+        .unwrap_or(text)
+        .to_string()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn selectable_cell(
+    tab: &TabState,
+    line: usize,
+    column: usize,
+    position: usize,
+    field: &str,
+    text: &str,
+    width: f32,
+    theme: &TuiTheme,
+    filter_style: Option<&LineStyle>,
+    document: &crate::gui::text_selection::SharedDocument,
+) -> AnyElement {
+    use crate::gui::text_selection::{Endpoint, SelectionText};
+    use gpui_kit::gpui::{HighlightStyle, StyledText};
+    let mut highlights = Vec::new();
+    let spans = filter_style
+        .map(|style| cell_style_spans(&tab.file_reader.get_raw_line(line), text, style))
+        .unwrap_or_default();
+    if let Some(style) = filter_style
+        && !spans.is_empty()
+    {
+        for range in spans {
+            highlights.push((
+                range,
+                HighlightStyle {
+                    color: style.fg.map(Into::into),
+                    background_color: if style.whole_line {
+                        None
+                    } else {
+                        style.bg.map(Into::into)
+                    },
+                    ..Default::default()
+                },
+            ));
+        }
+    } else if matches!(field, "message" | "msg") {
+        use crate::shared::value_colors::*;
+        for (start, end, style) in collect_value_color_spans(text, &theme.value_colors) {
+            let colors = &theme.value_colors;
+            let color = match style {
+                VALUE_STYLE_HTTP_GET => colors.http_get,
+                VALUE_STYLE_HTTP_POST => colors.http_post,
+                VALUE_STYLE_HTTP_PUT => colors.http_put,
+                VALUE_STYLE_HTTP_DELETE => colors.http_delete,
+                VALUE_STYLE_HTTP_PATCH => colors.http_patch,
+                VALUE_STYLE_HTTP_OTHER => colors.http_other,
+                VALUE_STYLE_STATUS_2XX => colors.status_2xx,
+                VALUE_STYLE_STATUS_3XX => colors.status_3xx,
+                VALUE_STYLE_STATUS_4XX => colors.status_4xx,
+                VALUE_STYLE_STATUS_5XX => colors.status_5xx,
+                VALUE_STYLE_IP => colors.ip_address,
+                VALUE_STYLE_UUID => colors.uuid,
+                _ => theme.text,
+            };
+            highlights.push((
+                start..end,
+                HighlightStyle {
+                    color: color_to_gpui(color).map(Into::into),
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+    let selection = document.borrow().range(position, column, text.len());
+    let chunks = if tab.display.wrap {
+        wrap_text(text, (width - 16.).max(8.))
+    } else {
+        vec![text.into()]
+    };
+    let mut cell = div()
+        .flex_shrink_0()
+        .w(px(width))
+        .pl(px(8.))
+        .overflow_hidden()
+        .flex()
+        .flex_col();
+    let mut offset = 0;
+    for (chunk_index, chunk) in chunks.into_iter().enumerate() {
+        let start = offset;
+        let end = start + chunk.len();
+        let local = highlights
+            .iter()
+            .filter_map(|(range, style)| {
+                chunk_range(range, start, end).map(|range| (range, *style))
+            })
+            .collect::<Vec<_>>();
+        let selected = selection
+            .as_ref()
+            .and_then(|range| chunk_range(range, start, end));
+        let shared: gpui_kit::gpui::SharedString = chunk.into();
+        let mut styled = StyledText::new(shared.clone()).with_highlights(local);
+        // The text selection is a glyph highlight so it paints above filter backgrounds.
+        if let Some(range) = &selected {
+            let local = highlights
+                .iter()
+                .filter_map(|(r, style)| chunk_range(r, start, end).map(|range| (range, *style)))
+                .collect::<Vec<_>>();
+            // Split existing spans around selection and merge its background without losing foregrounds.
+            let mut boundaries = vec![0, shared.len(), range.start, range.end];
+            for (r, _) in &local {
+                boundaries.extend([r.start, r.end]);
+            }
+            boundaries.sort_unstable();
+            boundaries.dedup();
+            let merged = boundaries
+                .windows(2)
+                .filter(|p| p[0] < p[1])
+                .map(|p| {
+                    let mut style = local
+                        .iter()
+                        .find(|(r, _)| r.contains(&p[0]))
+                        .map(|(_, s)| *s)
+                        .unwrap_or_default();
+                    if range.contains(&p[0]) {
+                        style.background_color = color_to_gpui(theme.cursor_bg).map(Into::into);
+                    }
+                    (p[0]..p[1], style)
+                })
+                .collect::<Vec<_>>();
+            styled = StyledText::new(shared.clone()).with_highlights(merged);
+        }
+        let content = SelectionText {
+            text: shared,
+            styled,
+            document: document.clone(),
+            endpoint: Endpoint {
+                line,
+                row: position,
+                column,
+                offset: start,
+            },
+            order: ((position as u64) << 32) | ((column as u64) << 16) | chunk_index as u64,
+        };
+        let mut chunk_row = div()
+            .h(px(ROW_HEIGHT_PX))
+            .flex()
+            .items_center()
+            .whitespace_nowrap();
+        if !filter_style.is_some_and(|style| style.whole_line) && matches!(field, "level" | "lvl") {
+            let level = classify_line_level(tab, &tab.file_reader.get_line(line));
+            let key = format!("{level:?}").to_lowercase();
+            if !tab.display.level_colors_disabled.contains(&key) {
+                if let Some((bg, fg)) = level_pill_colors(&level, theme) {
+                    chunk_row = chunk_row.child(
+                        Tag::custom(bg.into(), fg.into(), bg.into())
+                            .small()
+                            .rounded(px(5.))
+                            .child(content),
+                    );
+                } else {
+                    chunk_row = chunk_row.child(content);
+                }
+            } else {
+                chunk_row = chunk_row.child(content);
+            }
+        } else {
+            chunk_row = chunk_row.child(content);
+        }
+        cell = cell.child(chunk_row);
+        offset = end;
+        if text.as_bytes().get(offset) == Some(&b'\n') {
+            offset += 1;
+        }
+    }
+    cell.into_any_element()
+}
+
+/// Convert an overlapping global span to chunk-local offsets. A span outside
+/// the chunk must be rejected before subtracting its start (unsigned offsets).
+fn chunk_range(
+    range: &std::ops::Range<usize>,
+    start: usize,
+    end: usize,
+) -> Option<std::ops::Range<usize>> {
+    let lo = range.start.max(start);
+    let hi = range.end.min(end);
+    if lo >= hi {
+        return None;
+    }
+    Some(lo.checked_sub(start)?..hi.checked_sub(start)?)
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn line_row(
+    tab: &TabState,
+    line_idx: usize,
+    selected: bool,
+    is_cursor_row: bool,
+    theme: &TuiTheme,
+    widths: &TableWidths,
+    fields: &[String],
+    message_width: f32,
+) -> AnyElement {
+    let document = Default::default();
+    line_row_with_selection(
+        tab,
+        line_idx,
+        selected,
+        is_cursor_row,
+        theme,
+        widths,
+        fields,
+        message_width,
+        (&document, line_idx),
+    )
 }
 
 /// A fixed-width, single-line text cell — `#`, Time, and the header row's
@@ -725,146 +1012,6 @@ fn fixed_cell(width: f32, text: impl Into<gpui_kit::gpui::SharedString>) -> AnyE
         .into_any_element()
 }
 
-/// The Level column: a small colored pill for a classified level, or a
-/// blank cell (`LogLevel::Unknown` — always true for an unstructured
-/// file, per `classify_line_level`).
-fn level_cell(level: LogLevel, theme: &TuiTheme, width: f32) -> AnyElement {
-    let mut cell = div()
-        .flex()
-        .flex_shrink_0()
-        .items_center()
-        .w(px(width))
-        .h(px(ROW_HEIGHT_PX))
-        .overflow_hidden();
-    if let Some((bg, fg)) = level_pill_colors(&level, theme) {
-        cell = cell.child(
-            Tag::custom(bg.into(), fg.into(), bg.into())
-                .small()
-                .rounded(px(5.))
-                .child(if level == LogLevel::Warning {
-                    "WARN".to_string()
-                } else {
-                    format!("{level:?}").to_uppercase()
-                }),
-        );
-    }
-    cell.into_any_element()
-}
-
-/// The Message column: match-only (or line-mode) highlight spans via
-/// `resolve_line_style`, same logic `styled_line_row` already had, just
-/// nested one cell deeper (`.flex_1()` instead of `.w_full()`) instead of
-/// being the whole row.
-fn message_cell(tab: &TabState, bytes: &[u8], theme: &TuiTheme) -> AnyElement {
-    match resolve_line_style(
-        bytes,
-        tab.log_manager.get_filters(),
-        tab.log_manager.get_group_styles(),
-    ) {
-        Some(style) => styled_message_cell(bytes, &style),
-        None => value_message_cell(bytes, theme),
-    }
-}
-
-/// Reuse the TUI's value detection and theme colors. Explicit filter
-/// highlights take precedence over these automatic syntax accents.
-fn value_message_cell(bytes: &[u8], theme: &TuiTheme) -> AnyElement {
-    use crate::shared::value_colors::*;
-    let text = String::from_utf8_lossy(bytes);
-    let spans = collect_value_color_spans(&text, &theme.value_colors);
-    let colors = &theme.value_colors;
-    let mut cell = div()
-        .flex()
-        .items_center()
-        .flex_1()
-        .min_w(px(0.))
-        .overflow_hidden()
-        .whitespace_nowrap();
-    let mut position = 0;
-    for (start, end, style) in spans {
-        if start > position {
-            cell = cell.child(text_segment(text[position..start].as_bytes(), None, None));
-        }
-        let color = match style {
-            VALUE_STYLE_HTTP_GET => colors.http_get,
-            VALUE_STYLE_HTTP_POST => colors.http_post,
-            VALUE_STYLE_HTTP_PUT => colors.http_put,
-            VALUE_STYLE_HTTP_DELETE => colors.http_delete,
-            VALUE_STYLE_HTTP_PATCH => colors.http_patch,
-            VALUE_STYLE_HTTP_OTHER => colors.http_other,
-            VALUE_STYLE_STATUS_2XX => colors.status_2xx,
-            VALUE_STYLE_STATUS_3XX => colors.status_3xx,
-            VALUE_STYLE_STATUS_4XX => colors.status_4xx,
-            VALUE_STYLE_STATUS_5XX => colors.status_5xx,
-            VALUE_STYLE_IP => colors.ip_address,
-            VALUE_STYLE_UUID => colors.uuid,
-            _ => theme.text,
-        };
-        cell = cell.child(text_segment(
-            text[start..end].as_bytes(),
-            color_to_gpui(color),
-            None,
-        ));
-        position = end;
-    }
-    if position < text.len() {
-        cell = cell.child(text_segment(text[position..].as_bytes(), None, None));
-    }
-    cell.into_any_element()
-}
-
-/// Splits a line into alternating plain/highlighted text segments so
-/// `style`'s color applies only to its spans — one span per match by
-/// default, or the whole line for a line-mode (`-l`) filter — leaving the
-/// rest of the line in the default text color. gpui has no single-element
-/// "highlight this substring" primitive, so this builds one child per
-/// segment instead of styling the cell as a whole.
-///
-/// `.flex()` is load-bearing here, not cosmetic: a plain `div()` defaults
-/// to block layout, which stacks children vertically one per line — an
-/// earlier version of this function omitted it, and every styled row
-/// rendered several line-heights tall and bled into the rows below it in
-/// the virtual list (each row's slot is a fixed `ROW_HEIGHT_PX`). `.flex()`
-/// (default direction row) lays the segments out inline instead; the
-/// explicit `.h()` + `.overflow_hidden()` are a second, independent
-/// safety net capping the cell at its slot height regardless.
-fn styled_message_cell(bytes: &[u8], style: &LineStyle) -> AnyElement {
-    let mut cell = div()
-        .flex_1()
-        .h(px(ROW_HEIGHT_PX))
-        .flex()
-        .items_center()
-        .overflow_hidden()
-        .whitespace_nowrap();
-    let mut pos = 0usize;
-    for &(start, end) in &style.spans {
-        if start > pos {
-            cell = cell.child(text_segment(&bytes[pos..start], None, None));
-        }
-        cell = cell.child(text_segment(&bytes[start..end], style.fg, style.bg));
-        pos = end.max(pos);
-    }
-    if pos < bytes.len() {
-        cell = cell.child(text_segment(&bytes[pos..], None, None));
-    }
-    cell.into_any_element()
-}
-
-/// One inline text segment of a `styled_message_cell` — `flex_shrink_0()`
-/// keeps it at its natural content width rather than letting flex squeeze
-/// (and potentially wrap) it to fit, since the cell clips overflow instead.
-fn text_segment(bytes: &[u8], fg: Option<Rgba>, bg: Option<Rgba>) -> AnyElement {
-    let text = String::from_utf8_lossy(bytes).into_owned();
-    let mut el = div().flex_shrink_0().whitespace_nowrap().child(text);
-    if let Some(bg) = bg {
-        el = el.bg(bg);
-    }
-    if let Some(fg) = fg {
-        el = el.text_color(fg);
-    }
-    el.into_any_element()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -872,6 +1019,16 @@ mod tests {
     use crate::gui::column_widths::ColumnWidths;
     use crate::ingestion::FileReader;
     use std::sync::Arc;
+
+    #[test]
+    fn highlight_spans_outside_wrapped_chunks_do_not_underflow() {
+        assert_eq!(chunk_range(&(0..4), 10, 20), None);
+        assert_eq!(chunk_range(&(25..30), 10, 20), None);
+        assert_eq!(chunk_range(&(10..10), 10, 20), None);
+        assert_eq!(chunk_range(&(0..15), 10, 20), Some(0..5));
+        assert_eq!(chunk_range(&(15..25), 10, 20), Some(5..10));
+        assert_eq!(chunk_range(&(0..30), 10, 20), Some(0..10));
+    }
 
     async fn tab() -> TabState {
         let reader = FileReader::from_bytes(b"a\nb\nc\nd\ne\n".to_vec());

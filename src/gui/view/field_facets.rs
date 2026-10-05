@@ -25,7 +25,24 @@ pub fn field_facets(
     search: Option<&Entity<InputState>>,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
-    let mut col = div().flex().flex_col().gap_1().child("Available Filters");
+    let mut col = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .pt_3()
+        .border_t_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
+                .child("Filter by field"),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Choose values to add include filters."),
+        );
     let query = search
         .map(|input| input.read(cx).value().to_lowercase())
         .unwrap_or_default();
@@ -38,6 +55,7 @@ pub fn field_facets(
                 .prefix(Icon::new(IconName::Search)),
         );
     }
+    let mut matches = 0;
     for name in &counts.names {
         let Some(values) = counts.counts.get(name) else {
             continue;
@@ -59,6 +77,7 @@ pub fn field_facets(
                 .get(name)
                 .copied()
                 .unwrap_or(name == "level" || name == "target" || name == "service");
+        matches += 1;
         col = col.child(facet_category(
             tab_idx,
             name,
@@ -67,6 +86,19 @@ pub fn field_facets(
             is_expanded,
             cx,
         ));
+    }
+    if matches == 0 {
+        col = col.child(
+            div()
+                .py_3()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(if query.is_empty() {
+                    "No structured fields found in these logs."
+                } else {
+                    "No matching fields or values. Try another search."
+                }),
+        );
     }
     col
 }
@@ -101,7 +133,13 @@ fn facet_category(
                 .cursor_pointer()
                 .overflow_hidden()
                 .child(Icon::new(chevron))
-                .child(field.to_string())
+                .child(div().flex_1().min_w(px(0.)).child(field.to_string()))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("{} values", values.len())),
+                )
                 .on_click(
                     cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
                         app.dispatch(Message::FacetToggled(field_owned.clone()), window, cx);
@@ -141,7 +179,11 @@ fn facet_value_row(
         .items_center()
         .justify_between()
         .gap_2()
-        .h(px(30.))
+        .min_h(px(32.))
+        .py_1()
+        .px_2()
+        .rounded(px(4.))
+        .when(checked, |d| d.bg(cx.theme().secondary))
         .text_color(cx.theme().muted_foreground)
         .overflow_hidden()
         .child(
@@ -149,7 +191,8 @@ fn facet_value_row(
                 .flex()
                 .items_center()
                 .gap_1()
-                .overflow_hidden()
+                .flex_1()
+                .min_w(px(0.))
                 .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(
                     match value.to_lowercase().as_str() {
                         "error" | "fatal" => cx.theme().danger,
@@ -176,9 +219,20 @@ fn facet_value_row(
                             }),
                         ),
                 )
-                .child(value.to_string()),
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(if value.is_empty() {
+                            "(empty)".to_string()
+                        } else {
+                            value.to_string()
+                        }),
+                ),
         )
-        .child(count.to_string())
+        .child(div().flex_shrink_0().text_xs().child(count.to_string()))
 }
 
 /// A deterministic color for a facet value's dot — these values have no
