@@ -9,6 +9,8 @@ use std::path::PathBuf;
 pub enum Message {
     MergeSource(crate::shared::TabId),
     DefaultMappingsLoaded(u64, std::collections::HashMap<String, String>),
+    BrowseDefaultMapping,
+    DefaultMappingPicked(u64, String, Result<Option<PathBuf>, String>),
     DockerListed(u64, Result<Vec<(String, String)>, String>),
     SourceLoaded(Result<Box<crate::shared::TabState>, String>),
     LogRowAction(crate::shared::TabId, usize, crate::gui::actions::Action),

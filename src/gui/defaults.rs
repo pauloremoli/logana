@@ -10,6 +10,35 @@ async fn mappings(db: &crate::db::Database) -> std::collections::HashMap<String,
     .await
 }
 impl App {
+    pub(super) fn prompt_default_mapping(
+        &self,
+        epoch: u64,
+        format: String,
+        cx: &mut Context<Self>,
+    ) {
+        let prompt = cx.prompt_for_paths(gpui_kit::gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose default filters".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let result = prompt
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| e.to_string()))
+                .map(|paths| paths.and_then(|mut paths| paths.pop()));
+            this.update_in(cx, |app, window, cx| {
+                app.dispatch(
+                    Message::DefaultMappingPicked(epoch, format, result),
+                    window,
+                    cx,
+                );
+            })
+            .ok();
+        })
+        .detach();
+    }
     pub(super) fn load_default_mappings(&self, epoch: u64, cx: &mut Context<Self>) {
         let db = self.state.db.clone();
         cx.spawn(async move |this, cx| {
@@ -138,6 +167,46 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::db::{AppSettingsStore, SettingsKey};
+    #[tokio::test]
+    async fn default_file_selection_updates_only_the_current_schema_editor() {
+        use crate::gui::{actions::Action, effect::Effect, message::Message, update::update};
+        let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let mut state = crate::gui::state::GuiState::new(db);
+        crate::gui::actions::open(&mut state, Action::DefaultFilters, None, None);
+        let epoch = state.editor.as_ref().unwrap().epoch;
+        update(
+            &mut state,
+            Message::DefaultMappingsLoaded(
+                epoch,
+                std::collections::HashMap::from([
+                    ("json".into(), "json-filters.json".into()),
+                    ("syslog".into(), "syslog-filters.json".into()),
+                ]),
+            ),
+        );
+        update(&mut state, Message::EditorText(0, "json".into()));
+        assert_eq!(
+            state.editor.as_ref().unwrap().values[1],
+            "json-filters.json"
+        );
+        assert!(
+            matches!(update(&mut state, Message::BrowseDefaultMapping), Effect::DefaultMappingDialog { format, .. } if format == "json")
+        );
+        update(
+            &mut state,
+            Message::DefaultMappingPicked(epoch, "json".into(), Ok(Some("chosen.json".into()))),
+        );
+        assert_eq!(state.editor.as_ref().unwrap().values[1], "chosen.json");
+        update(&mut state, Message::EditorText(0, "syslog".into()));
+        update(
+            &mut state,
+            Message::DefaultMappingPicked(epoch, "json".into(), Ok(Some("late.json".into()))),
+        );
+        assert_eq!(
+            state.editor.as_ref().unwrap().values[1],
+            "syslog-filters.json"
+        );
+    }
     #[tokio::test]
     async fn persisted_defaults_obey_existing_per_schema_config_precedence() {
         let db = crate::db::Database::in_memory().await.unwrap();

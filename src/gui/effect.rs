@@ -13,6 +13,10 @@ pub enum Effect {
     LoadDefaultMappings {
         epoch: u64,
     },
+    DefaultMappingDialog {
+        epoch: u64,
+        format: String,
+    },
     SaveDefaultMapping {
         format: String,
         path: String,

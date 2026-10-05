@@ -29,6 +29,32 @@ use std::sync::atomic::AtomicBool;
 /// `app.rs`) still needs to perform. Never touches a gpui type itself.
 pub fn update(state: &mut GuiState, message: Message) -> Effect {
     match message {
+        Message::BrowseDefaultMapping => match &state.editor {
+            Some(e) if e.action == crate::gui::actions::Action::DefaultFilters => {
+                Effect::DefaultMappingDialog {
+                    epoch: e.epoch,
+                    format: e.values[0].clone(),
+                }
+            }
+            _ => Effect::None,
+        },
+        Message::DefaultMappingPicked(epoch, format, result) => {
+            if let Some(e) = &mut state.editor
+                && e.action == crate::gui::actions::Action::DefaultFilters
+                && e.epoch == epoch
+                && e.values[0] == format
+            {
+                match result {
+                    Ok(Some(path)) => {
+                        e.values[1] = path.to_string_lossy().into_owned();
+                        e.error = None;
+                    }
+                    Ok(None) => {}
+                    Err(error) => e.error = Some(error),
+                }
+            }
+            Effect::None
+        }
         Message::MergeSource(id) => {
             if let Some(e) = &mut state.editor {
                 if let Some((_, on)) = e.merge_sources.iter_mut().find(|(source, _)| *source == id)

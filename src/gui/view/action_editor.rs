@@ -148,6 +148,25 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     "Default filter file (empty removes the mapping)",
                     cx,
                 ))
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(button(
+                            "default-filter-browse",
+                            "Choose file…",
+                            || Message::BrowseDefaultMapping,
+                            cx,
+                        ))
+                        .child(
+                            Button::new("default-filter-clear")
+                                .ghost()
+                                .label("Clear mapping")
+                                .on_click(cx.listener(|app, _, window, cx| {
+                                    app.dispatch(Message::EditorText(1, String::new()), window, cx)
+                                })),
+                        ),
+                )
                 .child("Mappings in config.json take precedence over saved settings.");
             let custom = crate::config::custom_schemas()
                 .iter()
@@ -162,9 +181,16 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             names.sort();
             names.dedup();
             for (index, name) in names.into_iter().enumerate() {
+                let path = e
+                    .conditions
+                    .iter()
+                    .find(|(schema, _)| schema == &name)
+                    .map(|(_, path)| path.as_str())
+                    .unwrap_or("Not configured");
                 body = body.child(
                     Button::new(("default-schema", index))
-                        .label(name.clone())
+                        .label(format!("{name} — {path}"))
+                        .tooltip(path.to_string())
                         .selected(e.values[0] == name)
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.dispatch(Message::EditorText(0, name.clone()), window, cx)
