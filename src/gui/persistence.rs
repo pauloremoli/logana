@@ -831,7 +831,9 @@ mod native_tests {
             window.render_frame(cx);
         })
         .unwrap();
-        let before = app.read_with(cx, |app, _| app.log_scroll.offset().y);
+        let before = app.read_with(cx, |app, _| {
+            app.log_scroll.scroll_px_offset_for_scrollbar().y
+        });
         for _ in 0..100 {
             let done = app.update(cx, |app, _| {
                 app.state.tabs[0].advance_filter_computation();
@@ -853,10 +855,10 @@ mod native_tests {
         })
         .unwrap();
         app.read_with(cx, |app, _| {
-            let after = app.log_scroll.offset().y;
+            let after = app.log_scroll.scroll_px_offset_for_scrollbar().y;
             assert_ne!(after, before);
             let cursor_top = px(500. * 30.) + after;
-            let viewport_height = app.log_scroll.bounds().size.height;
+            let viewport_height = app.log_scroll.viewport_bounds().size.height;
             assert!(cursor_top >= px(0.));
             assert!(cursor_top + px(30.) <= viewport_height + px(1.));
         });

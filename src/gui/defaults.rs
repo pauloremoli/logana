@@ -67,9 +67,8 @@ impl App {
         self.default_formats
             .retain(|id, _| self.state.tabs.iter().any(|t| t.id == *id));
         for tab in &self.state.tabs {
-            let name = tab
-                .display
-                .format
+            let parser = crate::gui::merge::source_parser(tab);
+            let name = parser
                 .as_deref()
                 .map(|f| f.name())
                 .unwrap_or("")

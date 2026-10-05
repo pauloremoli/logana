@@ -78,10 +78,8 @@ impl App {
                                     tab.filter.visible_indices.len().saturating_sub(1);
                             }
                             if index == app.state.active_tab && follow {
-                                app.log_scroll.scroll_to_item(
-                                    tab.scroll.scroll_offset,
-                                    gpui_kit::gpui::ScrollStrategy::Top,
-                                );
+                                app.log_scroll
+                                    .scroll_to_reveal_item(tab.scroll.scroll_offset);
                             }
                             if closed {
                                 tab.stream.watch = None;

@@ -27,6 +27,13 @@ pub(super) struct Operation {
     pub progress: Progress,
     pub picker: Option<Picker>,
     pub args: Option<crate::cli::Args>,
+    pub preview: Option<Preview>,
+}
+#[derive(Clone)]
+pub(super) struct Preview {
+    tab: crate::shared::TabId,
+    initial: Option<crate::db::FileContext>,
+    restored: Option<crate::db::FileContext>,
 }
 pub(super) struct Picker {
     pub tree: ArchiveTree,
@@ -120,6 +127,7 @@ pub(super) async fn install_loaded(
     control: Control,
     id: Option<u64>,
     activate: bool,
+    is_preview: bool,
     temp: Option<tempfile::NamedTempFile>,
     merged: Option<crate::shared::MergedState>,
 ) -> Result<(), String> {
@@ -128,6 +136,36 @@ pub(super) async fn install_loaded(
         .update(cx, |app, _| app.state.preferences.clone())
         .map_err(|e| e.to_string())?;
     let mut loaded = result?;
+    let preview = this
+        .update(cx, |app, _| {
+            id.and_then(|id| app.loading.operations.iter().find(|op| op.id == id))
+                .and_then(|op| op.preview.clone())
+        })
+        .map_err(|e| e.to_string())?;
+    if let Some(preview) = &preview {
+        let snapshot = this
+            .update(cx, |app, _| {
+                app.state
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == preview.tab)
+                    .map(|tab| {
+                        let current = tab.to_file_context();
+                        let context = if current == preview.initial {
+                            preview.restored.clone().or(current)
+                        } else {
+                            current
+                        };
+                        (tab.log_manager.clone(), context)
+                    })
+            })
+            .map_err(|e| e.to_string())?;
+        let Some((manager, context)) = snapshot else {
+            return Ok(());
+        };
+        loaded.log_manager = manager;
+        loaded.context = context;
+    }
     let options = this
         .update(cx, |app, _| {
             id.and_then(|id| app.loading.operations.iter().find(|op| op.id == id))
@@ -140,7 +178,9 @@ pub(super) async fn install_loaded(
                 })
         })
         .map_err(|e| e.to_string())?;
-    if let Some((args, background)) = &options {
+    if let Some((args, background)) = &options
+        && preview.is_none()
+    {
         loaded.log_manager = runtime::handle()
             .spawn(crate::gui::startup::apply_filters(
                 loaded.log_manager,
@@ -153,6 +193,7 @@ pub(super) async fn install_loaded(
             loaded.context = None;
         }
     }
+    let restored = loaded.context.clone();
     let provenance = temp
         .as_ref()
         .and_then(|_| loaded.log_manager.source_file().map(str::to_owned));
@@ -178,6 +219,9 @@ pub(super) async fn install_loaded(
                 tab.scroll.scroll_offset = tab.filter.visible_indices.len().saturating_sub(1);
                 tab.scroll.viewport_offset = tab.scroll.scroll_offset;
             }
+            if is_preview {
+                tab.stream.watch = None;
+            }
             // Ownership keeps completed extracted bytes alive for the tab's lifetime.
             tab.merged_temp = temp;
             worker_control.check().map_err(|e| e.to_string())?;
@@ -187,15 +231,115 @@ pub(super) async fn install_loaded(
         .map_err(|e| e.to_string())??;
     this.update_in(cx, |app, window, cx| {
         if current(app, id, &control) {
-            app.dispatch(
-                Message::TabPrepared(Box::new(result.0), result.1, activate),
-                window,
-                cx,
-            );
+            if let Some(preview) = &preview {
+                expand_preview(&mut app.state, preview, result.0, result.1);
+                if app
+                    .state
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.id == preview.tab && tab.filter.handle.is_some())
+                {
+                    app.context_scroll_pending.insert(preview.tab);
+                }
+                if let Some(op) =
+                    id.and_then(|id| app.loading.operations.iter_mut().find(|op| op.id == id))
+                {
+                    op.preview = None;
+                }
+                app.save_session_state();
+                cx.notify();
+            } else {
+                if is_preview {
+                    if let Some(op) =
+                        id.and_then(|id| app.loading.operations.iter_mut().find(|op| op.id == id))
+                    {
+                        op.preview = Some(Preview {
+                            tab: result.0.id,
+                            initial: result.0.to_file_context(),
+                            restored,
+                        });
+                        op.control.phase(
+                            "Loading",
+                            op.path.display().to_string(),
+                            std::fs::metadata(&op.path).ok().map(|m| m.len()),
+                        );
+                    }
+                }
+                app.dispatch(
+                    Message::TabPrepared(Box::new(result.0), result.1, activate),
+                    window,
+                    cx,
+                );
+            }
         }
     })
     .map_err(|e| e.to_string())?;
     control.check().map_err(|e| e.to_string())
+}
+
+fn expand_preview(
+    state: &mut crate::gui::state::GuiState,
+    preview: &Preview,
+    mut full: crate::shared::TabState,
+    widths: crate::gui::column_widths::ColumnWidths,
+) {
+    let Some(index) = state.tabs.iter().position(|tab| tab.id == preview.tab) else {
+        return;
+    };
+    let tab = &mut state.tabs[index];
+    let unchanged = tab.to_file_context() == preview.initial;
+    let anchor = if unchanged && preview.restored.is_some() {
+        preview
+            .restored
+            .as_ref()
+            .map(|context| context.scroll_offset)
+    } else {
+        tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset)
+    };
+    let refresh = tab.log_manager.get_filters() != full.log_manager.get_filters()
+        || tab.log_manager.get_group_styles() != full.log_manager.get_group_styles()
+        || tab.display.raw_mode != full.display.raw_mode
+        || tab.filter.enabled != full.filter.enabled
+        || tab.filter.show_marks_only
+        || tab.filter.highlight_mode;
+    if let Some(handle) = tab.filter.handle.take() {
+        handle.cancel.store(true, Ordering::Relaxed);
+    }
+    tab.file_reader = full.file_reader;
+    tab.display.format = full.display.format;
+    tab.continuation_map = full.continuation_map;
+    tab.year_map = full.year_map;
+    tab.stream.watch = full.stream.watch;
+    tab.invalidate_parse_cache();
+    if full.filter.handle.is_none() {
+        tab.filter.visible_indices = full.filter.visible_indices;
+    }
+    tab.filter.manager = full.filter.manager;
+    tab.filter.text_styles = full.filter.text_styles;
+    tab.filter.date_styles = full.filter.date_styles;
+    tab.filter.field_styles = full.filter.field_styles;
+    tab.filter.match_counts = full.filter.match_counts;
+    tab.filter.pre_collapse_visible = full.filter.pre_collapse_visible;
+    tab.filter.cached_scan = None;
+    tab.filter.saved_view = None;
+    tab.filter.handle = full.filter.handle.take();
+    if refresh {
+        tab.begin_filter_refresh();
+    }
+    if let Some(handle) = &mut tab.filter.handle {
+        handle.scroll_anchor = anchor;
+    } else {
+        tab.restore_scroll_to_line(anchor);
+    }
+    if let Some(query) = tab.search.query.get_pattern().map(str::to_owned) {
+        if let Some(handle) = full.search.handle.take() {
+            handle.cancel.store(true, Ordering::Relaxed);
+        }
+        tab.begin_search(&query, true, false);
+    }
+    if index == state.active_tab {
+        state.column_widths = widths;
+    }
 }
 impl App {
     pub(super) fn picker_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
@@ -260,6 +404,13 @@ impl App {
         self.loading.last_poll = Instant::now();
         let mut changed = false;
         for op in &mut self.loading.operations {
+            if op
+                .preview
+                .as_ref()
+                .is_some_and(|preview| !self.state.tabs.iter().any(|tab| tab.id == preview.tab))
+            {
+                op.control.cancel.store(true, Ordering::Relaxed);
+            }
             if op.rx.has_changed().unwrap_or(false) {
                 op.progress = op.rx.borrow_and_update().clone();
                 changed = true;
@@ -277,6 +428,12 @@ impl App {
     ) {
         if let Some(index) = self.loading.operations.iter().position(|op| op.id == id) {
             let op = self.loading.operations.remove(index);
+            // A preview is not completed output; discard it on cancellation/failure.
+            if let Some(preview) = op.preview
+                && let Some(index) = self.state.tabs.iter().position(|tab| tab.id == preview.tab)
+            {
+                crate::gui::update::update(&mut self.state, Message::TabClosed(index));
+            }
             self.state.notify(if op.control.cancelled() {
                 StatusMessage::Info("Operation canceled. Completed files kept.".into())
             } else {
@@ -317,6 +474,7 @@ impl App {
         args: Option<crate::cli::Args>,
         cx: &mut Context<Self>,
     ) {
+        let preview_enabled = !args.as_ref().is_some_and(|args| args.tail);
         self.loading.next_id += 1;
         let id = self.loading.next_id;
         let (control, rx) = Control::new();
@@ -328,42 +486,82 @@ impl App {
             progress: Progress::default(),
             picker: None,
             args,
+            preview: None,
         });
         let gate = self.loading.gate.clone();
         let db = self.state.db.clone();
         let origin = self.state.active_tab().map(|tab| tab.id);
         cx.spawn(async move |this, cx| {
             let worker_control = control.clone();
-            let result = runtime::handle()
-                .spawn(async move {
-                    let _permit = permit(gate, &worker_control).await?;
-                    worker_control.check().map_err(|e| e.to_string())?;
-                    if crate::ingestion::detect_archive_type(&path.to_string_lossy()).is_some() {
-                        worker_control.phase("Reading archive", path.display().to_string(), None);
-                        let control = worker_control.clone();
-                        let tree = tokio::task::spawn_blocking(move || {
-                            crate::ingestion::archive_tree::list_archive_tree_controlled(
-                                &path.to_string_lossy(),
-                                control,
-                            )
-                        })
-                        .await
-                        .map_err(|e| e.to_string())??;
-                        Ok::<_, String>((Some(tree), None, Some(_permit)))
-                    } else {
-                        let loaded = crate::gui::update::load_file_controlled(
-                            path,
-                            db,
-                            worker_control,
-                            None,
+            let (preview_tx, preview_rx) = tokio::sync::oneshot::channel();
+            let worker = runtime::handle().spawn(async move {
+                let _permit = permit(gate, &worker_control).await?;
+                worker_control.check().map_err(|e| e.to_string())?;
+                if crate::ingestion::detect_archive_type(&path.to_string_lossy()).is_some() {
+                    worker_control.phase("Reading archive", path.display().to_string(), None);
+                    let control = worker_control.clone();
+                    let tree = tokio::task::spawn_blocking(move || {
+                        crate::ingestion::archive_tree::list_archive_tree_controlled(
+                            &path.to_string_lossy(),
+                            control,
                         )
-                        .await?;
-                        Ok((None, Some(loaded), Some(_permit)))
-                    }
-                })
-                .await
-                .map_err(|e| e.to_string())
-                .and_then(|r| r);
+                    })
+                    .await
+                    .map_err(|e| e.to_string())??;
+                    Ok::<_, String>((Some(tree), None, Some(_permit)))
+                } else {
+                    let preview = if preview_enabled {
+                        crate::gui::update::load_file_preview(&path, db.clone(), &worker_control)
+                            .await
+                            .unwrap_or(None)
+                    } else {
+                        None
+                    };
+                    let _ = preview_tx.send(preview);
+                    let loaded =
+                        crate::gui::update::load_file_controlled(path, db, worker_control, None)
+                            .await?;
+                    Ok((None, Some(loaded), Some(_permit)))
+                }
+            });
+            if let Ok(Some(mut preview)) = preview_rx.await {
+                let startup_filters = this
+                    .update(cx, |app, _| {
+                        app.loading
+                            .operations
+                            .iter()
+                            .find(|op| op.id == id)
+                            .and_then(|op| op.args.as_ref())
+                            .is_some_and(crate::gui::startup::has_filters)
+                    })
+                    .unwrap_or(false);
+                if startup_filters {
+                    preview.context = None;
+                }
+                let preview = if startup_filters {
+                    Ok(preview)
+                } else {
+                    crate::gui::persistence::prepare_loaded(&this, cx, Ok(preview), &control).await
+                };
+                if let Ok(preview) = preview {
+                    let activate = this
+                        .update(cx, |app, _| app.state.active_tab().map(|t| t.id) == origin)
+                        .unwrap_or(false);
+                    let _ = install_loaded(
+                        &this,
+                        cx,
+                        Ok(preview),
+                        control.clone(),
+                        Some(id),
+                        activate,
+                        true,
+                        None,
+                        None,
+                    )
+                    .await;
+                }
+            }
+            let result = worker.await.map_err(|e| e.to_string()).and_then(|r| r);
             match result {
                 Ok((Some(tree), _, _permit)) => {
                     this.update(cx, |app, cx| {
@@ -393,7 +591,16 @@ impl App {
                                 .is_some_and(crate::gui::startup::has_filters)
                         })
                         .unwrap_or(false);
-                    let result = if startup_filters {
+                    let has_preview = this
+                        .update(cx, |app, _| {
+                            app.loading
+                                .operations
+                                .iter()
+                                .find(|op| op.id == id)
+                                .is_some_and(|op| op.preview.is_some())
+                        })
+                        .unwrap_or(false);
+                    let result = if startup_filters || has_preview {
                         Ok(loaded)
                     } else {
                         crate::gui::persistence::prepare_loaded(&this, cx, Ok(loaded), &control)
@@ -404,9 +611,18 @@ impl App {
                             app.state.active_tab().map(|tab| tab.id) == origin
                         })
                         .unwrap_or(false);
-                    let result =
-                        install_loaded(&this, cx, result, control, Some(id), activate, None, None)
-                            .await;
+                    let result = install_loaded(
+                        &this,
+                        cx,
+                        result,
+                        control,
+                        Some(id),
+                        activate,
+                        false,
+                        None,
+                        None,
+                    )
+                    .await;
                     this.update(cx, |app, cx| app.finish_loading(id, result, cx))
                         .ok();
                 }
@@ -630,6 +846,7 @@ impl App {
                             control.clone(),
                             Some(id),
                             false,
+                            false,
                             temp,
                             None,
                         )
@@ -679,6 +896,256 @@ pub(super) fn provenance(path: &std::path::Path, tree: &ArchiveTree, id: NodeId)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn first_chunk_is_bounded_complete_and_available_without_full_index() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), b"first chunk line\n".repeat(128 * 1024)).unwrap();
+        let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let (control, _) = Control::new();
+        let start = Instant::now();
+        let loaded = crate::gui::update::load_file_preview(file.path(), db.clone(), &control)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(loaded.reader.total_len() <= 1024 * 1024);
+        assert!(loaded.reader.total_len() < file.as_file().metadata().unwrap().len() as usize);
+        assert_eq!(&*loaded.reader.get_line(0), b"first chunk line");
+        assert_eq!(
+            &*loaded.reader.get_line(loaded.reader.line_count() - 1),
+            b"first chunk line"
+        );
+        eprintln!(
+            "first chunk prepared for publication in {:?}",
+            start.elapsed()
+        );
+        control.cancel.store(true, Ordering::Relaxed);
+        assert!(
+            crate::gui::update::load_file_preview(file.path(), db, &control)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn expanding_preview_keeps_identity_edits_cursor_and_active_tab() {
+        let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let manager = crate::db::LogManager::new(db.clone(), Some("/preview.log".into())).await;
+        let mut tab = crate::shared::TabState::new(
+            crate::ingestion::FileReader::from_bytes(b"a\nb\n".to_vec()),
+            manager.clone(),
+            "preview".into(),
+        );
+        let preview = Preview {
+            tab: tab.id,
+            initial: tab.to_file_context(),
+            restored: None,
+        };
+        tab.scroll.scroll_offset = 1;
+        tab.mark_manager.mark(1);
+        tab.display.wrap = false;
+        let mut state = crate::gui::state::GuiState::new(db);
+        state.tabs.push(tab);
+        state.tabs.push(crate::shared::TabState::new(
+            crate::ingestion::FileReader::from_bytes(b"other\n".to_vec()),
+            manager.clone(),
+            "other".into(),
+        ));
+        state.active_tab = 1;
+        let full = crate::shared::TabState::new(
+            crate::ingestion::FileReader::from_bytes(b"a\nb\nc\n".to_vec()),
+            manager,
+            "preview".into(),
+        );
+        expand_preview(&mut state, &preview, full, Default::default());
+        assert_eq!(state.tabs.len(), 2);
+        assert_eq!(state.active_tab, 1);
+        assert_eq!(state.tabs[0].id, preview.tab);
+        assert_eq!(state.tabs[0].file_reader.line_count(), 3);
+        assert_eq!(state.tabs[0].scroll.scroll_offset, 1);
+        assert_eq!(state.tabs[0].mark_manager.get_indices(), vec![1]);
+        assert!(!state.tabs[0].display.wrap);
+        let full = crate::shared::TabState::new(
+            crate::ingestion::FileReader::from_bytes(b"a\nb\nc\n".to_vec()),
+            state.tabs[0].log_manager.clone(),
+            "preview".into(),
+        );
+        state.tabs.remove(0);
+        state.active_tab = 0;
+        expand_preview(&mut state, &preview, full, Default::default());
+        assert_eq!(state.tabs.len(), 1, "closed previews must not reappear");
+    }
+
+    #[tokio::test]
+    async fn filtered_preview_stays_visible_until_full_filter_chunks_arrive() {
+        let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let mut manager = crate::db::LogManager::new(db.clone(), Some("/preview.log".into())).await;
+        manager
+            .add_filter_with_color(
+                "keep".into(),
+                crate::filters::FilterType::Include,
+                Default::default(),
+            )
+            .await;
+        let tab = crate::shared::TabState::new(
+            crate::ingestion::FileReader::from_bytes(b"keep\nskip\nkeep\n".to_vec()),
+            manager.clone(),
+            "preview".into(),
+        );
+        let preview = Preview {
+            tab: tab.id,
+            initial: tab.to_file_context(),
+            restored: None,
+        };
+        let mut state = crate::gui::state::GuiState::new(db);
+        state.tabs.push(tab);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut full = crate::shared::TabState::new_controlled(
+            crate::ingestion::FileReader::from_bytes(b"keep\nskip\nkeep\nskip\nkeep\n".to_vec()),
+            manager,
+            "preview".into(),
+            &cancel,
+        )
+        .unwrap();
+        full.prepare_visible_controlled(&cancel);
+        assert!(full.filter.handle.is_some());
+        expand_preview(&mut state, &preview, full, Default::default());
+        assert_eq!(
+            state.tabs[0]
+                .filter
+                .visible_indices
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state.tabs[0].filter.handle.is_some() {
+                state.tabs[0].advance_filter_computation();
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            state.tabs[0]
+                .filter
+                .visible_indices
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![0, 2, 4]
+        );
+        assert_eq!(state.tabs[0].filter.match_counts, vec![3]);
+    }
+
+    #[tokio::test]
+    async fn saved_cursor_beyond_preview_is_restored_when_full_index_arrives() {
+        let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let manager = crate::db::LogManager::new(db.clone(), Some("/preview.log".into())).await;
+        let tab = crate::shared::TabState::new(
+            crate::ingestion::FileReader::from_bytes(b"row\nrow\n".to_vec()),
+            manager.clone(),
+            "preview".into(),
+        );
+        let mut restored = tab.to_file_context().unwrap();
+        restored.scroll_offset = 8;
+        let preview = Preview {
+            tab: tab.id,
+            initial: tab.to_file_context(),
+            restored: Some(restored),
+        };
+        let mut state = crate::gui::state::GuiState::new(db);
+        state.tabs.push(tab);
+        let full = crate::shared::TabState::new(
+            crate::ingestion::FileReader::from_bytes(b"row\n".repeat(10)),
+            manager,
+            "preview".into(),
+        );
+        expand_preview(&mut state, &preview, full, Default::default());
+        assert_eq!(state.tabs[0].scroll.scroll_offset, 8);
+    }
+
+    /// Run with LOGANA_PERF_FILE=/path/to/log cargo test --release
+    /// --no-default-features --features gui --lib profile_large_file_preparation
+    /// -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires a local large log; measures real GUI loading without a window"]
+    async fn profile_large_file_preparation() {
+        let path = PathBuf::from(std::env::var("LOGANA_PERF_FILE").expect("LOGANA_PERF_FILE"));
+        for run in 1..=3 {
+            let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
+            let (control, _) = Control::new();
+            let start = Instant::now();
+            if let Some(preview) =
+                crate::gui::update::load_file_preview(&path, db.clone(), &control)
+                    .await
+                    .unwrap()
+            {
+                let (mut tab, widths) = crate::gui::update::prepare_tab(
+                    preview,
+                    &crate::gui::persistence::Preferences::default(),
+                    &control.cancel,
+                )
+                .unwrap();
+                let fields = tab.collect_field_names();
+                let state = gpui_kit::gpui::ListState::new(
+                    0,
+                    gpui_kit::gpui::ListAlignment::Top,
+                    gpui_kit::gpui::px(60.),
+                );
+                crate::gui::view::log_pane::prepare_list(
+                    &mut None,
+                    &state,
+                    &tab,
+                    &widths.into(),
+                    &fields,
+                    800.,
+                );
+                eprintln!(
+                    "run {run}: first chunk ready={:?}, lines={}",
+                    start.elapsed(),
+                    tab.file_reader.line_count()
+                );
+            }
+            let start = Instant::now();
+            let loaded =
+                crate::gui::update::load_file_controlled(path.clone(), db, control.clone(), None)
+                    .await
+                    .unwrap();
+            let index = start.elapsed();
+            let start = Instant::now();
+            let (mut tab, widths) = crate::gui::update::prepare_tab(
+                loaded,
+                &crate::gui::persistence::Preferences::default(),
+                &control.cancel,
+            )
+            .unwrap();
+            eprintln!(
+                "run {run}: index={index:?}, prepare={:?}, lines={}, format={:?}",
+                start.elapsed(),
+                tab.file_reader.line_count(),
+                tab.display.format.as_ref().map(|p| p.name())
+            );
+            let start = Instant::now();
+            let fields = tab.collect_field_names();
+            let state = gpui_kit::gpui::ListState::new(
+                0,
+                gpui_kit::gpui::ListAlignment::Top,
+                gpui_kit::gpui::px(60.),
+            );
+            crate::gui::view::log_pane::prepare_list(
+                &mut None,
+                &state,
+                &tab,
+                &widths.into(),
+                &fields,
+                800.,
+            );
+            eprintln!(
+                "run {run}: wrapped layout={:?}, rows={}",
+                start.elapsed(),
+                state.item_count()
+            );
+        }
+    }
     #[tokio::test]
     async fn queued_operations_can_cancel_without_waiting_for_active_worker() {
         let gate = Arc::new(Semaphore::new(1));
@@ -769,6 +1236,7 @@ mod ui_tests {
         let (control, rx) = Control::new();
         control.phase("Loading", "large.log".into(), Some(1_000_000));
         control.bytes(500_000);
+        let manager = runtime::handle().block_on(crate::db::LogManager::new(db.clone(), None));
         let theme = crate::theme::Theme::default();
         let (handle, app) = cx.update(|cx| {
             gpui_kit::init(cx);
@@ -781,6 +1249,23 @@ mod ui_tests {
         cx.update_window(handle.into(), |_, window, cx| {
             app.update(cx, |app, cx| {
                 let progress = rx.borrow().clone();
+                app.state.tabs.push(crate::shared::TabState::new(
+                    crate::ingestion::FileReader::from_bytes(b"completed\n".to_vec()),
+                    manager.clone(),
+                    "completed".into(),
+                ));
+                let tab = crate::shared::TabState::new(
+                    crate::ingestion::FileReader::from_bytes(b"first chunk\n".to_vec()),
+                    manager,
+                    "large.log".into(),
+                );
+                let preview = Preview {
+                    tab: tab.id,
+                    initial: tab.to_file_context(),
+                    restored: None,
+                };
+                app.state.tabs.push(tab);
+                app.state.active_tab = 1;
                 app.loading.operations.push(Operation {
                     id: 7,
                     path: "large.log".into(),
@@ -789,6 +1274,7 @@ mod ui_tests {
                     control: control.clone(),
                     picker: None,
                     args: None,
+                    preview: Some(preview),
                 });
                 cx.notify();
             });
@@ -802,6 +1288,8 @@ mod ui_tests {
             assert!(control.cancelled());
             app.update(cx, |app, cx| {
                 app.finish_loading(7, Ok(()), cx);
+                assert_eq!(app.state.tabs.len(), 1);
+                assert_eq!(app.state.tabs[0].title, "completed");
                 let root = crate::ingestion::archive::test_helpers::make_zip(&[
                     ("one.log", b"one\n"),
                     ("two.log", b"two\n"),
@@ -822,6 +1310,7 @@ mod ui_tests {
                     progress: Progress::default(),
                     picker: Some(Picker::new(tree)),
                     args: None,
+                    preview: None,
                 });
                 app.loading.selected_picker = Some(8);
                 cx.notify();

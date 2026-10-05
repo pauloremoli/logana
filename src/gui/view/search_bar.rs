@@ -200,7 +200,11 @@ fn live_indicator(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
     };
     let tab_idx = state.active_tab;
     let live = is_tab_live(tab);
-    let has_watch = tab.stream.watch.is_some();
+    let has_watch = tab.stream.watch.is_some()
+        || tab
+            .merged
+            .as_ref()
+            .is_some_and(|m| !m.stopped && !m.source_tab_ids.is_empty());
     let dot_color = if live {
         cx.theme().success
     } else {

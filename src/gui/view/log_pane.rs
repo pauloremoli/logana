@@ -6,7 +6,7 @@ use crate::gui::message::Message;
 use crate::parser::LogLevel;
 use crate::shared::TabState;
 use crate::theme::Theme as TuiTheme;
-use gpui_kit::base::{TestSupportExt, VirtualListScrollHandle, v_virtual_list};
+use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::menu::ContextMenuExt;
@@ -14,12 +14,11 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{
-    AnyElement, Context, DragMoveEvent, Empty, FontWeight, MouseButton, Size, div, px,
+    AnyElement, Context, DragMoveEvent, Empty, FontWeight, ListOffset, ListState, MouseButton, div,
+    list, px,
 };
-use std::rc::Rc;
 
-/// Fixed row height, used for every visible log line — the virtual list
-/// only needs height to lay out rows; width is inferred from content.
+/// Minimum row height and initial height hint for offscreen rows.
 /// 30px deliberately leaves a few
 /// pixels of breathing room above/below each row's text.
 const ROW_HEIGHT_PX: f32 = 30.0;
@@ -31,8 +30,7 @@ const RESIZE_HANDLE_WIDTH_PX: f32 = 6.0;
 /// Renders the log table: a fixed header row (`#`/Time/Level/Message,
 /// with draggable resize handles between the fixed-width columns) above
 /// the currently-visible window of `tab.filter.visible_indices`, via
-/// gpui-component's virtual-scrolling list — no manual viewport math or
-/// rendered-line cap, unlike the discarded iced prototype. `log_scroll`
+/// GPUI's list, which measures wrapped rows only in the viewport. `log_scroll`
 /// is `App`'s own handle (not reachable through `cx`, which derefs to
 /// gpui's own `App` platform type, not ours), passed in so `App::
 /// sync_log_scroll` can drive the same handle after every dispatch.
@@ -54,15 +52,15 @@ pub struct LayoutCache {
         bool,
         Vec<Vec<usize>>,
     ),
-    sizes: Rc<Vec<Size<gpui_kit::gpui::Pixels>>>,
 }
-pub fn item_sizes(
+pub fn prepare_list(
     cache: &mut Option<LayoutCache>,
+    state: &ListState,
     tab: &TabState,
     widths: &TableWidths,
     fields: &[String],
     message_width: f32,
-) -> Rc<Vec<Size<gpui_kit::gpui::Pixels>>> {
+) {
     let columns = visible_columns(tab, fields);
     let total = tab.filter.visible_indices.len();
     let key = (
@@ -86,42 +84,36 @@ pub fn item_sizes(
     if let Some(cache) = cache
         && cache.key == key
     {
-        return cache.sizes.clone();
+        return;
     }
-    let sizes: Rc<Vec<Size<gpui_kit::gpui::Pixels>>> = Rc::new(
-        tab.filter
-            .visible_indices
-            .iter()
-            .map(|line| {
-                let log_height = if tab.display.wrap {
-                    wrapped_height(tab, line, &columns, widths, message_width)
-                } else {
-                    ROW_HEIGHT_PX
-                };
-                let notes = tab
-                    .comment_manager
-                    .get()
-                    .iter()
-                    .filter(|note| note.line_indices.contains(&line))
-                    .count();
-                Size::new(px(0.), px(log_height + notes as f32 * ANNOTATION_HEIGHT_PX))
-            })
-            .collect(),
-    );
-    *cache = Some(LayoutCache {
-        key,
-        sizes: sizes.clone(),
+    let same_rows = cache.as_ref().is_some_and(|cache| {
+        cache.key.0 == key.0
+            && cache.key.1 == key.1
+            && cache.key.2 == key.2
+            && cache.key.3 == key.3
+            && cache.key.4 == key.4
     });
-    sizes
+    if same_rows {
+        // GPUI retains height hints and the scroll anchor, measuring only drawn rows.
+        state.remeasure();
+    } else {
+        // Size the scrollbar from currently available visible rows. Publishing
+        // another chunk changes `total`, so its height is updated on this frame.
+        state.reset_with_uniform_height(total, px(ROW_HEIGHT_PX));
+        state.scroll_to(ListOffset {
+            item_ix: tab.scroll.scroll_offset.min(total.saturating_sub(1)),
+            offset_in_item: px(0.),
+        });
+    }
+    *cache = Some(LayoutCache { key });
 }
 #[allow(clippy::too_many_arguments)]
 pub fn log_pane(
     tab_idx: usize,
     tab: &TabState,
     widths: &TableWidths,
-    log_scroll: &VirtualListScrollHandle,
+    log_scroll: &ListState,
     fields: &[String],
-    item_sizes: Rc<Vec<Size<gpui_kit::gpui::Pixels>>>,
     message_width: f32,
     text_handle: gpui_kit::base::TextSelectionHandle,
     text_document: crate::gui::text_selection::SharedDocument,
@@ -165,27 +157,20 @@ pub fn log_pane(
                     document: text_document,
                     handle: text_handle,
                     scroll: log_scroll.clone(),
-                    child: v_virtual_list(
-                        view,
-                        "log-pane",
-                        item_sizes,
-                        move |app: &mut App, range, _window, cx| {
+                    child: list(
+                        log_scroll.clone(),
+                        move |pos, _window, cx| view.update(cx, |app, cx| {
                             let Some(tab) = app.state.tabs.get(tab_idx) else {
-                                return Vec::new();
+                                return Empty.into_any_element();
                             };
                             let selection = app
                                 .state
                                 .log_selection
                                 .filter(|(id, _, _)| *id == tab.id)
                                 .map(|(_, a, b)| (a.min(b), a.max(b), b));
-                            range
-                                .filter_map(|pos| {
-                                    tab.filter
-                                        .visible_indices
-                                        .get_opt(pos)
-                                        .map(|line_idx| (pos, line_idx))
-                                })
-                                .map(|(pos, line_idx)| {
+                            let Some(line_idx) = tab.filter.visible_indices.get_opt(pos) else {
+                                return Empty.into_any_element();
+                            };
                                     let output = raw_log_message(&tab.file_reader, line_idx);
                                     let displayed =
                                         displayed_values(tab, line_idx, &row_fields).join("\t");
@@ -323,11 +308,8 @@ pub fn log_pane(
                                             )
                                         })
                                         .into_any_element()
-                                })
-                                .collect()
-                        },
+                        }),
                     )
-                    .track_scroll(log_scroll)
                     .size_full()
                     .into_any_element(),
                 },
@@ -1054,6 +1036,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preparing_wrapped_layout_does_not_parse_offscreen_rows() {
+        #[derive(Debug)]
+        struct NoEagerParsing;
+        impl crate::parser::LogFormatParser for NoEagerParsing {
+            fn parse_line<'a>(&self, _: &'a [u8]) -> Option<crate::parser::DisplayParts<'a>> {
+                panic!("list preparation must not parse rows");
+            }
+            fn collect_field_names(&self, _: &[&[u8]]) -> Vec<String> {
+                vec!["message".into()]
+            }
+            fn name(&self) -> &str {
+                "no-eager-parsing"
+            }
+        }
+        let mut tab = tab().await;
+        tab.file_reader = FileReader::from_bytes(b"row\n".repeat(1000));
+        tab.filter.visible_indices = crate::shared::VisibleLines::All(1000);
+        tab.display.format = Some(Arc::new(NoEagerParsing));
+        tab.display.wrap = true;
+        let state = ListState::new(0, gpui_kit::gpui::ListAlignment::Top, px(0.));
+        prepare_list(
+            &mut None,
+            &state,
+            &tab,
+            &ColumnWidths::default().into(),
+            &["message".into()],
+            400.,
+        );
+        assert_eq!(state.item_count(), 1000);
+    }
+
+    #[tokio::test]
+    async fn scrollbar_extent_tracks_loaded_visible_rows() {
+        let mut tab = tab().await;
+        let mut cache = None;
+        let widths = TableWidths::from(ColumnWidths::default());
+        let state = ListState::new(0, gpui_kit::gpui::ListAlignment::Top, px(0.));
+        for count in [100, 1000, 250, 0] {
+            tab.file_reader = FileReader::from_bytes(b"row\n".repeat(count));
+            tab.filter.visible_indices = crate::shared::VisibleLines::All(count);
+            prepare_list(&mut cache, &state, &tab, &widths, &[], 600.);
+            assert_eq!(state.item_count(), count);
+            assert_eq!(
+                state.max_offset_for_scrollbar().y,
+                px(count as f32 * ROW_HEIGHT_PX)
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn resizing_recalculates_wrapped_row_heights() {
         let mut tab = tab().await;
         tab.file_reader =
@@ -1062,9 +1094,11 @@ mod tests {
         tab.display.wrap = true;
         let mut cache = None;
         let widths = TableWidths::from(ColumnWidths::default());
-        let narrow = item_sizes(&mut cache, &tab, &widths, &[], 600.);
-        let wide = item_sizes(&mut cache, &tab, &widths, &[], 1000.);
-        assert!(!Rc::ptr_eq(&narrow, &wide));
+        let state = ListState::new(0, gpui_kit::gpui::ListAlignment::Top, px(0.));
+        prepare_list(&mut cache, &state, &tab, &widths, &[], 600.);
+        let narrow_key = cache.as_ref().unwrap().key.clone();
+        prepare_list(&mut cache, &state, &tab, &widths, &[], 1000.);
+        assert_ne!(narrow_key, cache.as_ref().unwrap().key);
         assert_eq!(
             wrapped_height(&tab, 0, &["message".into()], &widths, 600.),
             ROW_HEIGHT_PX * 2.
@@ -1073,8 +1107,13 @@ mod tests {
             wrapped_height(&tab, 0, &["message".into()], &widths, 1000.),
             ROW_HEIGHT_PX
         );
-        let same = item_sizes(&mut cache, &tab, &widths, &[], 1000.);
-        assert!(Rc::ptr_eq(&wide, &same));
+        state.scroll_to(ListOffset {
+            item_ix: 2,
+            offset_in_item: px(3.),
+        });
+        prepare_list(&mut cache, &state, &tab, &widths, &[], 1000.);
+        assert_eq!(state.logical_scroll_top().item_ix, 2);
+        assert_eq!(state.logical_scroll_top().offset_in_item, px(3.));
     }
 
     /// A tab backed by `Storage::Paged` (how real large files load), to

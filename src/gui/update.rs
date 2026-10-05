@@ -29,6 +29,16 @@ use std::sync::atomic::AtomicBool;
 /// `app.rs`) still needs to perform. Never touches a gpui type itself.
 pub fn update(state: &mut GuiState, message: Message) -> Effect {
     match message {
+        Message::MergeSource(id) => {
+            if let Some(e) = &mut state.editor {
+                if let Some((_, on)) = e.merge_sources.iter_mut().find(|(source, _)| *source == id)
+                {
+                    *on = !*on;
+                    e.error = None;
+                }
+            }
+            Effect::None
+        }
         Message::DefaultMappingsLoaded(epoch, mappings) => {
             if let Some(editor) = &mut state.editor {
                 if editor.action == crate::gui::actions::Action::DefaultFilters
@@ -205,6 +215,10 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
         }
         Message::EditorAll(on) => {
             if let Some(e) = &mut state.editor {
+                for (_, enabled) in &mut e.merge_sources {
+                    *enabled = on;
+                }
+                e.error = None;
                 for (_, enabled) in &mut e.fields {
                     *enabled = on;
                 }
@@ -1117,7 +1131,12 @@ fn apply_stream_command(tab: &mut TabState, command: &Commands) -> bool {
     match command {
         Commands::Pause => tab.stream.paused = true,
         Commands::Resume => tab.stream.paused = false,
-        Commands::Stop => tab.stream.watch = None,
+        Commands::Stop => {
+            tab.stream.watch = None;
+            if let Some(merged) = &mut tab.merged {
+                merged.stopped = true;
+            }
+        }
         Commands::Tail => {
             tab.stream.tail_mode = !tab.stream.tail_mode;
             if tab.stream.tail_mode {
@@ -1196,7 +1215,12 @@ fn set_collapse_continuations(tab: &mut TabState, enabled: bool) {
 /// Whether `tab` is actively tailing its source: a watcher is running and
 /// hasn't been paused. Feeds the search bar's "Live" dot/toggle.
 pub fn is_tab_live(tab: &TabState) -> bool {
-    tab.stream.watch.is_some() && !tab.stream.paused
+    (tab.stream.watch.is_some()
+        || tab
+            .merged
+            .as_ref()
+            .is_some_and(|m| !m.stopped && !m.source_tab_ids.is_empty()))
+        && !tab.stream.paused
 }
 
 fn close_tab_at(state: &mut GuiState, idx: usize) {
@@ -1325,6 +1349,41 @@ fn force_recompute(tab: &mut TabState) {
 pub async fn load_file(path: PathBuf, db: Arc<Database>) -> Result<FileLoaded, String> {
     let (control, _rx) = crate::ingestion::archive_job::Control::new();
     load_file_controlled(path, db, control, None).await
+}
+
+/// Same bounded head preview used by the TUI; never waits for the full index.
+pub(super) async fn load_file_preview(
+    path: &std::path::Path,
+    db: Arc<Database>,
+    control: &crate::ingestion::archive_job::Control,
+) -> Result<Option<FileLoaded>, String> {
+    const PREVIEW_BYTES: u64 = 1024 * 1024;
+    control.check().map_err(|e| e.to_string())?;
+    let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() <= PREVIEW_BYTES {
+        return Ok(None);
+    }
+    let source = path.to_string_lossy().into_owned();
+    let reader = FileReader::from_file_head(&source, PREVIEW_BYTES)
+        .await
+        .map_err(|e| e.to_string())?;
+    if reader.line_count() == 0 {
+        return Ok(None);
+    }
+    use crate::db::FileContextStore;
+    let context = db
+        .load_file_context(&source)
+        .await
+        .map_err(|e| e.to_string())?;
+    let manager = LogManager::new(db, Some(source.clone())).await;
+    let (_, rx) = tokio::sync::watch::channel(());
+    Ok(Some(FileLoaded {
+        path,
+        context,
+        reader,
+        log_manager: manager,
+        watch: crate::shared::watch_state_from_file(rx, source),
+    }))
 }
 
 pub(super) async fn load_file_controlled(

@@ -4,7 +4,7 @@ use crate::gui::{
     state::{NavPage, StatusMessage},
 };
 use gpui_kit::component::{ActiveTheme, button::Button};
-use gpui_kit::gpui::{Context, ScrollStrategy, div, prelude::*, px};
+use gpui_kit::gpui::{Context, div, prelude::*, px};
 
 pub fn jump(app: &mut App, line: usize) -> bool {
     let Some(tab) = app.state.active_tab_mut() else {
@@ -20,7 +20,7 @@ pub fn jump(app: &mut App, line: usize) -> bool {
     let source = tab.id;
     app.state.log_selection = Some((source, row, row));
     app.state.nav_page = NavPage::Logs;
-    app.log_scroll.scroll_to_item(row, ScrollStrategy::Top);
+    app.log_scroll.scroll_to_reveal_item(row);
     true
 }
 

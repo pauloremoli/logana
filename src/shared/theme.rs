@@ -10,6 +10,7 @@ use std::str::FromStr;
 use crate::commands::auto_complete::fuzzy_match;
 
 static BUNDLED_THEMES: &[(&str, &str)] = &[
+    ("alucard", include_str!("../../themes/alucard.json")),
     ("atomic", include_str!("../../themes/atomic.json")),
     (
         "catppuccin-latte",

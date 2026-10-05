@@ -286,6 +286,12 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                             .on_click(cx.listener(move |app, _, _, cx| app.picker_open(id, cx))),
                     )
                     .child(
+                        Button::new("archive-extract-merge")
+                            .label("Extract and merge")
+                            .disabled(selected < 2)
+                            .on_click(cx.listener(move |app, _, _, cx| app.merge_archive(id, cx))),
+                    )
+                    .child(
                         Button::new("archive-cancel")
                             .label("Cancel")
                             .on_click(cx.listener(move |app, _, _, cx| app.cancel_loading(id, cx))),

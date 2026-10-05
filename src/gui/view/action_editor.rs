@@ -80,6 +80,43 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 body = body.child(format!("{keys} — {label}"));
             }
         }
+        Action::Merge => {
+            body = body.child("Select at least two files. Lines without timestamps are omitted; closed sources keep their last content.")
+                .child(text(app, 0, "Search open files", cx))
+                .child(div().flex().gap_2()
+                    .child(button("merge-all", "Select all", || Message::EditorAll(true), cx))
+                    .child(button("merge-none", "Select none", || Message::EditorAll(false), cx)));
+            for (index, (id, on)) in e.merge_sources.iter().enumerate() {
+                let Some(tab) = app.state.tabs.iter().find(|tab| tab.id == *id) else {
+                    continue;
+                };
+                if !tab
+                    .title
+                    .to_lowercase()
+                    .contains(&e.values[0].to_lowercase())
+                {
+                    continue;
+                }
+                let id = *id;
+                let label = if crate::gui::merge::source_parser(tab).is_none() {
+                    format!("{} — no timestamp format", tab.title)
+                } else {
+                    tab.title.clone()
+                };
+                body = body.child(
+                    Checkbox::new(("merge-source", index))
+                        .label(label)
+                        .checked(*on)
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.dispatch(Message::MergeSource(id), window, cx)
+                        })),
+                );
+            }
+            body = body.child(format!(
+                "{} selected",
+                e.merge_sources.iter().filter(|(_, on)| *on).count()
+            ));
+        }
         Action::SwitchFile => {
             body = body.child(text(app, 0, "Search open files", cx));
             for (index, tab) in app.state.tabs.iter().enumerate() {
@@ -730,6 +767,8 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     .primary()
                     .label(if matches!(e.action, Action::FileInfo | Action::View) {
                         "Done"
+                    } else if e.action == Action::Merge {
+                        "Merge files"
                     } else if e.action == Action::Filter {
                         if e.edit_id.is_some() {
                             "Save filter"
@@ -741,6 +780,8 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     })
                     .disabled(
                         app.state.palette.pending()
+                            || (e.action == Action::Merge
+                                && e.merge_sources.iter().filter(|(_, on)| *on).count() < 2)
                             || (e.action == Action::Appearance && e.values[0].is_empty()),
                     )
                     .on_click(cx.listener(|app, _, window, cx| {

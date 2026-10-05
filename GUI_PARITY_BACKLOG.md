@@ -50,7 +50,12 @@ GUI-only builds must not acquire terminal dependencies.
 - [x] Keyboard navigation, tab shortcuts, bookmark shortcuts, file switching,
       and discoverable shortcut help. Shared bindings drive native GUI navigation.
 - [x] Default-filter configuration and automatic schema-default loading.
-- [ ] Merge-file picker and merged-source lifecycle.
+- [x] Merge-file picker and merged-source lifecycle: searchable open-tab selection,
+      select all/none, timestamp ordering and source labels, archive extraction
+      directly into a merged tab, cancelable background builds, live source
+      growth/replacement, pause/stop, retained closed sources, and bookmark/note
+      remapping. Regression checks cover stable IDs, same-count replacements,
+      newly detected formats, search refresh, and native picker controls.
 - [x] Archive-entry picker and extraction workflow: virtualized entry selection,
       lazy nested expansion, bounded streaming extraction, persistent progress,
       and cancellation that retains completed tabs. File indexing and display
@@ -74,3 +79,9 @@ asynchronous filtering.
 Loading validation covers native picker/progress/cancel controls, all supported
 archive formats, nested and corrupt entries, retained completed output, queued
 cancellation, and cancellation after progress while indexing a 2 GiB sparse file.
+
+Merge validation: four merge regression tests and the native picker control test
+pass. Facet counting uses GPUI's background executor, with a native regression
+covering completion on its deterministic scheduler. The full GUI-feature library
+suite passes: 3,808 tests, zero failures, three ignored. The GUI-only build also
+passes without terminal features.

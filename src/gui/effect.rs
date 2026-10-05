@@ -8,6 +8,7 @@ use std::path::PathBuf;
 /// the discarded prototype, but as a plain, directly-testable enum.
 #[derive(Debug)]
 pub enum Effect {
+    MergeTabs(Vec<crate::shared::TabId>),
     ConfigureMcp(Option<u16>),
     LoadDefaultMappings {
         epoch: u64,

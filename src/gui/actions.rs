@@ -14,6 +14,7 @@ pub enum Action {
     ToggleBookmarks,
     Help,
     SwitchFile,
+    Merge,
     EnableMcp,
     DisableMcp,
     DefaultFilters,
@@ -66,6 +67,13 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::Merge,
+        label: "Merge files",
+        description: "Combine open logs in timestamp order",
+        aliases: "merge combine",
+        tab: false,
+    },
     Descriptor {
         action: Action::Help,
         label: "Keyboard shortcuts",
@@ -391,6 +399,7 @@ pub struct Editor {
     pub error: Option<String>,
     pub edit_id: Option<usize>,
     pub group_name_locked: bool,
+    pub merge_sources: Vec<(TabId, bool)>,
 }
 pub fn open(
     state: &mut GuiState,
@@ -531,6 +540,7 @@ pub fn open(
         error: None,
         edit_id,
         group_name_locked: false,
+        merge_sources: Vec::new(),
     };
     if let Some(tab) = state.active_tab_mut() {
         if action == Action::Columns {
@@ -670,6 +680,9 @@ pub fn open(
             ));
         }
     }
+    if action == Action::Merge {
+        e.merge_sources = state.tabs.iter().map(|tab| (tab.id, false)).collect();
+    }
     if action == Action::Otel {
         e.values[0] = "4318".into();
         e.values[1] = "http".into();
@@ -763,6 +776,28 @@ pub fn apply(state: &mut GuiState) -> Effect {
     };
     if state.palette.pending() {
         return Effect::None;
+    }
+    if e.action == Action::Merge {
+        let ids: Vec<_> = e
+            .merge_sources
+            .iter()
+            .filter(|(_, on)| *on)
+            .map(|(id, _)| *id)
+            .collect();
+        if ids.len() < 2 {
+            state.editor.as_mut().unwrap().error = Some("Select at least two open files.".into());
+            return Effect::None;
+        }
+        if ids
+            .iter()
+            .any(|id| !state.tabs.iter().any(|tab| tab.id == *id))
+        {
+            state.editor.as_mut().unwrap().error =
+                Some("A selected source was closed. Reopen the merge picker.".into());
+            return Effect::None;
+        }
+        close(state, true);
+        return Effect::MergeTabs(ids);
     }
     if let Some(source) = e.source {
         let Some(idx) = state.tabs.iter().position(|t| t.id == source) else {

@@ -215,6 +215,30 @@ pub struct FileReader {
 }
 
 impl FileReader {
+    /// Whether two readers share the same immutable content snapshot.
+    #[cfg(feature = "gui")]
+    pub(crate) fn same_snapshot(&self, other: &Self) -> bool {
+        if !Arc::ptr_eq(&self.line_starts, &other.line_starts) {
+            return false;
+        }
+        match (&self.storage, &other.storage) {
+            (Storage::File { data: a, .. }, Storage::File { data: b, .. })
+            | (Storage::Bytes(a), Storage::Bytes(b)) => Arc::ptr_eq(a, b),
+            (Storage::Paged { paged: a, .. }, Storage::Paged { paged: b, .. }) => Arc::ptr_eq(a, b),
+            (
+                Storage::Merged {
+                    entries: a,
+                    sources: sa,
+                },
+                Storage::Merged {
+                    entries: b,
+                    sources: sb,
+                },
+            ) => Arc::ptr_eq(a, b) && Arc::ptr_eq(sa, sb),
+            _ => false,
+        }
+    }
+
     pub fn new(path: &str) -> io::Result<Self> {
         let canonical_path = Arc::new(
             std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path)),
@@ -1404,6 +1428,15 @@ impl FileReader {
         LineBytes::Borrowed(&self.storage.as_bytes()[self.line_byte_range(idx)])
     }
 
+    /// Check normalized line emptiness from the index, without fetching a page.
+    pub fn line_is_empty(&self, idx: usize) -> bool {
+        if let Storage::Merged { entries, sources } = &self.storage {
+            let entry = &entries[idx];
+            return sources[entry.source_idx].line_is_empty(entry.line_idx);
+        }
+        self.line_byte_range(idx).is_empty()
+    }
+
     /// Original text for GUI copying, without its terminating LF or CRLF.
     /// Parsing and filtering continue to use the normalized `get_line` view.
     #[cfg(feature = "gui")]
@@ -2211,6 +2244,42 @@ mod tests {
 
     fn make(content: &[u8]) -> FileReader {
         FileReader::from_bytes(content.to_vec())
+    }
+
+    #[test]
+    fn indexed_emptiness_matches_line_bytes_for_all_storage_kinds() {
+        for content in [
+            b"".as_slice(),
+            b"\ntext\n\n \nlast",
+            b"text\n\n",
+            b"\r\n\x1b[31m\x1b[0m\nend\r\n",
+        ] {
+            let reader = make(content);
+            for idx in 0..reader.line_count() {
+                assert_eq!(reader.line_is_empty(idx), reader.get_line(idx).is_empty());
+            }
+        }
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(b"\ntext\n\n \nlast").unwrap();
+        let canonical = Arc::new(file.path().canonicalize().unwrap());
+        let paged = FileReader::try_new_paged(file.path().to_str().unwrap(), canonical)
+            .unwrap()
+            .unwrap();
+        assert!(paged.is_paged());
+        let entries = (0..paged.line_count())
+            .rev()
+            .map(|line_idx| MergedEntry {
+                source_idx: 0,
+                line_idx,
+                sort_key: [0; 23],
+            })
+            .collect();
+        let merged = FileReader::from_merged(Arc::new(entries), Arc::new(vec![paged.clone()]));
+        for reader in [&paged, &merged] {
+            for idx in 0..reader.line_count() {
+                assert_eq!(reader.line_is_empty(idx), reader.get_line(idx).is_empty());
+            }
+        }
     }
 
     #[test]

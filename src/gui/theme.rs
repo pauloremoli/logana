@@ -268,7 +268,6 @@ fn theme_set_json(theme: &TuiTheme) -> String {
             "secondary.active.background",
             "list.active.background",
             "table.active.background",
-            "selection.background",
         ],
         palette.selected,
     );
@@ -308,6 +307,7 @@ fn theme_set_json(theme: &TuiTheme) -> String {
         &["primary.active.background"],
         blend(palette.primary, state_tint, 0.20),
     );
+    set(&["selection.background"], to_rgb(theme.visual_select_bg));
     set(&["switch.thumb.background"], palette.foreground);
     for (name, color) in [
         ("red", theme.error_fg),
@@ -393,6 +393,25 @@ mod tests {
         let json = theme_set_json(&theme);
         assert!(json.contains("\"background\":\"#000000\""));
         assert!(json.contains("\"foreground\":\"#ffffff\""));
+    }
+
+    #[test]
+    fn dracula_and_alucard_use_semantic_selection_tokens() {
+        for (name, background, selection, comment) in [
+            ("dracula", (40, 42, 54), (68, 71, 90), (98, 114, 164)),
+            ("alucard", (255, 251, 235), (207, 207, 222), (108, 102, 75)),
+        ] {
+            assert!(TuiTheme::list_available_themes().contains(&name.to_string()));
+            let theme = TuiTheme::from_file(format!("{name}.json")).unwrap();
+            assert_eq!(to_rgb(theme.root_bg), background);
+            assert_eq!(to_rgb(theme.cursor_bg), comment);
+            assert_eq!(to_rgb(theme.comment_fg), comment);
+            let tokens: serde_json::Value = serde_json::from_str(&theme_set_json(&theme)).unwrap();
+            assert!(tokens.to_string().contains(&format!(
+                "\"selection.background\":\"#{:02x}{:02x}{:02x}\"",
+                selection.0, selection.1, selection.2
+            )));
+        }
     }
 
     #[test]

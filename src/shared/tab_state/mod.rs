@@ -1156,7 +1156,7 @@ impl TabState {
         // case for log files) return All without allocating a Vec at all.
         let first_empty = (0..n)
             .take_while(|_| !cancel.load(Ordering::Relaxed))
-            .find(|&i| self.file_reader.get_line(i).is_empty());
+            .find(|&i| self.file_reader.line_is_empty(i));
         let Some(first_empty) = first_empty else {
             return VisibleLines::All(n);
         };
@@ -1166,7 +1166,7 @@ impl TabState {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
-            if i != first_empty && !self.file_reader.get_line(i).is_empty() {
+            if i != first_empty && !self.file_reader.line_is_empty(i) {
                 vis.push(i);
             }
         }

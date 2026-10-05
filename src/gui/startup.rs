@@ -177,6 +177,7 @@ impl App {
             progress: Progress::default(),
             picker: None,
             args: Some(args),
+            preview: None,
         });
         (id, control)
     }
@@ -263,6 +264,7 @@ impl App {
                         control,
                         Some(id),
                         true,
+                        false,
                         temp,
                         Some(merged),
                     )

@@ -6,13 +6,13 @@ use crate::gui::runtime;
 use crate::gui::state::GuiState;
 use crate::gui::update;
 use crate::theme::Theme as TuiTheme;
-use gpui_kit::base::VirtualListScrollHandle;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{
-    Context, Entity, FocusHandle, Focusable, KeyDownEvent, ScrollStrategy, Window, actions, div,
+    Context, Entity, FocusHandle, Focusable, KeyDownEvent, ListAlignment, ListState, Window,
+    actions, div,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,7 +25,7 @@ pub struct App {
     pub state: GuiState,
     pub(super) loading: crate::gui::loading::Loading,
     pub(super) persistence: crate::gui::persistence::Persistence,
-    context_scroll_pending: std::collections::HashSet<crate::shared::TabId>,
+    pub(super) context_scroll_pending: std::collections::HashSet<crate::shared::TabId>,
     pub(super) mcp: crate::gui::mcp::Server,
     pub(super) default_formats: std::collections::HashMap<crate::shared::TabId, String>,
     pub(super) stream_pending: std::collections::HashSet<crate::shared::TabId>,
@@ -39,7 +39,7 @@ pub struct App {
     editor_epoch: u64,
     editor_synced: Vec<String>,
     filter_edits: tokio::sync::mpsc::UnboundedSender<crate::gui::effect::FilterEdit>,
-    pub log_scroll: VirtualListScrollHandle,
+    pub log_scroll: ListState,
     pub field_widths: Option<crate::gui::column_widths::FieldWidthCache>,
     notification_timer_revision: u64,
     pub table_layout: Option<crate::gui::view::log_pane::LayoutCache>,
@@ -111,6 +111,7 @@ impl App {
                     .update_in(cx, |app, _window, cx| {
                         app.poll_loading(cx);
                         app.poll_streams(cx);
+                        app.poll_merges(cx);
                         app.poll_persistence(cx);
                         app.poll_defaults(cx);
                         app.poll_mcp(cx);
@@ -196,7 +197,7 @@ impl App {
             editor_colors: Vec::new(),
             editor_epoch: 0,
             editor_synced: Vec::new(),
-            log_scroll: VirtualListScrollHandle::new(),
+            log_scroll: ListState::new(0, ListAlignment::Top, gpui_kit::gpui::px(60.)),
             table_layout: None,
             notification_timer_revision: 0,
             field_widths: None,
@@ -395,15 +396,16 @@ impl App {
     }
 
     /// Scroll only for explicit navigation, preserving mouse scrolling during edits.
-    fn sync_log_scroll(&self) {
+    pub(super) fn sync_log_scroll(&self) {
         if let Some(tab) = self.state.active_tab() {
             self.log_scroll
-                .scroll_to_item(tab.scroll.scroll_offset, ScrollStrategy::Top);
+                .scroll_to_reveal_item(tab.scroll.scroll_offset);
         }
     }
 
     fn apply_effect(&mut self, effect: Effect, _window: &mut Window, cx: &mut Context<Self>) {
         match effect {
+            Effect::MergeTabs(ids) => self.merge_tabs(ids, cx),
             Effect::ConfigureMcp(port) => self.configure_mcp(port, cx),
             Effect::LoadDefaultMappings { epoch } => self.load_default_mappings(epoch, cx),
             Effect::SaveDefaultMapping { format, path } => {
@@ -703,17 +705,16 @@ impl App {
                 counts: None,
             },
         );
+        let counts = cx.background_executor().spawn(async move {
+            crate::shared::TabState::field_value_counts_for(&reader, parser.as_deref())
+        });
         cx.spawn(async move |this, cx| {
-            let result = runtime::handle()
-                .spawn_blocking(move || {
-                    crate::shared::TabState::field_value_counts_for(&reader, parser.as_deref())
-                })
-                .await;
+            let result = counts.await;
             this.update(cx, |app, cx| {
                 if let Some(entry) = app.facet_counts.get_mut(&id)
                     && entry.key == key
                 {
-                    entry.counts = Some(result.unwrap_or_default());
+                    entry.counts = Some(result);
                     cx.notify();
                 }
             })

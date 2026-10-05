@@ -3,8 +3,8 @@ use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc};
 
 use crate::shared::{TabId, TabState};
 use gpui_kit::base::{
-    ScrollbarHandle, TextSelectionContentKey, TextSelectionEvent, TextSelectionHandle,
-    TextSelectionRegistration, TextSelectionRun,
+    TextSelectionContentKey, TextSelectionEvent, TextSelectionHandle, TextSelectionRegistration,
+    TextSelectionRun,
 };
 use gpui_kit::gpui::{
     self, AnyElement, App, Bounds, Element, ElementId, GlobalElementId, HitboxBehavior,
@@ -217,7 +217,7 @@ pub struct TableSelection {
     pub child: AnyElement,
     pub document: SharedDocument,
     pub handle: TextSelectionHandle,
-    pub scroll: gpui_kit::base::VirtualListScrollHandle,
+    pub scroll: gpui_kit::gpui::ListState,
 }
 impl IntoElement for TableSelection {
     type Element = Self;
@@ -258,10 +258,11 @@ impl Element for TableSelection {
             doc.runs.clear();
         }
         self.child.prepaint(window, cx);
-        self.document.borrow_mut().origin = bounds.origin + self.scroll.offset();
+        self.document.borrow_mut().origin =
+            bounds.origin + self.scroll.scroll_px_offset_for_scrollbar();
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let registration = TextSelectionRegistration::new(hitbox.clone(), bounds)
-            .with_scroll_offset(self.scroll.offset())
+            .with_scroll_offset(self.scroll.scroll_px_offset_for_scrollbar())
             .with_text_bounds(
                 self.document
                     .borrow()
@@ -297,14 +298,16 @@ impl Element for TableSelection {
             if delta.y == 0. || delta.x.abs() > delta.y.abs() {
                 return;
             }
-            let mut offset = scroll.offset();
+            let mut offset = scroll.scroll_px_offset_for_scrollbar();
             offset.y = gpui::px(half_page_offset(
                 f32::from(offset.y),
-                f32::from(scroll.bounds().size.height),
-                f32::from(scroll.content_size().height),
+                f32::from(scroll.viewport_bounds().size.height),
+                f32::from(
+                    scroll.viewport_bounds().size.height + scroll.max_offset_for_scrollbar().y,
+                ),
                 delta.y,
             ));
-            scroll.set_offset(offset);
+            scroll.set_offset_from_scrollbar(offset);
             cx.notify(view);
             cx.stop_propagation();
         });

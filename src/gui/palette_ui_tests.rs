@@ -546,7 +546,10 @@ fn log_drag_autoscroll_keeps_virtualized_anchor_and_stops_on_release(cx: &mut Te
             });
             window.render_frame(cx);
             let from = app.read(cx).text_document.borrow().test_point(0, 0, 2);
-            let outside = point(from.x, app.read(cx).log_scroll.bounds().bottom() + px(40.));
+            let outside = point(
+                from.x,
+                app.read(cx).log_scroll.viewport_bounds().bottom() + px(40.),
+            );
             window.dispatch_event(
                 MouseMoveEvent {
                     position: from,
@@ -578,7 +581,10 @@ fn log_drag_autoscroll_keeps_virtualized_anchor_and_stops_on_release(cx: &mut Te
                 cx,
             );
             window.render_frame(cx);
-            (outside, app.read(cx).log_scroll.offset().y)
+            (
+                outside,
+                app.read(cx).log_scroll.scroll_px_offset_for_scrollbar().y,
+            )
         })
         .unwrap();
     cx.run_until_parked();
@@ -592,7 +598,7 @@ fn log_drag_autoscroll_keeps_virtualized_anchor_and_stops_on_release(cx: &mut Te
     let released_scroll = cx
         .update_window(handle.into(), |_, window, cx| {
             assert!(
-                app.read(cx).log_scroll.offset().y < initial_scroll,
+                app.read(cx).log_scroll.scroll_px_offset_for_scrollbar().y < initial_scroll,
                 "dragging beyond the viewport must scroll"
             );
             window.dispatch_event(
@@ -613,7 +619,7 @@ fn log_drag_autoscroll_keeps_virtualized_anchor_and_stops_on_release(cx: &mut Te
             drop(document);
             let selected = gpui_kit::base::TextSelection::selected_text(window, cx);
             assert!(selected.starts_with("w 000\nrow 001\n"));
-            app.read(cx).log_scroll.offset().y
+            app.read(cx).log_scroll.scroll_px_offset_for_scrollbar().y
         })
         .unwrap();
     for _ in 0..8 {
@@ -623,10 +629,11 @@ fn log_drag_autoscroll_keeps_virtualized_anchor_and_stops_on_release(cx: &mut Te
     }
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(app.read(cx).log_scroll.offset().y, released_scroll);
-        app.read(cx)
-            .log_scroll
-            .scroll_to_item(100, gpui::ScrollStrategy::Top);
+        assert_eq!(
+            app.read(cx).log_scroll.scroll_px_offset_for_scrollbar().y,
+            released_scroll
+        );
+        app.read(cx).log_scroll.scroll_to_reveal_item(100);
         window.render_frame(cx);
         assert!(
             gpui_kit::base::TextSelection::selected_text(window, cx)
@@ -855,4 +862,95 @@ fn annotations_are_visible_in_logs_and_bookmark_their_lines(cx: &mut TestAppCont
         );
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn merge_picker_has_native_selection_search_and_cancel_controls(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        let manager = runtime::handle().block_on(crate::db::LogManager::new(
+            app.read(cx).state.db.clone(),
+            None,
+        ));
+        app.update(cx, |app, cx| {
+            app.state.tabs.push(crate::shared::TabState::new(
+                crate::ingestion::FileReader::from_bytes(
+                    b"Jan  1 00:00:01 host tag: second\n".to_vec(),
+                ),
+                manager,
+                "second.log".into(),
+            ));
+            cx.notify();
+        });
+        window.render_frame(cx);
+        window.click("merge-files", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().action,
+            super::actions::Action::Merge
+        );
+        window.click("merge-all", cx);
+        assert!(
+            app.read(cx)
+                .state
+                .editor
+                .as_ref()
+                .unwrap()
+                .merge_sources
+                .iter()
+                .all(|(_, on)| *on)
+        );
+        window.click("merge-none", cx);
+        assert!(
+            app.read(cx)
+                .state
+                .editor
+                .as_ref()
+                .unwrap()
+                .merge_sources
+                .iter()
+                .all(|(_, on)| !*on)
+        );
+        window.click(("merge-source", 0usize), cx);
+        assert!(app.read(cx).state.editor.as_ref().unwrap().merge_sources[0].1);
+        window.click(("editor-input", 0usize), cx);
+        window.input("second", cx);
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("merge-source", 0usize)).is_none());
+        assert!(window.try_find(("merge-source", 1usize)).is_some());
+        window.press("escape", cx);
+        assert!(app.read(cx).state.editor.is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn facet_counts_finish_on_the_gpui_executor(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.state.tabs[0].display.format = Some(Arc::from(
+                crate::parser::find_builtin_parser("json").unwrap(),
+            ));
+            app.facet_counts.clear();
+            cx.notify();
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let app = app.read(cx);
+        let id = app.state.tabs[0].id;
+        let counts = app.facet_counts[&id]
+            .counts
+            .as_ref()
+            .expect("facet worker completed");
+        assert_eq!(counts.counts["level"], vec![("INFO".into(), 1)]);
+    });
 }

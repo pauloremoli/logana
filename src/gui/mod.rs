@@ -41,3 +41,5 @@ pub mod persistence;
 mod loading;
 
 mod startup;
+
+mod merge;

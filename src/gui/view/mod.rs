@@ -129,8 +129,9 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                 }
                 - 24.; // Table container's horizontal padding.
             let message_width = log_pane::message_width(tab, &fields, &widths, available_width);
-            let item_sizes = log_pane::item_sizes(
+            log_pane::prepare_list(
                 &mut app.table_layout,
+                &app.log_scroll,
                 &app.state.tabs[active_tab],
                 &widths,
                 &fields,
@@ -163,7 +164,6 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                             &widths,
                             &app.log_scroll,
                             &fields,
-                            item_sizes,
                             message_width,
                             app.text_handle.clone(),
                             app.text_document.clone(),
