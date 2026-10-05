@@ -10,7 +10,7 @@ use crate::shared::{SidebarSide, TabState};
 use gpui_kit::gpui::{AsyncApp, Context, PromptLevel, WeakEntity, Window};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-const DISPLAY_KEYS: [SettingsKey; 9] = [
+pub(super) const DISPLAY_KEYS: [SettingsKey; 9] = [
     SettingsKey::Wrap,
     SettingsKey::ShowLineNumbers,
     SettingsKey::RelativeLineNumbers,
@@ -24,10 +24,13 @@ const DISPLAY_KEYS: [SettingsKey; 9] = [
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Preferences {
-    display: [bool; 9],
+    pub(super) display: [bool; 9],
     sidebar_width: u16,
     pub restore_session: RestoreSessionPolicy,
     pub restore_file: RestoreSessionPolicy,
+    pub preview_bytes: u64,
+    pub mcp_port: u16,
+    pub locked: Vec<SettingsKey>,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -36,6 +39,9 @@ impl Default for Preferences {
             sidebar_width: 30,
             restore_session: RestoreSessionPolicy::Always,
             restore_file: RestoreSessionPolicy::Always,
+            preview_bytes: crate::config::DEFAULT_PREVIEW_BYTES,
+            mcp_port: 9876,
+            locked: Vec::new(),
         }
     }
 }
@@ -55,6 +61,7 @@ impl Preferences {
         ];
         for (i, key) in DISPLAY_KEYS.into_iter().enumerate() {
             prefs.display[i] = if let Some(value) = overrides[i] {
+                prefs.locked.push(key);
                 value
             } else {
                 db.load_app_setting(key)
@@ -82,7 +89,10 @@ impl Preferences {
             ),
         ] {
             *target = match value {
-                Some(value) => value,
+                Some(value) => {
+                    prefs.locked.push(key);
+                    value
+                }
                 None => db
                     .load_app_setting(key)
                     .await?
@@ -90,7 +100,57 @@ impl Preferences {
                     .unwrap_or(RestoreSessionPolicy::Always),
             };
         }
+        for (key, value, default) in [
+            (
+                SettingsKey::PreviewBytes,
+                config.preview_bytes,
+                prefs.preview_bytes,
+            ),
+            (
+                SettingsKey::McpPort,
+                config.mcp_port.map(u64::from),
+                u64::from(prefs.mcp_port),
+            ),
+        ] {
+            let value = if let Some(value) = value {
+                prefs.locked.push(key);
+                value
+            } else {
+                db.load_app_setting(key)
+                    .await?
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(default)
+            };
+            match key {
+                SettingsKey::PreviewBytes => {
+                    prefs.preview_bytes = value.clamp(1, 128 * 1024 * 1024)
+                }
+                SettingsKey::McpPort => prefs.mcp_port = value.clamp(1, 65535) as u16,
+                _ => unreachable!(),
+            }
+        }
         Ok(prefs)
+    }
+    pub(super) fn settings(&self) -> Vec<(SettingsKey, String)> {
+        let mut settings: Vec<_> = DISPLAY_KEYS
+            .into_iter()
+            .zip(self.display)
+            .map(|(k, v)| (k, v.to_string()))
+            .collect();
+        settings.extend([
+            (
+                SettingsKey::RestoreSession,
+                self.restore_session.to_string(),
+            ),
+            (
+                SettingsKey::RestoreFileContext,
+                self.restore_file.to_string(),
+            ),
+            (SettingsKey::PreviewBytes, self.preview_bytes.to_string()),
+            (SettingsKey::McpPort, self.mcp_port.to_string()),
+        ]);
+        settings.retain(|(key, _)| !self.locked.contains(key));
+        settings
     }
     pub(super) fn apply(&self, tab: &mut TabState) {
         let d = &mut tab.display;
@@ -232,6 +292,17 @@ fn session_files(tabs: &[TabState]) -> Vec<String> {
 }
 
 impl App {
+    pub(super) fn save_preferences(&mut self, prefs: Preferences) {
+        let save = Save {
+            settings: prefs.settings(),
+            ..Default::default()
+        };
+        self.state.preferences = prefs;
+        let _ = self.persistence.sender.send(Request {
+            save,
+            flushed: None,
+        });
+    }
     pub(super) fn save_session_state(&mut self) {
         if self.persistence.restoring {
             return;
@@ -471,6 +542,51 @@ pub(super) async fn prepare_loaded(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn general_preferences_validate_persist_and_respect_config_pins() {
+        use crate::gui::{
+            actions::{self, Action},
+            effect::Effect,
+            message::Message,
+            update::update,
+        };
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let config = Config {
+            wrap: Some(true),
+            restore_session: Some(RestoreSessionPolicy::Never),
+            ..Default::default()
+        };
+        let mut state = crate::gui::state::GuiState::new(db.clone());
+        state.preferences = Preferences::load(&db, &config).await.unwrap();
+        update(
+            &mut state,
+            Message::NavPageSelected(crate::gui::state::NavPage::Settings),
+        );
+        assert_eq!(state.editor.as_ref().unwrap().action, Action::Settings);
+        update(&mut state, Message::EditorText(2, "0".into()));
+        assert!(matches!(actions::apply(&mut state), Effect::None));
+        assert!(state.editor.as_ref().unwrap().error.is_some());
+        update(&mut state, Message::EditorText(2, "1048576".into()));
+        update(&mut state, Message::EditorText(1, "ask".into()));
+        update(&mut state, Message::EditorText(0, "always".into()));
+        update(&mut state, Message::EditorField(0));
+        let Effect::SavePreferences(prefs) = actions::apply(&mut state) else {
+            panic!("settings should save");
+        };
+        assert_eq!(prefs.restore_session, RestoreSessionPolicy::Never);
+        assert!(prefs.display[0]);
+        Save {
+            settings: prefs.settings(),
+            ..Default::default()
+        }
+        .persist(&db)
+        .await
+        .unwrap();
+        let loaded = Preferences::load(&db, &config).await.unwrap();
+        assert_eq!(loaded.restore_file, RestoreSessionPolicy::Ask);
+        assert_eq!(loaded.preview_bytes, 1048576);
+        assert_eq!(loaded.restore_session, RestoreSessionPolicy::Never);
+    }
     use super::*;
     use crate::db::LogManager;
     use crate::gui::{state::GuiState, update};

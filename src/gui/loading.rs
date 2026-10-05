@@ -483,6 +483,7 @@ impl App {
         cx: &mut Context<Self>,
     ) {
         let preview_enabled = !args.as_ref().is_some_and(|args| args.tail);
+        let preview_bytes = self.state.preferences.preview_bytes;
         self.loading.next_id += 1;
         let id = self.loading.next_id;
         let (control, rx) = Control::new();
@@ -519,9 +520,14 @@ impl App {
                     Ok::<_, String>((Some(tree), None, Some(_permit)))
                 } else {
                     let preview = if preview_enabled {
-                        crate::gui::update::load_file_preview(&path, db.clone(), &worker_control)
-                            .await
-                            .unwrap_or(None)
+                        crate::gui::update::load_file_preview(
+                            &path,
+                            db.clone(),
+                            &worker_control,
+                            preview_bytes,
+                        )
+                        .await
+                        .unwrap_or(None)
                     } else {
                         None
                     };
@@ -911,10 +917,11 @@ mod tests {
         let db = Arc::new(crate::db::Database::in_memory().await.unwrap());
         let (control, _) = Control::new();
         let start = Instant::now();
-        let loaded = crate::gui::update::load_file_preview(file.path(), db.clone(), &control)
-            .await
-            .unwrap()
-            .unwrap();
+        let loaded =
+            crate::gui::update::load_file_preview(file.path(), db.clone(), &control, 1024 * 1024)
+                .await
+                .unwrap()
+                .unwrap();
         assert!(loaded.reader.total_len() <= 1024 * 1024);
         assert!(loaded.reader.total_len() < file.as_file().metadata().unwrap().len() as usize);
         assert_eq!(&*loaded.reader.get_line(0), b"first chunk line");
@@ -928,7 +935,7 @@ mod tests {
         );
         control.cancel.store(true, Ordering::Relaxed);
         assert!(
-            crate::gui::update::load_file_preview(file.path(), db, &control)
+            crate::gui::update::load_file_preview(file.path(), db, &control, 1024 * 1024)
                 .await
                 .is_err()
         );
@@ -1083,7 +1090,7 @@ mod tests {
             let (control, _) = Control::new();
             let start = Instant::now();
             if let Some(preview) =
-                crate::gui::update::load_file_preview(&path, db.clone(), &control)
+                crate::gui::update::load_file_preview(&path, db.clone(), &control, 1024 * 1024)
                     .await
                     .unwrap()
             {

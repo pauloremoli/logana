@@ -33,6 +33,7 @@ pub enum Action {
     Group,
     Columns,
     Appearance,
+    Settings,
     ValueColors,
     LevelColors,
     Schema,
@@ -67,6 +68,13 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::Settings,
+        label: "Settings",
+        description: "Restore options, defaults for new files, and application preferences",
+        aliases: "settings preferences restore-session restore-file-context",
+        tab: false,
+    },
     Descriptor {
         action: Action::Merge,
         label: "Merge files",
@@ -652,7 +660,26 @@ pub fn open(
         }
     }
     if action == Action::EnableMcp {
-        e.values[0] = "9876".into();
+        e.values[0] = state.preferences.mcp_port.to_string();
+    }
+    if action == Action::Settings {
+        let prefs = &state.preferences;
+        e.values[0] = prefs.restore_session.to_string();
+        e.values[1] = prefs.restore_file.to_string();
+        e.values[2] = prefs.preview_bytes.to_string();
+        e.values[3] = prefs.mcp_port.to_string();
+        e.fields = [
+            "Wrap lines",
+            "Line numbers",
+            "Relative line numbers",
+            "Show sidebar",
+            "Sidebar on left",
+            "Collapse continuations",
+        ]
+        .into_iter()
+        .zip(prefs.display)
+        .map(|(name, on)| (name.into(), on))
+        .collect();
     }
     if action == Action::DefaultFilters {
         e.values[0] = state
@@ -774,6 +801,51 @@ pub fn apply(state: &mut GuiState) -> Effect {
     let Some(mut e) = state.editor.clone() else {
         return Effect::None;
     };
+    if e.action == Action::Settings {
+        let mut prefs = state.preferences.clone();
+        let parsed = (|| {
+            use crate::db::SettingsKey;
+            if !prefs.locked.contains(&SettingsKey::RestoreSession) {
+                prefs.restore_session = e.values[0]
+                    .parse()
+                    .map_err(|_| "Choose a session restore policy.")?;
+            }
+            if !prefs.locked.contains(&SettingsKey::RestoreFileContext) {
+                prefs.restore_file = e.values[1]
+                    .parse()
+                    .map_err(|_| "Choose a file restore policy.")?;
+            }
+            if !prefs.locked.contains(&SettingsKey::PreviewBytes) {
+                prefs.preview_bytes = e.values[2]
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|v| (1..=128 * 1024 * 1024).contains(v))
+                    .ok_or("Preview size must be between 1 byte and 128 MiB.")?;
+            }
+            if !prefs.locked.contains(&SettingsKey::McpPort) {
+                prefs.mcp_port = e.values[3]
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|p| *p > 0)
+                    .ok_or("MCP port must be between 1 and 65535.")?;
+            }
+            for (i, (_, on)) in e.fields.iter().enumerate() {
+                if !prefs
+                    .locked
+                    .contains(&crate::gui::persistence::DISPLAY_KEYS[i])
+                {
+                    prefs.display[i] = *on;
+                }
+            }
+            Ok::<_, &str>(())
+        })();
+        if let Err(error) = parsed {
+            state.editor.as_mut().unwrap().error = Some(error.into());
+            return Effect::None;
+        }
+        close(state, true);
+        return Effect::SavePreferences(prefs);
+    }
     if state.palette.pending() {
         return Effect::None;
     }

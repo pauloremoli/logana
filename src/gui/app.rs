@@ -411,6 +411,7 @@ impl App {
             Effect::MergeTabs(ids) => self.merge_tabs(ids, cx),
             Effect::ConfigureMcp(port) => self.configure_mcp(port, cx),
             Effect::LoadDefaultMappings { epoch } => self.load_default_mappings(epoch, cx),
+            Effect::SavePreferences(prefs) => self.save_preferences(prefs),
             Effect::DefaultMappingDialog { epoch, format } => {
                 self.prompt_default_mapping(epoch, format, cx)
             }

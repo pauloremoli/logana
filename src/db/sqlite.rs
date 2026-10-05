@@ -123,6 +123,8 @@ pub trait SessionStore: Send + Sync {
 pub enum SettingsKey {
     RestoreSession,
     RestoreFileContext,
+    PreviewBytes,
+    McpPort,
     Theme,
     Wrap,
     ShowModeBar,
@@ -142,6 +144,8 @@ impl SettingsKey {
         match self {
             Self::RestoreSession => "restore_session",
             Self::RestoreFileContext => "restore_file_context",
+            Self::PreviewBytes => "preview_bytes",
+            Self::McpPort => "mcp_port",
             Self::Theme => "theme",
             Self::Wrap => "wrap",
             Self::ShowModeBar => "show_mode_bar",

@@ -33,12 +33,22 @@ fn text(app: &App, index: usize, label: &str, _cx: &mut Context<App>) -> AnyElem
         .child(label.to_string())
         .children(app.editor_inputs.get(index).map(|input| {
             Input::new(input).id(("editor-input", index)).disabled(
-                index == 0
-                    && app
-                        .state
-                        .editor
-                        .as_ref()
-                        .is_some_and(|e| e.group_name_locked),
+                app.state
+                    .editor
+                    .as_ref()
+                    .is_some_and(|e| e.action == Action::Settings)
+                    && [
+                        (2, crate::db::SettingsKey::PreviewBytes),
+                        (3, crate::db::SettingsKey::McpPort),
+                    ]
+                    .iter()
+                    .any(|(i, key)| *i == index && app.state.preferences.locked.contains(key))
+                    || index == 0
+                        && app
+                            .state
+                            .editor
+                            .as_ref()
+                            .is_some_and(|e| e.group_name_locked),
             )
         }))
         .into_any_element()
@@ -69,6 +79,86 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         ));
     let mut body = div().flex().flex_col().flex_shrink_0().gap_3();
     match e.action {
+        Action::Settings => {
+            use crate::db::SettingsKey;
+            body = body.child(
+                "Changes apply to future opens. Values pinned in config.json are read-only.",
+            );
+            for (index, key, label) in [
+                (0, SettingsKey::RestoreSession, "Restore previous session"),
+                (
+                    1,
+                    SettingsKey::RestoreFileContext,
+                    "Restore file position, bookmarks, and display options",
+                ),
+            ] {
+                let locked = app.state.preferences.locked.contains(&key);
+                let mut row = div().flex().flex_col().gap_1().child(label);
+                let mut choices = div().flex().gap_2();
+                for (choice, value) in ["always", "ask", "never"].into_iter().enumerate() {
+                    choices = choices.child(
+                        Button::new(("restore-policy", index * 3 + choice))
+                            .label(value)
+                            .selected(e.values[index] == value)
+                            .disabled(locked)
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.dispatch(Message::EditorText(index, value.into()), window, cx)
+                            })),
+                    );
+                }
+                row = row.child(choices);
+                if locked {
+                    row = row.child("Set in config.json");
+                }
+                body = body.child(row);
+            }
+            body = body
+                .child(text(
+                    app,
+                    2,
+                    "Initial preview size (bytes, maximum 128 MiB)",
+                    cx,
+                ))
+                .child(text(app, 3, "Default MCP port", cx))
+                .child(div().mt_3().child("Defaults for newly opened files"));
+            for (i, (label, on)) in e.fields.iter().enumerate() {
+                let locked = app
+                    .state
+                    .preferences
+                    .locked
+                    .contains(&crate::gui::persistence::DISPLAY_KEYS[i]);
+                body = body.child(
+                    Checkbox::new(("setting-default", i))
+                        .label(if locked {
+                            format!("{label} (config.json)")
+                        } else {
+                            label.clone()
+                        })
+                        .checked(*on)
+                        .disabled(locked)
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.dispatch(Message::EditorField(i), window, cx)
+                        })),
+                );
+            }
+            let mut links = div().flex().flex_wrap().gap_2();
+            for (id, label, action) in [
+                ("settings-appearance", "Appearance", Action::Appearance),
+                (
+                    "settings-default-filters",
+                    "Schema default filters",
+                    Action::DefaultFilters,
+                ),
+                ("settings-shortcuts", "Keyboard shortcuts", Action::Help),
+            ] {
+                links = links.child(Button::new(id).ghost().label(label).on_click(cx.listener(
+                    move |app, _, window, cx| {
+                        app.dispatch(Message::EditorNavigate(action), window, cx)
+                    },
+                )));
+            }
+            body = body.child(links);
+        }
         Action::Help => {
             for (label, keys) in crate::gui::keyboard::shortcuts(&app.state) {
                 body = body.child(format!("{keys} — {label}"));

@@ -613,7 +613,7 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             if page == crate::gui::state::NavPage::Settings {
                 return crate::gui::actions::open(
                     state,
-                    crate::gui::actions::Action::Appearance,
+                    crate::gui::actions::Action::Settings,
                     None,
                     None,
                 );
@@ -1384,15 +1384,15 @@ pub(super) async fn load_file_preview(
     path: &std::path::Path,
     db: Arc<Database>,
     control: &crate::ingestion::archive_job::Control,
+    preview_bytes: u64,
 ) -> Result<Option<FileLoaded>, String> {
-    const PREVIEW_BYTES: u64 = 1024 * 1024;
     control.check().map_err(|e| e.to_string())?;
     let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
-    if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() <= PREVIEW_BYTES {
+    if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() <= preview_bytes {
         return Ok(None);
     }
     let source = path.to_string_lossy().into_owned();
-    let reader = FileReader::from_file_head(&source, PREVIEW_BYTES)
+    let reader = FileReader::from_file_head(&source, preview_bytes)
         .await
         .map_err(|e| e.to_string())?;
     if reader.line_count() == 0 {

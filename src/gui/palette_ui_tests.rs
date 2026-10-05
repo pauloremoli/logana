@@ -47,6 +47,38 @@ fn palette_window(
     })
 }
 #[gpui_kit::test]
+fn settings_open_without_a_file_and_save_restore_preferences(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                super::message::Message::NavPageSelected(super::state::NavPage::Settings),
+                window,
+                cx,
+            )
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().action,
+            super::actions::Action::Settings
+        );
+        window.click(("restore-policy", 1usize), cx);
+        window.click(("restore-policy", 5usize), cx);
+        window.click("editor-apply", cx);
+        assert_eq!(
+            app.read(cx).state.preferences.restore_session,
+            crate::config::RestoreSessionPolicy::Ask
+        );
+        assert_eq!(
+            app.read(cx).state.preferences.restore_file,
+            crate::config::RestoreSessionPolicy::Never
+        );
+        assert!(app.read(cx).state.editor.is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn actions_scroll_without_moving_background_logs(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (1000., 600.), "dracula");
     cx.update_window(handle.into(), |_, window, cx| {

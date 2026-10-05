@@ -8,6 +8,7 @@ use std::path::PathBuf;
 /// the discarded prototype, but as a plain, directly-testable enum.
 #[derive(Debug)]
 pub enum Effect {
+    SavePreferences(crate::gui::persistence::Preferences),
     MergeTabs(Vec<crate::shared::TabId>),
     ConfigureMcp(Option<u16>),
     LoadDefaultMappings {
