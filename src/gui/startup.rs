@@ -157,7 +157,7 @@ impl App {
         } else {
             for path in &args.files {
                 if Path::new(path).is_dir() {
-                    self.queue_cli_directory(PathBuf::from(path), args.clone(), cx);
+                    self.queue_directory(PathBuf::from(path), Some(args.clone()), cx);
                 } else {
                     self.queue_file_with_args(PathBuf::from(path), Some(args.clone()), cx);
                 }
@@ -165,7 +165,7 @@ impl App {
         }
     }
 
-    fn cli_operation(&mut self, path: PathBuf, args: Args) -> (u64, Control) {
+    fn cli_operation(&mut self, path: PathBuf, args: Option<Args>) -> (u64, Control) {
         self.loading.next_id += 1;
         let id = self.loading.next_id;
         let (control, rx) = Control::new();
@@ -176,13 +176,18 @@ impl App {
             rx,
             progress: Progress::default(),
             picker: None,
-            args: Some(args),
+            args,
             preview: None,
         });
         (id, control)
     }
 
-    fn queue_cli_directory(&mut self, path: PathBuf, args: Args, cx: &mut Context<Self>) {
+    pub(super) fn queue_directory(
+        &mut self,
+        path: PathBuf,
+        args: Option<Args>,
+        cx: &mut Context<Self>,
+    ) {
         let (id, control) = self.cli_operation(path.clone(), args.clone());
         let gate = self.loading.gate.clone();
         cx.spawn(async move |this, cx| {
@@ -213,7 +218,7 @@ impl App {
                         }
                         this.update(cx, |app, cx| {
                             for path in batch {
-                                app.queue_file_with_args(path.clone(), Some(args.clone()), cx);
+                                app.queue_file_with_args(path.clone(), args.clone(), cx);
                             }
                         })
                         .ok();
@@ -235,7 +240,7 @@ impl App {
     }
 
     fn queue_cli_merge(&mut self, args: Args, cx: &mut Context<Self>) {
-        let (id, control) = self.cli_operation(PathBuf::from("Merged logs"), args.clone());
+        let (id, control) = self.cli_operation(PathBuf::from("Merged logs"), Some(args.clone()));
         let gate = self.loading.gate.clone();
         let db = self.state.db.clone();
         cx.spawn(async move |this, cx| {
@@ -608,7 +613,10 @@ mod tests {
         let (control, _) = Control::new();
         let mut paths = Vec::new();
         collect_directory(dir.path(), &control, &mut paths).unwrap();
-        assert_eq!(paths.len(), 2);
+        assert_eq!(
+            paths,
+            vec![dir.path().join("a.log"), dir.path().join("sub/b.log")]
+        );
         let mut temp = tempfile::NamedTempFile::new().unwrap();
         temp.write_all(b"extracted\n").unwrap();
         let path = persist_extracted(temp, dir.path(), "nested/entry.log", &control).unwrap();

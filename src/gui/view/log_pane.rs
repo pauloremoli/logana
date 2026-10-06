@@ -802,6 +802,110 @@ fn search_highlights(
         .collect()
 }
 
+/// Value colors are the base layer for every displayed column. Filters override
+/// only their matched spans and only the color attributes they actually set.
+fn cell_highlights(
+    raw: &[u8],
+    text: &str,
+    theme: &TuiTheme,
+    filter_style: Option<&LineStyle>,
+    process_color: Option<crate::style::Color>,
+) -> Vec<(std::ops::Range<usize>, gpui_kit::gpui::HighlightStyle)> {
+    use gpui_kit::gpui::HighlightStyle;
+    let mut highlights = Vec::new();
+    use crate::shared::value_colors::*;
+    for (start, end, style) in collect_value_color_spans(text, &theme.value_colors) {
+        let colors = &theme.value_colors;
+        let color = match style {
+            VALUE_STYLE_HTTP_GET => colors.http_get,
+            VALUE_STYLE_HTTP_POST => colors.http_post,
+            VALUE_STYLE_HTTP_PUT => colors.http_put,
+            VALUE_STYLE_HTTP_DELETE => colors.http_delete,
+            VALUE_STYLE_HTTP_PATCH => colors.http_patch,
+            VALUE_STYLE_HTTP_OTHER => colors.http_other,
+            VALUE_STYLE_STATUS_2XX => colors.status_2xx,
+            VALUE_STYLE_STATUS_3XX => colors.status_3xx,
+            VALUE_STYLE_STATUS_4XX => colors.status_4xx,
+            VALUE_STYLE_STATUS_5XX => colors.status_5xx,
+            VALUE_STYLE_IP => colors.ip_address,
+            VALUE_STYLE_UUID => colors.uuid,
+            _ => theme.text,
+        };
+        highlights.push((
+            start..end,
+            HighlightStyle {
+                color: color_to_gpui(color).map(Into::into),
+                ..Default::default()
+            },
+        ));
+    }
+
+    if let Some(color) = process_color {
+        highlights = vec![(
+            0..text.len(),
+            HighlightStyle {
+                color: color_to_gpui(color).map(Into::into),
+                ..Default::default()
+            },
+        )];
+    }
+
+    let Some(filter) = filter_style else {
+        return highlights;
+    };
+    let spans = cell_style_spans(raw, text, filter);
+    if spans.is_empty() {
+        return highlights;
+    }
+    let mut boundaries = Vec::new();
+    for range in highlights.iter().map(|(range, _)| range).chain(&spans) {
+        boundaries.extend([range.start, range.end]);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    boundaries
+        .windows(2)
+        .map(|pair| {
+            let mut style = highlights
+                .iter()
+                .find(|(range, _)| range.contains(&pair[0]))
+                .map(|(_, style)| *style)
+                .unwrap_or_default();
+            if spans.iter().any(|range| range.contains(&pair[0])) {
+                if let Some(fg) = filter.fg {
+                    style.color = Some(fg.into());
+                }
+                if !filter.whole_line
+                    && let Some(bg) = filter.bg
+                {
+                    style.background_color = Some(bg.into());
+                }
+            }
+            (pair[0]..pair[1], style)
+        })
+        .collect()
+}
+
+fn process_color(
+    theme: &TuiTheme,
+    field: &str,
+    value: &str,
+    target: Option<&str>,
+) -> Option<crate::style::Color> {
+    if !matches!(field, "pid" | "target")
+        || value.is_empty()
+        || theme.value_colors.is_disabled("process_colors")
+        || theme.process_colors.is_empty()
+    {
+        return None;
+    }
+    let key = target.filter(|target| !target.is_empty()).unwrap_or(value);
+    let hash = key.bytes().fold(5381usize, |acc, byte| {
+        acc.wrapping_mul(33).wrapping_add(byte as usize)
+    });
+    Some(theme.process_colors[hash % theme.process_colors.len()])
+}
+
 #[allow(clippy::too_many_arguments)]
 fn selectable_cell(
     tab: &TabState,
@@ -816,56 +920,23 @@ fn selectable_cell(
     document: &crate::gui::text_selection::SharedDocument,
 ) -> AnyElement {
     use crate::gui::text_selection::{Endpoint, SelectionText};
-    use gpui_kit::gpui::{HighlightStyle, StyledText};
-    let mut highlights = Vec::new();
-    let spans = filter_style
-        .map(|style| cell_style_spans(&tab.file_reader.get_raw_line(line), text, style))
-        .unwrap_or_default();
-    if let Some(style) = filter_style
-        && !spans.is_empty()
-    {
-        for range in spans {
-            highlights.push((
-                range,
-                HighlightStyle {
-                    color: style.fg.map(Into::into),
-                    background_color: if style.whole_line {
-                        None
-                    } else {
-                        style.bg.map(Into::into)
-                    },
-                    ..Default::default()
-                },
-            ));
-        }
-    } else if matches!(field, "message" | "msg") {
-        use crate::shared::value_colors::*;
-        for (start, end, style) in collect_value_color_spans(text, &theme.value_colors) {
-            let colors = &theme.value_colors;
-            let color = match style {
-                VALUE_STYLE_HTTP_GET => colors.http_get,
-                VALUE_STYLE_HTTP_POST => colors.http_post,
-                VALUE_STYLE_HTTP_PUT => colors.http_put,
-                VALUE_STYLE_HTTP_DELETE => colors.http_delete,
-                VALUE_STYLE_HTTP_PATCH => colors.http_patch,
-                VALUE_STYLE_HTTP_OTHER => colors.http_other,
-                VALUE_STYLE_STATUS_2XX => colors.status_2xx,
-                VALUE_STYLE_STATUS_3XX => colors.status_3xx,
-                VALUE_STYLE_STATUS_4XX => colors.status_4xx,
-                VALUE_STYLE_STATUS_5XX => colors.status_5xx,
-                VALUE_STYLE_IP => colors.ip_address,
-                VALUE_STYLE_UUID => colors.uuid,
-                _ => theme.text,
-            };
-            highlights.push((
-                start..end,
-                HighlightStyle {
-                    color: color_to_gpui(color).map(Into::into),
-                    ..Default::default()
-                },
-            ));
-        }
-    }
+    use gpui_kit::gpui::StyledText;
+    let raw = tab.file_reader.get_raw_line(line);
+    let parsed = if matches!(field, "pid" | "target") {
+        tab.display
+            .format
+            .as_deref()
+            .and_then(|parser| parser.parse_line(&raw))
+    } else {
+        None
+    };
+    let color = process_color(
+        theme,
+        field,
+        text,
+        parsed.as_ref().and_then(|parts| parts.target),
+    );
+    let mut highlights = cell_highlights(&raw, text, theme, filter_style, color);
     highlights = search_highlights(text, &tab.search.query, theme, highlights);
     let selection = document.borrow().range(position, column, text.len());
     let chunks = if tab.display.wrap {
@@ -1053,6 +1124,88 @@ mod tests {
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, None).await;
         TabState::new(reader, log_manager, "test.log".to_string())
+    }
+
+    #[test]
+    fn process_ids_share_logger_colors_and_respect_toggle() {
+        let mut theme = TuiTheme::default();
+        let color = process_color(&theme, "pid", "4321", Some("myapp")).unwrap();
+        assert_eq!(
+            Some(color),
+            process_color(&theme, "target", "myapp", Some("myapp"))
+        );
+        let highlights = cell_highlights(b"4321", "4321", &theme, None, Some(color));
+        assert_eq!(highlights[0].0, 0..4);
+        assert_eq!(highlights[0].1.color, color_to_gpui(color).map(Into::into));
+        assert!(process_color(&theme, "pid", "4321", None).is_some());
+        assert!(process_color(&theme, "message", "4321", None).is_none());
+        theme.value_colors.disabled.insert("process_colors".into());
+        assert!(process_color(&theme, "pid", "4321", Some("myapp")).is_none());
+    }
+
+    #[test]
+    fn value_colors_apply_to_structured_values_and_respect_disabled_categories() {
+        let mut theme = TuiTheme::default();
+        let text = "192.168.1.1";
+        let highlights = cell_highlights(text.as_bytes(), text, &theme, None, None);
+        assert_eq!(highlights.len(), 1);
+        assert_eq!(highlights[0].0, 0..text.len());
+        assert_eq!(
+            highlights[0].1.color,
+            color_to_gpui(theme.value_colors.ip_address).map(Into::into)
+        );
+        theme.value_colors.disabled.insert("ip_address".into());
+        assert!(cell_highlights(text.as_bytes(), text, &theme, None, None).is_empty());
+    }
+
+    #[test]
+    fn filter_highlights_preserve_value_colors_outside_the_match() {
+        let theme = TuiTheme::default();
+        let text = "GET failed from 192.168.1.1";
+        let foreground = gpui_kit::gpui::rgb(0xff1234);
+        let filter = LineStyle {
+            fg: Some(foreground),
+            bg: None,
+            spans: vec![(4, 10)],
+            whole_line: false,
+        };
+        let highlights = cell_highlights(text.as_bytes(), text, &theme, Some(&filter), None);
+        let color_at = |offset| {
+            highlights
+                .iter()
+                .find(|(range, _)| range.contains(&offset))
+                .unwrap()
+                .1
+                .color
+        };
+        assert_eq!(
+            color_at(0),
+            color_to_gpui(theme.value_colors.http_get).map(Into::into)
+        );
+        assert_eq!(color_at(4), Some(foreground.into()));
+        assert_eq!(
+            color_at(16),
+            color_to_gpui(theme.value_colors.ip_address).map(Into::into)
+        );
+    }
+
+    #[test]
+    fn background_only_filter_preserves_value_foreground() {
+        let theme = TuiTheme::default();
+        let text = "GET /api";
+        let background = gpui_kit::gpui::rgb(0x123456);
+        let filter = LineStyle {
+            fg: None,
+            bg: Some(background),
+            spans: vec![(0, 3)],
+            whole_line: false,
+        };
+        let highlights = cell_highlights(text.as_bytes(), text, &theme, Some(&filter), None);
+        assert_eq!(
+            highlights[0].1.color,
+            color_to_gpui(theme.value_colors.http_get).map(Into::into)
+        );
+        assert_eq!(highlights[0].1.background_color, Some(background.into()));
     }
 
     #[test]

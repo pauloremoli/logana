@@ -701,19 +701,19 @@ impl App {
     fn spawn_open_file_dialog(&self, directories: bool, cx: &mut Context<Self>) {
         let prompt = cx.prompt_for_paths(gpui_kit::gpui::PathPromptOptions {
             files: !directories,
-            directories,
-            multiple: false,
+            directories: true,
+            multiple: true,
             prompt: None,
         });
         cx.spawn(async move |this, cx| {
-            let path = prompt
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .flatten()
-                .and_then(|mut paths| paths.pop());
-            this.update_in(cx, |app, window, cx| {
-                app.dispatch(Message::FileDialogResult(path), window, cx);
+            let paths = prompt.await.ok().and_then(Result::ok).flatten();
+            this.update_in(cx, |app, window, cx| match paths {
+                Some(paths) if !paths.is_empty() => {
+                    for path in paths {
+                        app.dispatch(Message::FileDialogResult(Some(path)), window, cx);
+                    }
+                }
+                _ => app.dispatch(Message::FileDialogResult(None), window, cx),
             })
             .ok();
         })

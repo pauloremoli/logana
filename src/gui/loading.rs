@@ -472,9 +472,13 @@ impl App {
             cx.notify();
         }
     }
-    /// Queue a file or archive for background loading with progress and cancellation.
+    /// Queue a file, archive, or directory for background loading.
     pub fn queue_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.queue_file_with_args(path, None, cx);
+        if path.is_dir() {
+            self.queue_directory(path, None, cx);
+        } else {
+            self.queue_file_with_args(path, None, cx);
+        }
     }
     pub(super) fn queue_file_with_args(
         &mut self,
