@@ -198,7 +198,7 @@ pub fn log_pane(
                                                 div().id(("log-annotation", index)).test_support()
                                                     .h(px(ANNOTATION_HEIGHT_PX)).w_full().px_3().text_sm().truncate()
                                                     .text_color(cx.theme().muted_foreground).cursor_pointer()
-                                                    .child(format!("Note: {}", note.text.replace('\n', " ")))
+                                                    .child(note.text.replace('\n', " "))
                                                     .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(full_note.clone()).build(window, cx))
                                                     .on_click(cx.listener(move |app, _, window, cx| {
                                                         cx.stop_propagation();
