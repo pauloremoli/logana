@@ -365,6 +365,7 @@ impl App {
         self.save_session_state();
         if previous_theme != self.state.theme {
             crate::gui::theme::install(&self.state.theme, cx);
+            self.state.preferences.apply_font_size(window, cx);
         }
         self.apply_effect(effect, window, cx);
         if let Some(open) = search_popup {
@@ -1555,10 +1556,10 @@ impl Render for App {
                     };
                     if let Some(delta) = delta {
                         let size = (f32::from(window.rem_size()) + delta).clamp(10., 32.);
-                        gpui_kit::component::theme::Theme::update(cx, |theme| {
-                            theme.font_size = gpui_kit::gpui::px(size);
-                        });
-                        window.set_rem_size(gpui_kit::gpui::px(size));
+                        let mut preferences = app.state.preferences.clone();
+                        preferences.font_size = size;
+                        preferences.apply_font_size(window, cx);
+                        app.save_preferences(preferences);
                         app.log_scroll.remeasure();
                         app.text_document.borrow_mut().clear();
                         app.text_context = None;

@@ -1554,3 +1554,41 @@ fn font_size_shortcuts_scale_logs_and_preserve_input(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn font_size_is_saved_and_restored_in_a_new_window(cx: &mut TestAppContext) {
+    use crate::gui::persistence::Preferences;
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    let db = app.read_with(cx, |app, _| app.state.db.clone());
+    let flushed = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.press("ctrl-=", cx);
+            window.press("ctrl-=", cx);
+            app.update(cx, |app, _| app.flush_persistence())
+        })
+        .unwrap();
+    runtime::handle().block_on(flushed).unwrap();
+    let preferences = runtime::handle()
+        .block_on(Preferences::load(&db, &crate::config::Config::default()))
+        .unwrap();
+    assert_eq!(preferences.font_size, 15.);
+    let restored = cx.update(|cx| {
+        let source = Theme::from_file("dracula.json").unwrap();
+        theme::install(&source, cx);
+        gpui_kit::open_window(Default::default(), cx, |window, cx| {
+            let app = cx.new(|cx| App::new(db, source, cx));
+            app.update(cx, |app, cx| {
+                app.restore_session(preferences, vec![], window, cx)
+            });
+            app
+        })
+        .unwrap()
+        .0
+    });
+    cx.update_window(restored, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(f32::from(window.rem_size()), 15.);
+    })
+    .unwrap();
+}

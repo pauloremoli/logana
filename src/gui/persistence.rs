@@ -30,6 +30,7 @@ pub struct Preferences {
     pub restore_file: RestoreSessionPolicy,
     pub preview_bytes: u64,
     pub mcp_port: u16,
+    pub font_size: f32,
     pub locked: Vec<SettingsKey>,
 }
 impl Default for Preferences {
@@ -41,6 +42,7 @@ impl Default for Preferences {
             restore_file: RestoreSessionPolicy::Always,
             preview_bytes: crate::config::DEFAULT_PREVIEW_BYTES,
             mcp_port: 9876,
+            font_size: 13.,
             locked: Vec::new(),
         }
     }
@@ -129,6 +131,13 @@ impl Preferences {
                 _ => unreachable!(),
             }
         }
+        prefs.font_size = db
+            .load_app_setting(SettingsKey::GuiFontSize)
+            .await?
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite())
+            .unwrap_or(prefs.font_size)
+            .clamp(10., 32.);
         Ok(prefs)
     }
     pub(super) fn settings(&self) -> Vec<(SettingsKey, String)> {
@@ -148,9 +157,15 @@ impl Preferences {
             ),
             (SettingsKey::PreviewBytes, self.preview_bytes.to_string()),
             (SettingsKey::McpPort, self.mcp_port.to_string()),
+            (SettingsKey::GuiFontSize, self.font_size.to_string()),
         ]);
         settings.retain(|(key, _)| !self.locked.contains(key));
         settings
+    }
+    pub(super) fn apply_font_size(&self, window: &mut Window, cx: &mut gpui_kit::gpui::App) {
+        let size = gpui_kit::gpui::px(self.font_size);
+        gpui_kit::component::theme::Theme::update(cx, |theme| theme.font_size = size);
+        window.set_rem_size(size);
     }
     pub(super) fn apply(&self, tab: &mut TabState) {
         let d = &mut tab.display;
@@ -445,7 +460,9 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        preferences.apply_font_size(window, cx);
         self.state.preferences = preferences;
+        cx.notify();
         if files.is_empty() || self.state.preferences.restore_session == RestoreSessionPolicy::Never
         {
             return;
@@ -542,6 +559,25 @@ pub(super) async fn prepare_loaded(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn saved_font_sizes_validate_on_load() {
+        let db = Database::in_memory().await.unwrap();
+        for (stored, expected) in [
+            ("NaN", 13.),
+            ("inf", 13.),
+            ("bad", 13.),
+            ("5", 10.),
+            ("100", 32.),
+            ("17.5", 17.5),
+        ] {
+            db.save_app_setting(SettingsKey::GuiFontSize, stored)
+                .await
+                .unwrap();
+            let loaded = Preferences::load(&db, &Config::default()).await.unwrap();
+            assert_eq!(loaded.font_size, expected);
+        }
+    }
+
     #[tokio::test]
     async fn general_preferences_validate_persist_and_respect_config_pins() {
         use crate::gui::{

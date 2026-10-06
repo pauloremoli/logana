@@ -131,6 +131,7 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        preferences.apply_font_size(window, cx);
         self.state.preferences = preferences.clone();
         let config = crate::config::Config::load().unwrap_or_default();
         if let Some(port) = args.mcp {
