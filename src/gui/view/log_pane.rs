@@ -140,9 +140,6 @@ pub fn log_pane(
         .h_full()
         .font_family("monospace")
         .text_size(px(12.))
-        .border_1()
-        .border_color(cx.theme().border)
-        .rounded(px(6.))
         .overflow_hidden()
         .child(header_row(
             tab.id,
