@@ -87,6 +87,7 @@ pub enum Message {
 
     SidebarTabSelected(SidebarTab),
     SidebarToggled,
+    SidebarSideToggled,
     FacetBrowserToggled,
     ClearAllFilters(usize),
     FilterRemoved(usize, usize),

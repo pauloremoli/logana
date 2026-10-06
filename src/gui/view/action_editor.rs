@@ -979,13 +979,10 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                                             Commands::Collapse
                                         }
                                     }
-                                    6 => Commands::SidebarPosition {
-                                        side: if on {
-                                            crate::shared::SidebarSide::Right
-                                        } else {
-                                            crate::shared::SidebarSide::Left
-                                        },
-                                    },
+                                    6 => {
+                                        app.dispatch(Message::SidebarSideToggled, window, cx);
+                                        return;
+                                    }
                                     _ => {
                                         app.dispatch(Message::SidebarToggled, window, cx);
                                         return;

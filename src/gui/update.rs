@@ -723,6 +723,22 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             state.facet_browser_open = !state.facet_browser_open;
             Effect::None
         }
+        Message::SidebarSideToggled => {
+            let source = state
+                .editor
+                .as_ref()
+                .and_then(|e| e.source)
+                .or_else(|| state.active_tab().map(|t| t.id));
+            if let Some(tab) = state.tabs.iter_mut().find(|t| Some(t.id) == source) {
+                tab.display.sidebar_side = if tab.display.sidebar_side.is_left() {
+                    crate::shared::SidebarSide::Right
+                } else {
+                    crate::shared::SidebarSide::Left
+                };
+                tab.display.show_sidebar = true;
+            }
+            Effect::None
+        }
         Message::SidebarToggled => {
             toggle_display(state, |d| d.show_sidebar = !d.show_sidebar);
             Effect::None
@@ -3006,6 +3022,19 @@ mod tests {
             group: None,
         };
         assert_eq!(filter_id_for_field_equality(&[def], "level", "error"), None);
+    }
+
+    #[tokio::test]
+    async fn sidebar_position_toggle_opens_hidden_sidebar_and_can_be_reversed() {
+        let (mut state, _file) = state_with_one_tab().await;
+        state.tabs[0].display.show_sidebar = false;
+        state.tabs[0].display.sidebar_side = crate::shared::SidebarSide::Right;
+        crate::gui::actions::open(&mut state, crate::gui::actions::Action::View, None, None);
+        update(&mut state, Message::SidebarSideToggled);
+        assert!(state.tabs[0].display.sidebar_side.is_left());
+        assert!(state.tabs[0].display.show_sidebar);
+        update(&mut state, Message::SidebarSideToggled);
+        assert!(!state.tabs[0].display.sidebar_side.is_left());
     }
 
     #[tokio::test]
