@@ -160,6 +160,9 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         .flex()
         .justify_between()
         .items_center()
+        .when(!app.state.editor_history.is_empty(), |header| {
+            header.child(button("editor-back", "Back", || Message::EditorBack, cx))
+        })
         .child(if e.action == Action::Filter && e.edit_id.is_some() {
             "Edit filter"
         } else {

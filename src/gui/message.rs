@@ -38,6 +38,7 @@ pub enum Message {
     EditorConditionRemove(usize),
     EditorPreview(String),
     EditorApply,
+    EditorBack,
     EditorNavigate(crate::gui::actions::Action),
     EditorCancel,
     GuiCommand(crate::commands::Commands, String),

@@ -386,12 +386,34 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             }
             Effect::None
         }
+        Message::EditorBack => {
+            if state.palette.pending() {
+                return Effect::None;
+            }
+            if let Some(mut editor) = state.editor_history.pop() {
+                let history = std::mem::take(&mut state.editor_history);
+                crate::gui::actions::close(state, false);
+                editor.epoch = state.palette.focus_epoch.wrapping_add(1);
+                state.editor = Some(editor);
+                state.editor_history = history;
+            }
+            Effect::None
+        }
         Message::EditorNavigate(action) => {
             if state.palette.pending() {
                 return Effect::None;
             }
+            let previous = state.editor.clone();
+            let mut history = std::mem::take(&mut state.editor_history);
             crate::gui::actions::close(state, false);
-            crate::gui::actions::open(state, action, None, None)
+            let effect = crate::gui::actions::open(state, action, None, None);
+            if state.editor.is_some() {
+                if let Some(previous) = previous {
+                    history.push(previous);
+                }
+                state.editor_history = history;
+            }
+            effect
         }
         Message::EditorApply => {
             let active = state.active_tab;
@@ -3030,6 +3052,28 @@ mod tests {
             group: None,
         };
         assert_eq!(filter_id_for_field_equality(&[def], "level", "error"), None);
+    }
+
+    #[tokio::test]
+    async fn settings_back_restores_draft_and_refreshes_editor_widgets() {
+        let (mut state, _file) = state_with_one_tab().await;
+        update(
+            &mut state,
+            Message::GuiAction(crate::gui::actions::Action::Settings),
+        );
+        update(&mut state, Message::EditorText(2, "12345".into()));
+        let epoch = state.editor.as_ref().unwrap().epoch;
+        update(
+            &mut state,
+            Message::EditorNavigate(crate::gui::actions::Action::Keybindings),
+        );
+        update(&mut state, Message::EditorBack);
+        assert_eq!(
+            state.editor.as_ref().unwrap().action,
+            crate::gui::actions::Action::Settings
+        );
+        assert_eq!(state.editor.as_ref().unwrap().values[2], "12345");
+        assert_ne!(state.editor.as_ref().unwrap().epoch, epoch);
     }
 
     #[tokio::test]

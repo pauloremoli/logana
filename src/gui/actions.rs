@@ -901,6 +901,7 @@ pub fn open(
 }
 pub fn close(state: &mut GuiState, applied: bool) {
     state.binding_capture = None;
+    state.editor_history.clear();
     if let Some(e) = state.editor.take() {
         if !applied && !state.palette.pending() && e.action == Action::Appearance {
             state.theme = e.original_theme;

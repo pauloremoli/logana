@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct GuiState {
+    pub editor_history: Vec<crate::gui::actions::Editor>,
     pub binding_capture: Option<usize>,
     pub preferences: crate::gui::persistence::Preferences,
     pub search_open: bool,
@@ -81,6 +82,7 @@ impl GuiState {
         Self {
             preferences: Default::default(),
             binding_capture: None,
+            editor_history: Vec::new(),
             palette: Default::default(),
             editor: None,
             search_open: false,
