@@ -1537,6 +1537,25 @@ impl Render for App {
                     return;
                 }
 
+                if stroke.key == "escape" {
+                    if app.state.editor.is_some() {
+                        cx.stop_propagation();
+                        app.dispatch(Message::EditorCancel, window, cx);
+                        return;
+                    }
+                    if app.state.palette.visible() {
+                        cx.stop_propagation();
+                        app.dispatch(Message::PaletteClose, window, cx);
+                        return;
+                    }
+                    if app.state.time_range_open {
+                        cx.stop_propagation();
+                        app.state.time_range_open = false;
+                        app.root_focus.focus(window, cx);
+                        cx.notify();
+                        return;
+                    }
+                }
                 if app.state.search_open && stroke.key == "enter" {
                     cx.stop_propagation();
                     app.dispatch(Message::SearchNext(!stroke.modifiers.shift), window, cx);
