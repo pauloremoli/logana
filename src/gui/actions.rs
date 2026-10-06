@@ -9,6 +9,7 @@ pub enum Action {
     Open,
     OpenDirectory,
     CloseFile,
+    CloseAllFiles,
     ToggleFiltering,
     MarksOnly,
     Annotation,
@@ -72,6 +73,13 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::CloseAllFiles,
+        label: "Close all files",
+        description: "Close every open file",
+        aliases: "close-all",
+        tab: false,
+    },
     Descriptor {
         action: Action::OpenDirectory,
         label: "Open directory…",
@@ -487,6 +495,15 @@ pub fn open(
     }
     state.palette.open = false;
     match action {
+        Action::CloseAllFiles => {
+            while !state.tabs.is_empty() {
+                crate::gui::update::update(
+                    state,
+                    crate::gui::message::Message::TabClosed(state.tabs.len() - 1),
+                );
+            }
+            return Effect::None;
+        }
         Action::CloseFile => {
             return crate::gui::update::update(
                 state,
