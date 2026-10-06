@@ -145,6 +145,7 @@ pub fn log_pane(
         .rounded(px(6.))
         .overflow_hidden()
         .child(header_row(
+            tab.id,
             widths,
             &columns,
             tab.display.show_line_numbers,
@@ -403,7 +404,65 @@ fn column_width(field: &str, widths: &TableWidths, message_width: f32) -> f32 {
             .unwrap_or(field.len() as f32 * 7.2 + 16.),
     }
 }
+fn header_cell(
+    source: crate::shared::TabId,
+    field: Option<String>,
+    width: f32,
+    label: String,
+    cx: &mut Context<App>,
+) -> AnyElement {
+    let entity = cx.entity();
+    div()
+        .id(gpui_kit::gpui::SharedString::from(format!(
+            "column-header-{label}"
+        )))
+        .test_support()
+        .child(fixed_cell(width, label))
+        .context_menu(move |menu, _, _| {
+            let choose = entity.clone();
+            let hide = entity.clone();
+            let field = field.clone();
+            menu.item(
+                gpui_kit::component::menu::PopupMenuItem::new("Choose columns…").on_click(
+                    move |_, window, cx| {
+                        choose.update(cx, |app, cx| {
+                            if let Some(index) = app.state.tabs.iter().position(|t| t.id == source)
+                            {
+                                app.dispatch(Message::TabSelected(index), window, cx);
+                                app.dispatch(
+                                    Message::GuiAction(crate::gui::actions::Action::Columns),
+                                    window,
+                                    cx,
+                                );
+                            }
+                        });
+                    },
+                ),
+            )
+            .item(
+                gpui_kit::component::menu::PopupMenuItem::new("Hide column").on_click(
+                    move |_, _, cx| {
+                        hide.update(cx, |app, cx| {
+                            if let Some(tab) = app.state.tabs.iter_mut().find(|t| t.id == source) {
+                                if let Some(field) = &field {
+                                    tab.display.hidden_fields.insert(field.clone());
+                                } else {
+                                    tab.display.show_line_numbers = false;
+                                }
+                                tab.invalidate_parse_cache();
+                                app.save_session_state();
+                                cx.notify();
+                            }
+                        });
+                    },
+                ),
+            )
+        })
+        .into_any_element()
+}
+
 fn header_row(
+    source: crate::shared::TabId,
     widths: &TableWidths,
     fields: &[String],
     show_numbers: bool,
@@ -420,7 +479,7 @@ fn header_row(
         .overflow_hidden();
     if show_numbers {
         row = row
-            .child(fixed_cell(widths.line_no, "#"))
+            .child(header_cell(source, None, widths.line_no, "#".into(), cx))
             .child(resize_handle(ResizableColumn::LineNo, cx));
     }
     for field in fields {
@@ -430,9 +489,12 @@ fn header_row(
             "message" => "Message",
             _ => field,
         };
-        row = row.child(fixed_cell(
+        row = row.child(header_cell(
+            source,
+            Some(field.clone()),
             column_width(field, widths, message_width),
             label.to_string(),
+            cx,
         ));
         row = match field.as_str() {
             "timestamp" | "time" | "ts" => row.child(resize_handle(ResizableColumn::Time, cx)),
