@@ -4,10 +4,10 @@ use crate::gui::state::GuiState;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Selectable, TestSupportExt};
 use gpui_kit::component::ActiveTheme;
-use gpui_kit::component::Icon;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::tab::Tab;
+use gpui_kit::component::{Icon, tooltip::Tooltip};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div, px};
 
@@ -30,6 +30,7 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
         bar = bar.child(tab_label(
             idx,
             tab.title.clone(),
+            tab.display_source_path().unwrap_or(&tab.title).to_owned(),
             idx == state.active_tab,
             cx,
         ));
@@ -63,11 +64,18 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
 /// A tab chip: file icon, title, close button. The active tab is marked
 /// with a background tint on the whole chip (matching the mockup) instead
 /// of the TUI-era `[bracket]` convention this replaced.
-fn tab_label(idx: usize, title: String, active: bool, cx: &mut Context<App>) -> impl IntoElement {
+fn tab_label(
+    idx: usize,
+    title: String,
+    path: String,
+    active: bool,
+    cx: &mut Context<App>,
+) -> impl IntoElement {
     let entity = cx.entity();
     div()
         .id(("file-tab", idx))
         .test_support()
+        .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
         .context_menu(move |menu, _, _| {
             let close = entity.clone();
             menu.item(
