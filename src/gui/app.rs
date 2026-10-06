@@ -7,6 +7,7 @@ use crate::gui::state::GuiState;
 use crate::gui::update;
 use crate::theme::Theme as TuiTheme;
 use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::combobox::{ComboboxEvent, ComboboxState};
 use gpui_kit::component::date_picker::{DatePickerEvent, DatePickerState, DateTime};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::menu::AppMenuBar;
@@ -42,6 +43,7 @@ pub struct App {
     pub editor_dates: Vec<Entity<DatePickerState>>,
     pub editor_times: Vec<Entity<TimeFieldState>>,
     pub editor_group_select: Option<Entity<SelectState<SearchableVec<String>>>>,
+    pub editor_members: Option<Entity<ComboboxState<SearchableVec<String>>>>,
     pub editor_field_select: Option<Entity<SelectState<SearchableVec<String>>>>,
     editor_epoch: u64,
     editor_synced: Vec<String>,
@@ -209,6 +211,7 @@ impl App {
             editor_dates: Vec::new(),
             editor_times: Vec::new(),
             editor_group_select: None,
+            editor_members: None,
             editor_field_select: None,
             editor_epoch: 0,
             editor_synced: Vec::new(),
@@ -1058,8 +1061,52 @@ impl Render for App {
                 self.editor_textareas.clear();
                 self.editor_field_select = None;
                 self.editor_group_select = None;
+                self.editor_members = None;
                 self.editor_dates.clear();
                 self.editor_times.clear();
+                self.editor_members = None;
+                if editor_action == crate::gui::actions::Action::Group {
+                    let members = &self.state.editor.as_ref().unwrap().members;
+                    let names: Vec<_> = members
+                        .iter()
+                        .map(|(id, label, _)| format!("{id}: {label}"))
+                        .collect();
+                    let selected: Vec<_> = members
+                        .iter()
+                        .zip(&names)
+                        .filter(|((_, _, on), _)| *on)
+                        .map(|(_, name)| name.clone())
+                        .collect();
+                    let combo = cx.new(|cx| {
+                        let mut combo =
+                            ComboboxState::new(SearchableVec::new(names), vec![], window, cx)
+                                .multiple(true)
+                                .searchable(true);
+                        combo.set_selected_values(&selected, window, cx);
+                        combo
+                    });
+                    cx.subscribe_in(
+                        &combo,
+                        window,
+                        move |app, _, event: &ComboboxEvent<SearchableVec<String>>, window, cx| {
+                            if app.state.editor.as_ref().is_some_and(|e| e.epoch == epoch) {
+                                let values = match event {
+                                    ComboboxEvent::Change(values)
+                                    | ComboboxEvent::Confirm(values) => values,
+                                };
+                                let ids = values
+                                    .iter()
+                                    .filter_map(|v| {
+                                        v.split_once(": ").and_then(|(id, _)| id.parse().ok())
+                                    })
+                                    .collect();
+                                app.dispatch(Message::EditorMembers(ids), window, cx);
+                            }
+                        },
+                    )
+                    .detach();
+                    self.editor_members = Some(combo);
+                }
                 if editor_action == crate::gui::actions::Action::Filter {
                     let editor = self.state.editor.as_ref().unwrap();
                     let mut names = editor.discovery.names.clone();
@@ -1361,6 +1408,7 @@ impl Render for App {
         } else {
             self.editor_field_select = None;
             self.editor_group_select = None;
+            self.editor_members = None;
             self.editor_dates.clear();
             self.editor_times.clear();
             self.editor_colors.clear();

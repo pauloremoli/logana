@@ -743,16 +743,11 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             body = body
                 .child(text(app, 0, "Group name", cx))
                 .child("Member filters");
-            for (index, (_, label, on)) in e.members.iter().enumerate() {
-                body = body.child(
-                    Checkbox::new(("group-member", index))
-                        .label(label.clone())
-                        .checked(*on)
-                        .on_click(cx.listener(move |app, _, window, cx| {
-                            app.dispatch(Message::EditorMember(index), window, cx)
-                        })),
-                );
-            }
+            body = body.children(app.editor_members.as_ref().map(|members| {
+                gpui_kit::component::combobox::Combobox::new(members)
+                    .placeholder("Choose member filters")
+                    .cleanable(true)
+            }));
         }
         Action::Columns | Action::ValueColors | Action::LevelColors => {
             body = body.child(

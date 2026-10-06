@@ -29,6 +29,7 @@ pub enum Message {
     EditorKind(crate::filters::FilterType),
     EditorField(usize),
     EditorMember(usize),
+    EditorMembers(Vec<usize>),
     EditorMove(usize, isize),
     EditorAll(bool),
     EditorReset,

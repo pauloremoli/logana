@@ -269,6 +269,14 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             }
             Effect::None
         }
+        Message::EditorMembers(ids) => {
+            if let Some(e) = &mut state.editor {
+                for (id, _, on) in &mut e.members {
+                    *on = ids.contains(id);
+                }
+            }
+            Effect::None
+        }
         Message::EditorMember(index) => {
             if let Some(e) = &mut state.editor {
                 if let Some((_, _, on)) = e.members.get_mut(index) {
