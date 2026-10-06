@@ -701,7 +701,9 @@ impl App {
     fn spawn_open_file_dialog(&self, directories: bool, cx: &mut Context<Self>) {
         let prompt = cx.prompt_for_paths(gpui_kit::gpui::PathPromptOptions {
             files: !directories,
-            directories: true,
+            // Linux portals use directory mode whenever this flag is true,
+            // even when files is also true. Keep the two native pickers separate.
+            directories,
             multiple: true,
             prompt: None,
         });
