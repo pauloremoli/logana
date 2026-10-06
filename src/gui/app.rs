@@ -1268,6 +1268,12 @@ impl Render for App {
                         &input,
                         window,
                         move |app, input, event: &InputEvent, window, cx| {
+                            if matches!(event, InputEvent::PressEnter { .. })
+                                && app.state.editor.as_ref().is_some_and(|e| e.epoch == epoch)
+                            {
+                                app.dispatch(Message::EditorApply, window, cx);
+                                return;
+                            }
                             if matches!(event, InputEvent::Change)
                                 && app.state.editor.as_ref().is_some_and(|e| e.epoch == epoch)
                             {
@@ -1646,6 +1652,20 @@ impl Render for App {
                 }
             }))
             .on_key_down(cx.listener(|app, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "enter" && app.state.editor.is_some() {
+                    let multiline = app
+                        .editor_textareas
+                        .values()
+                        .any(|input| input.read(cx).focus_handle(cx).is_focused(window));
+                    if !multiline
+                        || event.keystroke.modifiers.control
+                        || event.keystroke.modifiers.platform
+                    {
+                        cx.stop_propagation();
+                        app.dispatch(Message::EditorApply, window, cx);
+                        return;
+                    }
+                }
                 if event.keystroke.key == "escape" && app.state.editor.is_some() {
                     cx.stop_propagation();
                     app.dispatch(Message::EditorCancel, window, cx);

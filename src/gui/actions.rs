@@ -1369,6 +1369,7 @@ pub fn apply(state: &mut GuiState) -> Effect {
             members: e.members.into_iter().map(|(id, _, on)| (id, on)).collect(),
         };
     }
+    close(state, true);
     crate::gui::update::perform_gui(
         state,
         command,
