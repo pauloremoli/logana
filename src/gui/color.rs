@@ -11,6 +11,7 @@ use gpui_kit::gpui::Rgba;
 /// produces one span per match — `Filter::evaluate` already reports
 /// whichever shape is right (see `resolve_line_style`), so rendering
 /// never needs to special-case `-l` itself.
+#[derive(Clone)]
 pub struct LineStyle {
     pub fg: Option<Rgba>,
     pub bg: Option<Rgba>,
@@ -151,11 +152,34 @@ pub fn cell_style_spans(raw: &[u8], text: &str, style: &LineStyle) -> Vec<std::o
 }
 
 /// Compose every enabled filter with the same engine used by the terminal renderer.
+pub fn cached_row_styles(tab: &crate::shared::TabState, line: usize, raw: &[u8]) -> Vec<LineStyle> {
+    let key = (
+        tab.cache.render_gen,
+        std::sync::Arc::as_ptr(&tab.filter.manager) as usize,
+        raw.len(),
+    );
+    if let Some((generation, styles)) = tab.cache.gui_filter_styles.lock().unwrap().get(&line) {
+        if *generation == key {
+            return styles.clone();
+        }
+    }
+    let styles = row_styles(tab, raw);
+    let mut cache = tab.cache.gui_filter_styles.lock().unwrap();
+    // Keep the cache bounded as users scroll through large files.
+    if cache.len() >= 4096 {
+        cache.clear();
+    }
+    cache.insert(line, (key, styles.clone()));
+    styles
+}
 pub fn row_styles(tab: &crate::shared::TabState, raw: &[u8]) -> Vec<LineStyle> {
     if !tab.filter.enabled {
         return Vec::new();
     }
-    let (manager, styles, dates, fields) = tab.log_manager.build_filter_manager();
+    let manager = &tab.filter.manager;
+    let styles = &tab.filter.text_styles;
+    let dates = &tab.filter.date_styles;
+    let fields = &tab.filter.field_styles;
     let mut collector = MatchCollector::new(raw);
     collector.with_priority(500);
     manager.evaluate_into(&mut collector);
@@ -165,7 +189,7 @@ pub fn row_styles(tab: &crate::shared::TabState, raw: &[u8]) -> Vec<LineStyle> {
         .as_deref()
         .and_then(|parser| parser.parse_line(raw))
     {
-        for date in &dates {
+        for date in dates {
             if parts
                 .timestamp
                 .is_some_and(|ts| date.filter.matches(ts, None))
@@ -179,7 +203,7 @@ pub fn row_styles(tab: &crate::shared::TabState, raw: &[u8]) -> Vec<LineStyle> {
                 }
             }
         }
-        for field in &fields {
+        for field in fields {
             if !crate::filters::field_filter_matches(&field.field_filter, &parts, raw) {
                 continue;
             }
@@ -199,7 +223,7 @@ pub fn row_styles(tab: &crate::shared::TabState, raw: &[u8]) -> Vec<LineStyle> {
             }
         }
     }
-    crate::filters::manager::styled_spans(&collector, &styles)
+    crate::filters::manager::styled_spans(&collector, styles)
         .into_iter()
         .map(|(start, end, style)| LineStyle {
             fg: style.fg.and_then(color_to_gpui),
@@ -689,5 +713,45 @@ mod tests {
             color_to_gpui(Color::Indexed(255)),
             Some(rgba_from_u8(238, 238, 238))
         );
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    #[tokio::test]
+    async fn many_filters_reuse_compiled_manager_and_invalidate_colors() {
+        use crate::{
+            db::{Database, LogManager},
+            filters::{FilterOptions, FilterType},
+            ingestion::FileReader,
+            shared::TabState,
+        };
+        let db = std::sync::Arc::new(Database::in_memory().await.unwrap());
+        let manager = LogManager::new(db, None).await;
+        let mut tab = TabState::new(
+            FileReader::from_bytes(b"error 123\n".to_vec()),
+            manager,
+            "logs".into(),
+        );
+        for index in 0..40 {
+            tab.log_manager
+                .add_filter_with_color(
+                    format!("error|{index}"),
+                    FilterType::Highlight,
+                    FilterOptions::default().regex().fg("Red"),
+                )
+                .await;
+        }
+        tab.rebuild_filter_manager_cache();
+        let manager = tab.filter.manager.clone();
+        for _ in 0..100 {
+            let styles = super::cached_row_styles(&tab, 0, b"error 123");
+            assert!(!styles.is_empty());
+            assert!(std::sync::Arc::ptr_eq(&manager, &tab.filter.manager));
+        }
+        assert_eq!(tab.cache.gui_filter_styles.lock().unwrap().len(), 1);
+        tab.filter.enabled = false;
+        tab.invalidate_parse_cache();
+        assert!(super::cached_row_styles(&tab, 0, b"error 123").is_empty());
     }
 }

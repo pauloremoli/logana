@@ -186,6 +186,12 @@ pub fn log_pane(
                                                     .text_color(color_to_gpui(app.state.theme.comment_fg).unwrap_or(gpui_kit::gpui::rgb(0xaaaaaa))).font_weight(FontWeight::BOLD).cursor_pointer()
                                                     .child(note.text.replace('\n', " "))
                                                     .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(full_note.clone()).build(window, cx))
+                                        .on_click(cx.listener(move |app, _, window, cx| {
+                                                        cx.stop_propagation();
+                                                        app.dispatch(Message::EditAnnotation(index), window, cx);
+                                                    }))
+
+                                            }))
                                                     .child(line_row_with_selection(
                                             tab,
                                             line_idx,
@@ -203,11 +209,7 @@ pub fn log_pane(
                                         .when(tab.comment_manager.get().iter().any(|note| note.line_indices.contains(&line_idx)), |row| {
                                             row.border_l_1().border_color(color_to_gpui(app.state.theme.comment_fg).unwrap_or(gpui_kit::gpui::rgb(0xaaaaaa))).pl_2()
                                         })
-                                        .on_click(cx.listener(move |app, _, window, cx| {
-                                                        cx.stop_propagation();
-                                                        app.dispatch(Message::EditAnnotation(index), window, cx);
-                                                    }))
-                                            }))
+
                                         .on_click(cx.listener(
                                             move |app,
                                                   event: &gpui_kit::gpui::ClickEvent,
@@ -668,7 +670,11 @@ fn line_row_with_selection(
         gpui_kit::gpui::rgb((r as u32) << 16 | (g as u32) << 8 | b as u32)
     };
 
-    let filter_styles = crate::gui::color::row_styles(tab, &tab.file_reader.get_raw_line(line_idx));
+    let filter_styles = crate::gui::color::cached_row_styles(
+        tab,
+        line_idx,
+        &tab.file_reader.get_raw_line(line_idx),
+    );
     let filter_style = filter_styles.iter().find(|style| style.whole_line);
     let number_cell = fixed_cell(
         widths.line_no,
