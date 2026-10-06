@@ -3,7 +3,7 @@ use crate::gui::message::Message;
 use crate::gui::state::{GuiState, NavPage};
 use crate::gui::update::is_tab_live;
 use gpui_kit::assets::IconName;
-use gpui_kit::base::Disableable;
+use gpui_kit::base::{Disableable, Selectable};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Icon};
@@ -167,4 +167,22 @@ pub fn live_indicator(state: &GuiState, cx: &mut Context<App>) -> impl IntoEleme
                 ),
         )
         .into_any_element()
+}
+
+/// The sidebar control and filtering control have distinct effects.
+pub fn filtering_button(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
+    Button::new("toggle-filtering")
+        .ghost()
+        .icon(IconName::Funnel)
+        .label("Filters")
+        .selected(state.active_tab().is_some_and(|tab| tab.filter.enabled))
+        .disabled(state.active_tab().is_none())
+        .tooltip("Toggle filtering (F)")
+        .on_click(cx.listener(|app, _, window, cx| {
+            app.dispatch(
+                Message::GuiAction(crate::gui::actions::Action::ToggleFiltering),
+                window,
+                cx,
+            );
+        }))
 }

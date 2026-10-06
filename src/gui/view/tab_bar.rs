@@ -45,6 +45,7 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
     )
     .child(super::search_bar::search_button(cx))
     .child(super::search_bar::filter_button(cx))
+    .child(super::search_bar::filtering_button(state, cx))
     .child(super::search_bar::live_indicator(state, cx))
     .child(super::search_bar::view_mode_control(state, cx))
     .child(
