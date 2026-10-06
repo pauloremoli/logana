@@ -1,13 +1,12 @@
 use crate::shared::TabState;
 
-/// Identifies which of the log table's fixed-width columns a resize drag
-/// targets. `Message` has no fixed width (it always fills whatever space
-/// remains), so it isn't resizable and has no variant here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Identifies a column and its width when the drag starts.
+#[derive(Debug, Clone, PartialEq)]
 pub enum ResizableColumn {
     LineNo,
     Time,
     Level,
+    Field(String, f32),
 }
 
 /// The log table's current fixed-column widths — either the auto-fit
@@ -206,6 +205,7 @@ pub fn apply_width_delta(widths: &mut ColumnWidths, column: ResizableColumn, del
         ResizableColumn::LineNo => &mut widths.line_no,
         ResizableColumn::Time => &mut widths.time,
         ResizableColumn::Level => &mut widths.level,
+        ResizableColumn::Field(..) => return,
     };
     *width = (*width + delta).max(MIN_COLUMN_WIDTH_PX);
 }
@@ -297,5 +297,32 @@ mod tests {
         let mut widths = ColumnWidths::default();
         apply_width_delta(&mut widths, ResizableColumn::Level, -1000.0);
         assert_eq!(widths.level, MIN_COLUMN_WIDTH_PX);
+    }
+}
+
+/// Unrecognized files use their own layout, separate from detected formats.
+pub fn format_key(tab: &TabState) -> String {
+    tab.display
+        .format
+        .as_ref()
+        .map(|parser| parser.name().to_owned())
+        .unwrap_or_else(|| "__unstructured__".into())
+}
+
+impl TableWidths {
+    pub fn restore(&mut self, saved: &std::collections::BTreeMap<String, f32>) {
+        for (field, width) in saved {
+            if !width.is_finite() || *width < MIN_COLUMN_WIDTH_PX {
+                continue;
+            }
+            match field.as_str() {
+                "#" => self.fixed.line_no = *width,
+                "timestamp" | "time" | "ts" => self.fixed.time = *width,
+                "level" | "lvl" => self.fixed.level = *width,
+                _ => {
+                    std::sync::Arc::make_mut(&mut self.fields).insert(field.clone(), *width);
+                }
+            }
+        }
     }
 }

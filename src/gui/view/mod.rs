@@ -105,12 +105,20 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
             // the outer borrow.
             let fields = app.state.tabs[active_tab].collect_field_names();
             let tab = &app.state.tabs[active_tab];
-            let widths = crate::gui::column_widths::table_widths(
+            let mut widths = crate::gui::column_widths::table_widths(
                 &mut app.field_widths,
                 tab,
                 &fields,
                 app.state.column_widths,
             );
+            if let Some(saved) = app
+                .state
+                .preferences
+                .column_widths
+                .get(&crate::gui::column_widths::format_key(tab))
+            {
+                widths.restore(saved);
+            }
             let available_width = f32::from(window.viewport_size().width)
                 - if tab.display.show_sidebar {
                     sidebar::SIDEBAR_WIDTH

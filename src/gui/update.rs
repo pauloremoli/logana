@@ -654,6 +654,9 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             state.keyboard_sidebar = None;
             if idx < state.tabs.len() {
                 state.active_tab = idx;
+                state.column_widths =
+                    crate::gui::column_widths::fit_column_widths(&state.tabs[idx]);
+                state.column_resize_last_x = None;
             }
             Effect::None
         }
@@ -879,11 +882,28 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
         }
         Message::ColumnResizeMoved(column, mouse_x) => {
             if let Some(last_x) = state.column_resize_last_x {
-                crate::gui::column_widths::apply_width_delta(
-                    &mut state.column_widths,
-                    column,
-                    mouse_x - last_x,
-                );
+                if let crate::gui::column_widths::ResizableColumn::Field(field, initial) = column {
+                    if let Some(tab) = state.active_tab() {
+                        let format = crate::gui::column_widths::format_key(tab);
+                        let width = state
+                            .preferences
+                            .column_widths
+                            .entry(format)
+                            .or_default()
+                            .entry(field)
+                            .or_insert(initial);
+                        let next = *width + mouse_x - last_x;
+                        if next.is_finite() {
+                            *width = next.max(crate::gui::column_widths::MIN_COLUMN_WIDTH_PX);
+                        }
+                    }
+                } else {
+                    crate::gui::column_widths::apply_width_delta(
+                        &mut state.column_widths,
+                        column,
+                        mouse_x - last_x,
+                    );
+                }
             }
             state.column_resize_last_x = Some(mouse_x);
             Effect::None

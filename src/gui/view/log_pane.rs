@@ -422,7 +422,7 @@ fn column_width(field: &str, widths: &TableWidths, message_width: f32) -> f32 {
     match field {
         "timestamp" | "time" | "ts" => widths.time,
         "level" | "lvl" => widths.level,
-        "message" | "msg" => message_width,
+        "message" | "msg" => widths.fields.get(field).copied().unwrap_or(message_width),
         _ => widths
             .fields
             .get(field)
@@ -506,7 +506,10 @@ fn header_row(
     if show_numbers {
         row = row
             .child(header_cell(source, None, widths.line_no, "#".into(), cx))
-            .child(resize_handle(ResizableColumn::LineNo, cx));
+            .child(resize_handle(
+                ResizableColumn::Field("#".into(), widths.line_no),
+                cx,
+            ));
     }
     for field in fields {
         let label = match field.as_str() {
@@ -522,11 +525,10 @@ fn header_row(
             label.to_string(),
             cx,
         ));
-        row = match field.as_str() {
-            "timestamp" | "time" | "ts" => row.child(resize_handle(ResizableColumn::Time, cx)),
-            "level" | "lvl" => row.child(resize_handle(ResizableColumn::Level, cx)),
-            _ => row.child(column_spacer()),
-        };
+        row = row.child(resize_handle(
+            ResizableColumn::Field(field.clone(), column_width(field, widths, message_width)),
+            cx,
+        ));
     }
     row
 }
@@ -555,10 +557,11 @@ fn column_spacer() -> AnyElement {
 /// pointer is released outside the thin handle itself, which is the
 /// common case once a drag is underway.
 fn resize_handle(column: ResizableColumn, cx: &mut Context<App>) -> AnyElement {
-    let id = match column {
-        ResizableColumn::LineNo => "resize-line-no",
-        ResizableColumn::Time => "resize-time",
-        ResizableColumn::Level => "resize-level",
+    let id: gpui_kit::gpui::SharedString = match &column {
+        ResizableColumn::LineNo => "resize-line-no".into(),
+        ResizableColumn::Time => "resize-time".into(),
+        ResizableColumn::Level => "resize-level".into(),
+        ResizableColumn::Field(field, _) => format!("resize-{field}").into(),
     };
     div()
         .id(id)
@@ -572,7 +575,11 @@ fn resize_handle(column: ResizableColumn, cx: &mut Context<App>) -> AnyElement {
         .on_drag_move(cx.listener(
             move |app: &mut App, e: &DragMoveEvent<ResizableColumn>, window, cx| {
                 let mouse_x = f32::from(e.event.position.x);
-                app.dispatch(Message::ColumnResizeMoved(*e.drag(cx), mouse_x), window, cx);
+                app.dispatch(
+                    Message::ColumnResizeMoved(e.drag(cx).clone(), mouse_x),
+                    window,
+                    cx,
+                );
             },
         ))
         .on_mouse_up_out(

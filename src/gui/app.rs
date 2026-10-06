@@ -254,6 +254,7 @@ impl App {
     }
 
     pub fn dispatch(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
+        let save_column_widths = matches!(&message, Message::ColumnResizeEnded);
         let prepared_restore_id = match &message {
             Message::TabPrepared(tab, _, _) => Some(tab.id),
             _ => None,
@@ -362,6 +363,9 @@ impl App {
             self.context_scroll_pending.insert(tab.id);
         }
         self.save_display_change(previous_display);
+        if save_column_widths {
+            self.save_preferences(self.state.preferences.clone());
+        }
         self.save_session_state();
         if previous_theme != self.state.theme {
             crate::gui::theme::install(&self.state.theme, cx);

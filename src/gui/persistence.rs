@@ -31,6 +31,7 @@ pub struct Preferences {
     pub preview_bytes: u64,
     pub mcp_port: u16,
     pub font_size: f32,
+    pub column_widths: std::collections::BTreeMap<String, std::collections::BTreeMap<String, f32>>,
     pub locked: Vec<SettingsKey>,
 }
 impl Default for Preferences {
@@ -43,6 +44,7 @@ impl Default for Preferences {
             preview_bytes: crate::config::DEFAULT_PREVIEW_BYTES,
             mcp_port: 9876,
             font_size: 13.,
+            column_widths: Default::default(),
             locked: Vec::new(),
         }
     }
@@ -138,6 +140,11 @@ impl Preferences {
             .filter(|v| v.is_finite())
             .unwrap_or(prefs.font_size)
             .clamp(10., 32.);
+        prefs.column_widths = db
+            .load_app_setting(SettingsKey::GuiColumnWidths)
+            .await?
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default();
         Ok(prefs)
     }
     pub(super) fn settings(&self) -> Vec<(SettingsKey, String)> {
@@ -158,6 +165,10 @@ impl Preferences {
             (SettingsKey::PreviewBytes, self.preview_bytes.to_string()),
             (SettingsKey::McpPort, self.mcp_port.to_string()),
             (SettingsKey::GuiFontSize, self.font_size.to_string()),
+            (
+                SettingsKey::GuiColumnWidths,
+                serde_json::to_string(&self.column_widths).expect("finite column widths"),
+            ),
         ]);
         settings.retain(|(key, _)| !self.locked.contains(key));
         settings
