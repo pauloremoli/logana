@@ -32,6 +32,8 @@ fn menus() -> Vec<Menu> {
                 Action::SaveLogs,
                 Action::SaveMarked,
                 Action::Export,
+                Action::CopyPath,
+                Action::CloseOtherFiles,
                 Action::CloseFile,
                 Action::CloseAllFiles,
             ][..],

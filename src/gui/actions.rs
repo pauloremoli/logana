@@ -10,6 +10,8 @@ pub enum Action {
     OpenDirectory,
     CloseFile,
     CloseAllFiles,
+    CloseOtherFiles,
+    CopyPath,
     Undo,
     Redo,
     ToggleFiltering,
@@ -96,6 +98,20 @@ pub const CATALOG: &[Descriptor] = &[
         description: "Capture and customize keyboard shortcuts",
         aliases: "keybindings shortcuts",
         tab: false,
+    },
+    Descriptor {
+        action: Action::CloseOtherFiles,
+        label: "Close other files",
+        description: "Keep only the current file open",
+        aliases: "close others",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::CopyPath,
+        label: "Copy file path",
+        description: "Copy the full source path",
+        aliases: "copy path",
+        tab: true,
     },
     Descriptor {
         action: Action::CloseAllFiles,
@@ -531,6 +547,25 @@ pub fn open(
     match action {
         Action::Undo | Action::Redo => {
             return crate::gui::history::apply(state, action == Action::Redo);
+        }
+        Action::CopyPath => {
+            return state
+                .active_tab()
+                .and_then(|tab| tab.display_source_path())
+                .map(|path| Effect::CopyText(path.to_owned()))
+                .unwrap_or(Effect::None);
+        }
+        Action::CloseOtherFiles => {
+            let keep = state.active_tab().unwrap().id;
+            for index in (0..state.tabs.len()).rev() {
+                if state.tabs[index].id != keep {
+                    crate::gui::update::update(
+                        state,
+                        crate::gui::message::Message::TabClosed(index),
+                    );
+                }
+            }
+            return Effect::None;
         }
         Action::CloseAllFiles => {
             while !state.tabs.is_empty() {

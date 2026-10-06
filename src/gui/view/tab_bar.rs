@@ -29,6 +29,7 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
     for (idx, tab) in state.tabs.iter().enumerate() {
         bar = bar.child(tab_label(
             idx,
+            tab.id,
             tab.title.clone(),
             tab.display_source_path().unwrap_or(&tab.title).to_owned(),
             idx == state.active_tab,
@@ -66,6 +67,7 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
 /// of the TUI-era `[bracket]` convention this replaced.
 fn tab_label(
     idx: usize,
+    source: crate::shared::TabId,
     title: String,
     path: String,
     active: bool,
@@ -76,15 +78,32 @@ fn tab_label(
         .id(("file-tab", idx))
         .test_support()
         .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
-        .context_menu(move |menu, _, _| {
-            let close = entity.clone();
-            menu.item(
-                PopupMenuItem::new("Close tab").on_click(move |_, window, cx| {
-                    close.update(cx, |app, cx| {
-                        app.dispatch(Message::TabClosed(idx), window, cx)
+        .context_menu(move |mut menu, _, _| {
+            use crate::gui::actions::{Action, CATALOG};
+            for action in [
+                Action::SaveLogs,
+                Action::SaveMarked,
+                Action::Export,
+                Action::CopyPath,
+                Action::FileInfo,
+                Action::Merge,
+                Action::CloseFile,
+                Action::CloseOtherFiles,
+                Action::CloseAllFiles,
+            ] {
+                let entity = entity.clone();
+                let label = CATALOG.iter().find(|d| d.action == action).unwrap().label;
+                menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                    entity.update(cx, |app, cx| {
+                        if let Some(index) = app.state.tabs.iter().position(|tab| tab.id == source)
+                        {
+                            app.dispatch(Message::TabSelected(index), window, cx);
+                            app.dispatch(Message::GuiAction(action), window, cx);
+                        }
                     })
-                }),
-            )
+                }));
+            }
+            menu
         })
         .flex_shrink_0()
         .h(px(TAB_HEIGHT))
