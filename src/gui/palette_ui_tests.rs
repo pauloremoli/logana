@@ -1508,3 +1508,49 @@ fn facet_counts_finish_on_the_gpui_executor(cx: &mut TestAppContext) {
         assert_eq!(counts.counts["level"], vec![("INFO".into(), 1)]);
     });
 }
+
+#[gpui_kit::test]
+fn font_size_shortcuts_scale_logs_and_preserve_input(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        window.render_frame(cx);
+        let original = f32::from(window.rem_size());
+        let row_height = window.find(("log-row", 0usize)).bounds().size.height;
+        window.press("ctrl-=", cx);
+        window.render_frame(cx);
+        assert_eq!(f32::from(window.rem_size()), original + 1.);
+        assert!(window.find(("log-row", 0usize)).bounds().size.height > row_height);
+        window.press("ctrl--", cx);
+        window.render_frame(cx);
+        assert_eq!(f32::from(window.rem_size()), original);
+        app.update(cx, |app, cx| {
+            app.dispatch(crate::gui::message::Message::SearchPopup(true), window, cx)
+        });
+        window.render_frame(cx);
+        window.press("-", cx);
+        assert_eq!(f32::from(window.rem_size()), original);
+        assert_eq!(
+            app.read(cx)
+                .log_search
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .value()
+                .as_str(),
+            "-"
+        );
+        window.press("ctrl-=", cx);
+        window.render_frame(cx);
+        assert_eq!(f32::from(window.rem_size()), original + 1.);
+        gpui_kit::component::theme::Theme::update(cx, |theme| theme.font_size = px(32.));
+        window.render_frame(cx);
+        window.press("ctrl-=", cx);
+        assert_eq!(f32::from(window.rem_size()), 32.);
+        gpui_kit::component::theme::Theme::update(cx, |theme| theme.font_size = px(10.));
+        window.render_frame(cx);
+        window.press("ctrl--", cx);
+        assert_eq!(f32::from(window.rem_size()), 10.);
+    })
+    .unwrap();
+}

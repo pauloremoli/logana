@@ -56,7 +56,7 @@ pub fn status_bar(tab: Option<&TabState>, cx: &mut Context<App>) -> impl IntoEle
             .overflow_hidden()
             .border_t_1()
             .border_color(cx.theme().border)
-            .text_size(px(12.))
+            .text_size(gpui_kit::gpui::rems(12. / 13.))
             .text_color(cx.theme().muted_foreground)
             .child(left.replace("   ", "   |   "))
             .child(schema)

@@ -41,7 +41,11 @@ pub fn command_palette(
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(div().child("Actions").text_size(px(15.)))
+                .child(
+                    div()
+                        .child("Actions")
+                        .text_size(gpui_kit::gpui::rems(15. / 13.)),
+                )
                 .child(
                     Button::new("command-close")
                         .ghost()
@@ -85,7 +89,7 @@ pub fn command_palette(
                                 .child(descriptor.label)
                                 .child(
                                     div()
-                                        .text_size(px(12.))
+                                        .text_size(gpui_kit::gpui::rems(12. / 13.))
                                         .text_color(cx.theme().muted_foreground)
                                         .child(crate::gui::keyboard::shortcut_for_action(
                                             &crate::gui::keyboard::bindings(&app.state),
@@ -95,7 +99,7 @@ pub fn command_palette(
                         )
                         .child(
                             div()
-                                .text_size(px(12.))
+                                .text_size(gpui_kit::gpui::rems(12. / 13.))
                                 .text_color(cx.theme().muted_foreground)
                                 .child(if missing {
                                     descriptor.unavailable(&app.state).unwrap()

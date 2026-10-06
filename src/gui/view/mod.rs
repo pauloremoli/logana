@@ -129,13 +129,14 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                 }
                 - 24.; // Table container's horizontal padding.
             let message_width = log_pane::message_width(tab, &fields, &widths, available_width);
-            log_pane::prepare_list(
+            log_pane::prepare_scaled_list(
                 &mut app.table_layout,
                 &app.log_scroll,
                 &app.state.tabs[active_tab],
                 &widths,
                 &fields,
                 message_width,
+                f32::from(window.rem_size()) / 13.,
             );
             let tab = &app.state.tabs[active_tab];
             let sidebar_on_left = tab.display.sidebar_side.is_left();
@@ -161,6 +162,7 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                             &app.horizontal_scroll,
                             &fields,
                             message_width,
+                            f32::from(window.rem_size()) / 13.,
                             app.text_handle.clone(),
                             app.text_document.clone(),
                             cx,

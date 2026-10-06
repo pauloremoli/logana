@@ -1516,7 +1516,7 @@ impl Render for App {
             .track_focus(&self.root_focus)
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .text_size(gpui_kit::gpui::px(13.))
+            .text_size(gpui_kit::gpui::rems(13. / 13.))
             .flex()
             .flex_col()
             .on_action(cx.listener(Self::on_open_file_action))
@@ -1545,6 +1545,28 @@ impl Render for App {
                     }
                     cx.notify();
                     return;
+                }
+
+                if stroke.modifiers.control && !stroke.modifiers.alt && !stroke.modifiers.platform {
+                    let delta = match stroke.key.as_str() {
+                        "+" | "=" | "plus" => Some(1.),
+                        "-" | "minus" => Some(-1.),
+                        _ => None,
+                    };
+                    if let Some(delta) = delta {
+                        let size = (f32::from(window.rem_size()) + delta).clamp(10., 32.);
+                        gpui_kit::component::theme::Theme::update(cx, |theme| {
+                            theme.font_size = gpui_kit::gpui::px(size);
+                        });
+                        window.set_rem_size(gpui_kit::gpui::px(size));
+                        app.log_scroll.remeasure();
+                        app.text_document.borrow_mut().clear();
+                        app.text_context = None;
+                        gpui_kit::base::TextSelection::clear(window, cx);
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
                 }
 
                 if let Some(editor) = &app.state.editor {

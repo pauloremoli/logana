@@ -15,7 +15,7 @@ use gpui_kit::component::tag::Tag;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{
     AnyElement, Context, DragMoveEvent, Empty, FontWeight, ListOffset, ListState, MouseButton, div,
-    list, px,
+    list, px, rems,
 };
 
 /// Minimum row height and initial height hint for offscreen rows.
@@ -45,7 +45,7 @@ pub struct LayoutCache {
         usize,
         usize,
         TableWidths,
-        u32,
+        (u32, u32),
         Vec<String>,
         bool,
         bool,
@@ -53,6 +53,7 @@ pub struct LayoutCache {
         Vec<Vec<usize>>,
     ),
 }
+#[cfg(test)]
 pub fn prepare_list(
     cache: &mut Option<LayoutCache>,
     state: &ListState,
@@ -60,6 +61,18 @@ pub fn prepare_list(
     widths: &TableWidths,
     fields: &[String],
     message_width: f32,
+) {
+    prepare_scaled_list(cache, state, tab, widths, fields, message_width, 1.);
+}
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_scaled_list(
+    cache: &mut Option<LayoutCache>,
+    state: &ListState,
+    tab: &TabState,
+    widths: &TableWidths,
+    fields: &[String],
+    message_width: f32,
+    font_scale: f32,
 ) {
     let columns = visible_columns(tab, fields);
     let total = tab.filter.visible_indices.len();
@@ -70,7 +83,7 @@ pub fn prepare_list(
         tab.file_reader.line_count(),
         total,
         widths.clone(),
-        message_width.to_bits(),
+        (message_width.to_bits(), font_scale.to_bits()),
         columns.clone(),
         tab.display.wrap,
         tab.display.show_keys,
@@ -99,7 +112,7 @@ pub fn prepare_list(
     } else {
         // Size the scrollbar from currently available visible rows. Publishing
         // another chunk changes `total`, so its height is updated on this frame.
-        state.reset_with_uniform_height(total, px(ROW_HEIGHT_PX));
+        state.reset_with_uniform_height(total, px(ROW_HEIGHT_PX * font_scale));
         state.scroll_to(ListOffset {
             item_ix: tab.scroll.scroll_offset.min(total.saturating_sub(1)),
             offset_in_item: px(0.),
@@ -116,6 +129,7 @@ pub fn log_pane(
     horizontal_scroll: &gpui_kit::gpui::ScrollHandle,
     fields: &[String],
     message_width: f32,
+    font_scale: f32,
     text_handle: gpui_kit::base::TextSelectionHandle,
     text_document: crate::gui::text_selection::SharedDocument,
     cx: &mut Context<App>,
@@ -140,7 +154,7 @@ pub fn log_pane(
         .min_w(gpui_kit::gpui::relative(1.))
         .h_full()
         .font_family("monospace")
-        .text_size(px(12.))
+        .text_size(rems(12. / 13.))
         .overflow_hidden()
         .child(header_row(
             tab.id,
@@ -183,7 +197,7 @@ pub fn log_pane(
                                             .map(|(index, note)| {
                                                 let full_note = note.text.clone();
                                                 div().id(("log-annotation", index)).test_support()
-                                                    .h(px(ANNOTATION_HEIGHT_PX)).w_full().px_3().text_sm().truncate()
+                                                    .h(rems(ANNOTATION_HEIGHT_PX / 13.)).w_full().px_3().text_sm().truncate()
                                                     .text_color(color_to_gpui(app.state.theme.comment_fg).unwrap_or(gpui_kit::gpui::rgb(0xaaaaaa))).font_weight(FontWeight::BOLD).cursor_pointer()
                                                     .child(note.text.replace('\n', " "))
                                                     .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(full_note.clone()).build(window, cx))
@@ -206,6 +220,7 @@ pub fn log_pane(
                                             &row_fields,
                                             message_width,
                                             (&row_document, pos),
+                                            font_scale,
                                         ))
                                         .when(tab.comment_manager.get().iter().any(|note| note.line_indices.contains(&line_idx)), |row| {
                                             row.border_l_1().border_color(color_to_gpui(app.state.theme.comment_fg).unwrap_or(gpui_kit::gpui::rgb(0xaaaaaa))).pl_2()
@@ -338,7 +353,7 @@ pub fn log_pane(
         .child(
             div()
                 .absolute()
-                .top(px(ROW_HEIGHT_PX + 4.))
+                .top(rems((ROW_HEIGHT_PX + 4.) / 13.))
                 .bottom_0()
                 .left_0()
                 .right_0()
@@ -486,7 +501,7 @@ fn header_row(
         .border_b_1()
         .border_color(cx.theme().border)
         .text_color(cx.theme().muted_foreground)
-        .h(px(ROW_HEIGHT_PX + 4.))
+        .h(rems((ROW_HEIGHT_PX + 4.) / 13.))
         .overflow_hidden();
     if show_numbers {
         row = row
@@ -524,7 +539,7 @@ fn column_spacer() -> AnyElement {
     div()
         .flex_shrink_0()
         .w(px(RESIZE_HANDLE_WIDTH_PX))
-        .h(px(ROW_HEIGHT_PX))
+        .h(rems(ROW_HEIGHT_PX / 13.))
         .into_any_element()
 }
 
@@ -550,7 +565,7 @@ fn resize_handle(column: ResizableColumn, cx: &mut Context<App>) -> AnyElement {
         .test_support()
         .flex_shrink_0()
         .w(px(RESIZE_HANDLE_WIDTH_PX))
-        .h(px(ROW_HEIGHT_PX))
+        .h(rems(ROW_HEIGHT_PX / 13.))
         .cursor_col_resize()
         .hover(|style| style.bg(cx.theme().border))
         .on_drag(column, |_column, _offset, _window, cx| cx.new(|_| Empty))
@@ -634,6 +649,7 @@ fn wrap_text(text: &str, width: f32) -> Vec<String> {
     lines.push(line);
     lines
 }
+#[cfg(test)]
 fn wrapped_height(
     tab: &TabState,
     line: usize,
@@ -641,13 +657,23 @@ fn wrapped_height(
     widths: &TableWidths,
     message_width: f32,
 ) -> f32 {
+    scaled_wrapped_height(tab, line, fields, widths, message_width, 1.)
+}
+fn scaled_wrapped_height(
+    tab: &TabState,
+    line: usize,
+    fields: &[String],
+    widths: &TableWidths,
+    message_width: f32,
+    font_scale: f32,
+) -> f32 {
     let count = displayed_values(tab, line, fields)
         .iter()
         .zip(fields)
         .map(|(text, field)| {
             wrap_text(
                 text,
-                (column_width(field, widths, message_width) - 16.).max(8.),
+                (column_width(field, widths, message_width) - 16.).max(8.) / font_scale,
             )
             .len()
         })
@@ -666,6 +692,7 @@ fn line_row_with_selection(
     fields: &[String],
     message_width: f32,
     text_selection: (&crate::gui::text_selection::SharedDocument, usize),
+    font_scale: f32,
 ) -> AnyElement {
     let palette = crate::gui::theme::GuiPalette::from_theme(theme);
     let rgb = |(r, g, b): (u8, u8, u8)| {
@@ -701,11 +728,13 @@ fn line_row_with_selection(
     let mut row = div()
         .flex()
         .w_full()
-        .h(px(if tab.display.wrap {
-            wrapped_height(tab, line_idx, fields, widths, message_width)
-        } else {
-            ROW_HEIGHT_PX
-        }))
+        .h(rems(
+            (if tab.display.wrap {
+                scaled_wrapped_height(tab, line_idx, fields, widths, message_width, font_scale)
+            } else {
+                ROW_HEIGHT_PX
+            }) / 13.,
+        ))
         .items_start()
         .border_b_1()
         .border_color(rgb(palette.border));
@@ -727,6 +756,7 @@ fn line_row_with_selection(
             theme,
             &filter_styles,
             document,
+            font_scale,
         );
         row = row.child(cell).child(column_spacer());
     }
@@ -1017,6 +1047,7 @@ fn selectable_cell(
     theme: &TuiTheme,
     filter_styles: &[LineStyle],
     document: &crate::gui::text_selection::SharedDocument,
+    font_scale: f32,
 ) -> AnyElement {
     use crate::gui::text_selection::{Endpoint, SelectionText};
     use gpui_kit::gpui::StyledText;
@@ -1043,7 +1074,7 @@ fn selectable_cell(
     highlights = search_highlights(text, &tab.search.query, theme, highlights);
     let selection = document.borrow().range(position, column, text.len());
     let chunks = if tab.display.wrap {
-        wrap_text(text, (width - 16.).max(8.))
+        wrap_text(text, (width - 16.).max(8.) / font_scale)
     } else {
         vec![text.into()]
     };
@@ -1112,7 +1143,7 @@ fn selectable_cell(
             order: ((position as u64) << 32) | ((column as u64) << 16) | chunk_index as u64,
         };
         let mut chunk_row = div()
-            .h(px(ROW_HEIGHT_PX))
+            .h(rems(ROW_HEIGHT_PX / 13.))
             .flex()
             .items_center()
             .whitespace_nowrap();
@@ -1183,6 +1214,7 @@ fn line_row(
         fields,
         message_width,
         (&document, line_idx),
+        1.,
     )
 }
 
@@ -1194,7 +1226,7 @@ fn fixed_cell(width: f32, text: impl Into<gpui_kit::gpui::SharedString>) -> AnyE
     div()
         .flex_shrink_0()
         .w(px(width))
-        .h(px(ROW_HEIGHT_PX))
+        .h(rems(ROW_HEIGHT_PX / 13.))
         .flex()
         .items_center()
         .pl(px(8.))
