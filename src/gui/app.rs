@@ -643,6 +643,9 @@ impl App {
             }
             Effect::None => {}
             Effect::Quit => self.request_quit(cx),
+            Effect::CopyText(text) => {
+                cx.write_to_clipboard(gpui_kit::gpui::ClipboardItem::new_string(text))
+            }
             Effect::OpenFileDialog => self.spawn_open_file_dialog(false, cx),
             Effect::OpenDirectoryDialog => self.spawn_open_file_dialog(true, cx),
             Effect::LoadFile(path) => self.spawn_load_file(path, cx),

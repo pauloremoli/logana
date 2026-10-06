@@ -79,6 +79,7 @@ pub enum Effect {
     },
     None,
     Quit,
+    CopyText(String),
     OpenFileDialog,
     OpenDirectoryDialog,
     LoadFile(PathBuf),

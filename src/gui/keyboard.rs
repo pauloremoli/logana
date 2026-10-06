@@ -1,6 +1,6 @@
 use crate::gui::{actions::Action, effect::Effect, message::Message, state::GuiState};
 use crate::input::{KeyCode, KeyModifiers};
-fn bindings(state: &GuiState) -> std::sync::Arc<crate::config::Keybindings> {
+pub(super) fn bindings(state: &GuiState) -> std::sync::Arc<crate::config::Keybindings> {
     state
         .active_tab()
         .map(|tab| tab.interaction.keybindings.clone())
@@ -11,6 +11,25 @@ fn bindings(state: &GuiState) -> std::sync::Arc<crate::config::Keybindings> {
                     .keybindings,
             )
         })
+}
+fn action_bindings(
+    kb: &crate::config::Keybindings,
+) -> Vec<(&crate::config::keybindings::KeyBindings, Action)> {
+    vec![
+        (&kb.normal.show_keybindings, Action::Help),
+        (&kb.normal.group_mode, Action::Group),
+        (&kb.normal.filter_include, Action::Filter),
+        (&kb.normal.filter_include_auto, Action::Filter),
+        (&kb.normal.filter_exclude, Action::Filter),
+        (&kb.normal.filter_mode, Action::Filter),
+        (&kb.normal.toggle_filtering, Action::ToggleFiltering),
+        (&kb.normal.toggle_marks_only, Action::MarksOnly),
+        (&kb.normal.mark_line, Action::Bookmark),
+        (&kb.normal.comment_line, Action::Annotation),
+        (&kb.normal.enter_ui_mode, Action::View),
+        (&kb.global.new_tab, Action::Open),
+        (&kb.global.file_switcher, Action::SwitchFile),
+    ]
 }
 pub fn handled(state: &GuiState, key: KeyCode, modifiers: KeyModifiers) -> bool {
     let kb = bindings(state);
@@ -23,31 +42,50 @@ pub fn handled(state: &GuiState, key: KeyCode, modifiers: KeyModifiers) -> bool 
     } else {
         modifiers
     };
-    matches!(
-        key,
-        KeyCode::Home | KeyCode::End | KeyCode::F(1) | KeyCode::Char('?')
-    ) || [
-        &kb.navigation.scroll_down,
-        &kb.navigation.scroll_up,
-        &kb.navigation.page_down,
-        &kb.navigation.page_up,
-        &kb.navigation.half_page_down,
-        &kb.navigation.half_page_up,
-        &kb.normal.go_to_top_chord,
-        &kb.normal.go_to_bottom,
-        &kb.normal.mark_line,
-        &kb.normal.next_match,
-        &kb.normal.prev_match,
-        &kb.normal.filter_mode,
-        &kb.normal.group_mode,
-        &kb.global.next_tab,
-        &kb.global.prev_tab,
-        &kb.global.close_tab,
-        &kb.global.new_tab,
-        &kb.global.file_switcher,
-    ]
-    .iter()
-    .any(|binding| binding.matches(key, nav_mods))
+    action_bindings(&kb)
+        .iter()
+        .any(|(binding, _)| binding.matches(key, modifiers))
+        || kb
+            .custom
+            .iter()
+            .any(|binding| binding.key.matches(key, modifiers))
+        || [
+            &kb.normal.search_forward,
+            &kb.normal.clear_search,
+            &kb.normal.expand_continuation,
+            &kb.normal.collapse_continuation,
+            &kb.normal.toggle_highlight_mode,
+            &kb.normal.yank_line,
+            &kb.normal.yank_marked,
+        ]
+        .iter()
+        .any(|binding| binding.matches(key, modifiers))
+        || matches!(
+            key,
+            KeyCode::Home | KeyCode::End | KeyCode::F(1) | KeyCode::Char('?')
+        )
+        || [
+            &kb.navigation.scroll_down,
+            &kb.navigation.scroll_up,
+            &kb.navigation.page_down,
+            &kb.navigation.page_up,
+            &kb.navigation.half_page_down,
+            &kb.navigation.half_page_up,
+            &kb.normal.go_to_top_chord,
+            &kb.normal.go_to_bottom,
+            &kb.normal.mark_line,
+            &kb.normal.next_match,
+            &kb.normal.prev_match,
+            &kb.normal.filter_mode,
+            &kb.normal.group_mode,
+            &kb.global.next_tab,
+            &kb.global.prev_tab,
+            &kb.global.close_tab,
+            &kb.global.new_tab,
+            &kb.global.file_switcher,
+        ]
+        .iter()
+        .any(|binding| binding.matches(key, nav_mods))
         || (modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key, KeyCode::Char('o') | KeyCode::Char('b')))
         || (modifiers.contains(KeyModifiers::CONTROL) && key == KeyCode::Tab)
@@ -57,6 +95,100 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
         return Effect::None;
     }
     let kb = bindings(state);
+    if let Some(custom) = kb
+        .custom
+        .iter()
+        .find(|binding| binding.key.matches(key, modifiers))
+    {
+        use clap::Parser;
+        if let Ok(parsed) = crate::commands::CommandLine::try_parse_from(
+            crate::commands::auto_complete::shell_split(&custom.command),
+        ) {
+            if let Some(command) = parsed.command {
+                return crate::gui::update::perform_gui(state, command, custom.command.clone());
+            }
+        }
+        return Effect::None;
+    }
+    if kb.normal.search_forward.matches(key, modifiers) {
+        return crate::gui::update::update(state, Message::SearchPopup(true));
+    }
+    if kb.normal.clear_search.matches(key, modifiers) {
+        return crate::gui::update::update(state, Message::SearchEdited(String::new()));
+    }
+    if kb.normal.expand_continuation.matches(key, modifiers)
+        || kb.normal.collapse_continuation.matches(key, modifiers)
+    {
+        if let Some(tab) = state.active_tab_mut() {
+            if let Some(line) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
+                if let Some(parent) = tab
+                    .active_continuation_map()
+                    .and_then(|map| map.get(line))
+                    .copied()
+                {
+                    tab.set_continuation_collapsed(
+                        parent,
+                        kb.normal.collapse_continuation.matches(key, modifiers),
+                    );
+                }
+            }
+        }
+        return Effect::None;
+    }
+    if kb.normal.toggle_highlight_mode.matches(key, modifiers) {
+        if let Some(tab) = state.active_tab_mut() {
+            tab.filter.highlight_mode = !tab.filter.highlight_mode;
+            tab.begin_filter_refresh();
+        }
+        return Effect::None;
+    }
+    if kb.normal.yank_line.matches(key, modifiers) || kb.normal.yank_marked.matches(key, modifiers)
+    {
+        if let Some(tab) = state.active_tab() {
+            let lines = if kb.normal.yank_marked.matches(key, modifiers) {
+                tab.mark_manager.get_indices()
+            } else {
+                crate::gui::view::annotations::selected_lines(state)
+            };
+            let text = lines
+                .iter()
+                .map(|line| crate::gui::view::log_pane::raw_log_message(&tab.file_reader, *line))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Effect::CopyText(text);
+        }
+    }
+    if let Some((_, action)) = action_bindings(&kb)
+        .iter()
+        .find(|(binding, _)| binding.matches(key, modifiers))
+    {
+        let effect = crate::gui::actions::open(state, *action, None, None);
+        if *action == Action::Filter {
+            let selected = state
+                .active_tab()
+                .and_then(|tab| {
+                    tab.filter
+                        .visible_indices
+                        .get_opt(tab.scroll.scroll_offset)
+                        .map(|line| {
+                            crate::gui::view::log_pane::raw_log_message(&tab.file_reader, line)
+                        })
+                })
+                .unwrap_or_default();
+            if let Some(editor) = &mut state.editor {
+                editor.kind = if kb.normal.filter_exclude.matches(key, modifiers) {
+                    crate::filters::FilterType::Exclude
+                } else {
+                    crate::filters::FilterType::Include
+                };
+                editor.auto_style = kb.normal.filter_include_auto.matches(key, modifiers);
+                if editor.auto_style {
+                    editor.values[0] = selected;
+                }
+            }
+        }
+        return effect;
+    }
     let action = if matches!(key, KeyCode::F(1) | KeyCode::Char('?')) {
         Some(Action::Help)
     } else if kb.global.file_switcher.matches(key, modifiers) {
