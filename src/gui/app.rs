@@ -666,6 +666,7 @@ impl App {
                                 app.state.notify(crate::gui::state::StatusMessage::Info(
                                     "Keyboard shortcuts saved.".into(),
                                 ));
+                                crate::gui::menus::install(cx);
                             }
                             Err(error) => app
                                 .state

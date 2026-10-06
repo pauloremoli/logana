@@ -21,6 +21,9 @@ pub fn install(cx: &mut App) {
 
 fn menus() -> Vec<Menu> {
     let mut menus = Vec::new();
+    let kb = crate::config::Config::load()
+        .unwrap_or_default()
+        .keybindings;
     for (name, actions) in [
         (
             "File",
@@ -94,7 +97,15 @@ fn menus() -> Vec<Menu> {
                     .iter()
                     .find(|d| d.action == *action)
                     .expect("menu action in catalog");
-                MenuItem::action(descriptor.label, InvokeAction { action: *action })
+                {
+                    let shortcut = super::keyboard::shortcut_for_action(&kb, *action);
+                    let label = if shortcut.is_empty() {
+                        descriptor.label.to_owned()
+                    } else {
+                        format!("{}    {}", descriptor.label, shortcut)
+                    };
+                    MenuItem::action(label, InvokeAction { action: *action })
+                }
             })
             .collect::<Vec<_>>();
         if name == "File" {

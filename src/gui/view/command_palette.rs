@@ -74,16 +74,35 @@ pub fn command_palette(
                 .disabled(missing)
                 .selected(index == palette.selected)
                 .child(
-                    div().flex().flex_col().child(descriptor.label).child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(cx.theme().muted_foreground)
-                            .child(if missing {
-                                descriptor.unavailable(&app.state).unwrap()
-                            } else {
-                                descriptor.description
-                            }),
-                    ),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .w_full()
+                        .child(
+                            div()
+                                .flex()
+                                .justify_between()
+                                .child(descriptor.label)
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(crate::gui::keyboard::shortcut_for_action(
+                                            &crate::gui::keyboard::bindings(&app.state),
+                                            descriptor.action,
+                                        )),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(if missing {
+                                    descriptor.unavailable(&app.state).unwrap()
+                                } else {
+                                    descriptor.description
+                                }),
+                        ),
                 )
                 .on_click(cx.listener(move |app, _, window, cx| {
                     app.dispatch(Message::PaletteInsert(index), window, cx)
