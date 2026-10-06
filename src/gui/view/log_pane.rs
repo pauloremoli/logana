@@ -837,6 +837,24 @@ fn cell_highlights(
         ));
     }
 
+    // GPUI requires sorted, disjoint ranges; detectors can overlap (IPv6 and status codes).
+    let mut boundaries = vec![0, text.len()];
+    for (range, _) in &highlights {
+        boundaries.extend([range.start, range.end]);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    highlights = boundaries
+        .windows(2)
+        .filter_map(|pair| {
+            highlights
+                .iter()
+                .rev()
+                .find(|(range, _)| range.contains(&pair[0]))
+                .map(|(_, style)| (pair[0]..pair[1], *style))
+        })
+        .collect();
+
     if let Some(color) = process_color {
         highlights = vec![(
             0..text.len(),
