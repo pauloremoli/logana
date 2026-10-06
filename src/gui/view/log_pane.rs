@@ -1,5 +1,5 @@
 use crate::gui::app::App;
-use crate::gui::color::{LineStyle, cell_style_spans, color_to_gpui, resolve_row_style};
+use crate::gui::color::{LineStyle, cell_style_spans, color_to_gpui};
 use crate::gui::column_widths::{ResizableColumn, TableWidths};
 use crate::gui::level::{classify_line_level, level_pill_colors};
 use crate::gui::message::Message;
@@ -599,11 +599,8 @@ fn line_row_with_selection(
         gpui_kit::gpui::rgb((r as u32) << 16 | (g as u32) << 8 | b as u32)
     };
 
-    let filter_style = resolve_row_style(
-        &tab.file_reader.get_raw_line(line_idx),
-        tab.log_manager.get_filters(),
-        tab.log_manager.get_group_styles(),
-    );
+    let filter_styles = crate::gui::color::row_styles(tab, &tab.file_reader.get_raw_line(line_idx));
+    let filter_style = filter_styles.iter().find(|style| style.whole_line);
     let number_cell = fixed_cell(
         widths.line_no,
         format!(
@@ -651,7 +648,7 @@ fn line_row_with_selection(
             &values[column],
             width,
             theme,
-            filter_style.as_ref(),
+            &filter_styles,
             document,
         );
         row = row.child(cell).child(column_spacer());
@@ -850,6 +847,14 @@ fn cell_highlights(
         )];
     }
 
+    overlay_filter(raw, text, filter_style, highlights)
+}
+fn overlay_filter(
+    raw: &[u8],
+    text: &str,
+    filter_style: Option<&LineStyle>,
+    highlights: Vec<(std::ops::Range<usize>, gpui_kit::gpui::HighlightStyle)>,
+) -> Vec<(std::ops::Range<usize>, gpui_kit::gpui::HighlightStyle)> {
     let Some(filter) = filter_style else {
         return highlights;
     };
@@ -916,7 +921,7 @@ fn selectable_cell(
     text: &str,
     width: f32,
     theme: &TuiTheme,
-    filter_style: Option<&LineStyle>,
+    filter_styles: &[LineStyle],
     document: &crate::gui::text_selection::SharedDocument,
 ) -> AnyElement {
     use crate::gui::text_selection::{Endpoint, SelectionText};
@@ -936,7 +941,11 @@ fn selectable_cell(
         text,
         parsed.as_ref().and_then(|parts| parts.target),
     );
-    let mut highlights = cell_highlights(&raw, text, theme, filter_style, color);
+    let mut highlights = cell_highlights(&raw, text, theme, None, color);
+    for filter in filter_styles {
+        highlights = overlay_filter(&raw, text, Some(filter), highlights);
+    }
+    let filter_style = filter_styles.iter().find(|style| style.whole_line);
     highlights = search_highlights(text, &tab.search.query, theme, highlights);
     let selection = document.borrow().range(position, column, text.len());
     let chunks = if tab.display.wrap {

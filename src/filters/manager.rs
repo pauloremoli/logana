@@ -134,21 +134,22 @@ pub fn render_line<'a>(col: &MatchCollector, styles: &[crate::style::Style]) -> 
         return Line::from(slice_to_string(col.line));
     }
 
-    let line_len = col.line.len();
-    let mut valid = collect_valid_spans(col, line_len);
-    if valid.is_empty() {
-        return Line::from(slice_to_string(col.line));
-    }
-    valid.sort_unstable_by_key(|&(start, _, _, _)| start);
+    events_to_line(col.line, col.line.len(), &styled_spans(col, styles))
+}
 
-    let boundaries = collect_boundaries(&valid, line_len);
-    let events = sweep_styled_events(&valid, &boundaries, styles);
-    events_to_line(col.line, line_len, &events)
+/// Shared frontend-neutral composition, with independent foreground/background precedence.
+pub fn styled_spans(
+    col: &MatchCollector,
+    styles: &[crate::style::Style],
+) -> Vec<(usize, usize, crate::style::Style)> {
+    let mut valid = collect_valid_spans(col, col.line.len());
+    valid.sort_unstable_by_key(|&(start, _, _, _)| start);
+    let boundaries = collect_boundaries(&valid, col.line.len());
+    sweep_styled_events(&valid, &boundaries, styles)
 }
 
 /// Filter collector spans to valid (non-empty, in-bounds) tuples.
 #[inline]
-#[cfg(feature = "tui")]
 fn collect_valid_spans(col: &MatchCollector, line_len: usize) -> Vec<(usize, usize, u32, StyleId)> {
     col.spans
         .iter()
@@ -159,7 +160,6 @@ fn collect_valid_spans(col: &MatchCollector, line_len: usize) -> Vec<(usize, usi
 
 /// Collect unique sorted boundary points from valid spans plus line extents.
 #[inline]
-#[cfg(feature = "tui")]
 fn collect_boundaries(valid: &[(usize, usize, u32, StyleId)], line_len: usize) -> Vec<usize> {
     let mut boundaries = Vec::with_capacity(valid.len() * 2 + 2);
     boundaries.push(0);
@@ -175,7 +175,6 @@ fn collect_boundaries(valid: &[(usize, usize, u32, StyleId)], line_len: usize) -
 
 /// Sweep-line pass: for each boundary interval compose fg/bg from the active
 /// spans and merge adjacent intervals with the same style.
-#[cfg(feature = "tui")]
 fn sweep_styled_events(
     valid: &[(usize, usize, u32, StyleId)],
     boundaries: &[usize],
@@ -255,7 +254,6 @@ fn events_to_line<'a>(
 /// `fg` is taken from the span with the highest priority that has `fg` set;
 /// `bg` from the span with the highest priority that has `bg` set.
 #[inline]
-#[cfg(feature = "tui")]
 fn compose_segment_style(
     active: &[(u32, usize, StyleId)],
     styles: &[crate::style::Style],

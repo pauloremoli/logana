@@ -150,6 +150,81 @@ pub fn cell_style_spans(raw: &[u8], text: &str, style: &LineStyle) -> Vec<std::o
     merged
 }
 
+/// Compose every enabled filter with the same engine used by the terminal renderer.
+pub fn row_styles(tab: &crate::shared::TabState, raw: &[u8]) -> Vec<LineStyle> {
+    if !tab.filter.enabled {
+        return Vec::new();
+    }
+    let (manager, styles, dates, fields) = tab.log_manager.build_filter_manager();
+    let mut collector = MatchCollector::new(raw);
+    collector.with_priority(500);
+    manager.evaluate_into(&mut collector);
+    if let Some(parts) = tab
+        .display
+        .format
+        .as_deref()
+        .and_then(|parser| parser.parse_line(raw))
+    {
+        for date in &dates {
+            if parts
+                .timestamp
+                .is_some_and(|ts| date.filter.matches(ts, None))
+            {
+                if date.match_only {
+                    if let Some(ts) = parts.timestamp {
+                        push_value(&mut collector, raw, ts, date.style_id);
+                    }
+                } else {
+                    collector.push(0, raw.len(), date.style_id);
+                }
+            }
+        }
+        for field in &fields {
+            if !crate::filters::field_filter_matches(&field.field_filter, &parts, raw) {
+                continue;
+            }
+            if !field.match_only {
+                collector.push(0, raw.len(), field.style_id);
+                continue;
+            }
+            for (name, pattern) in &field.field_filter.conditions {
+                if let Some(value) =
+                    crate::filters::resolve_field(name, &parts).filter(|v| v.contains(pattern))
+                {
+                    push_value(&mut collector, raw, value, field.style_id);
+                }
+            }
+            if let Some(text) = &field.field_filter.text {
+                push_value(&mut collector, raw, text, field.style_id);
+            }
+        }
+    }
+    crate::filters::manager::styled_spans(&collector, &styles)
+        .into_iter()
+        .map(|(start, end, style)| LineStyle {
+            fg: style.fg.and_then(color_to_gpui),
+            bg: style.bg.and_then(color_to_gpui),
+            whole_line: start == 0 && end == raw.len(),
+            spans: vec![(start, end)],
+        })
+        .collect()
+}
+fn push_value(
+    collector: &mut MatchCollector,
+    raw: &[u8],
+    value: &str,
+    style: crate::filters::StyleId,
+) {
+    if value.is_empty() {
+        return;
+    }
+    for (start, bytes) in raw.windows(value.len()).enumerate() {
+        if bytes == value.as_bytes() {
+            collector.push(start, start + value.len(), style);
+        }
+    }
+}
+
 pub fn color_to_gpui(color: Color) -> Option<Rgba> {
     let (r, g, b) = match color {
         Color::Reset => return None,
