@@ -177,7 +177,16 @@ pub fn log_pane(
                                     div()
                                         .id(("log-row", pos))
                                         .test_support()
-                                        .child(line_row_with_selection(
+                                        .children(tab.comment_manager.get().iter().enumerate()
+                                            .filter(|(_, note)| annotation_start(tab, &note.line_indices) == Some(pos))
+                                            .map(|(index, note)| {
+                                                let full_note = note.text.clone();
+                                                div().id(("log-annotation", index)).test_support()
+                                                    .h(px(ANNOTATION_HEIGHT_PX)).w_full().px_3().text_sm().truncate()
+                                                    .text_color(color_to_gpui(app.state.theme.comment_fg).unwrap_or(gpui_kit::gpui::rgb(0xaaaaaa))).font_weight(FontWeight::BOLD).cursor_pointer()
+                                                    .child(note.text.replace('\n', " "))
+                                                    .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(full_note.clone()).build(window, cx))
+                                                    .child(line_row_with_selection(
                                             tab,
                                             line_idx,
                                             selection
@@ -191,16 +200,10 @@ pub fn log_pane(
                                             message_width,
                                             (&row_document, pos),
                                         ))
-                                        .children(tab.comment_manager.get().iter().enumerate()
-                                            .filter(|(_, note)| note.line_indices.contains(&line_idx))
-                                            .map(|(index, note)| {
-                                                let full_note = note.text.clone();
-                                                div().id(("log-annotation", index)).test_support()
-                                                    .h(px(ANNOTATION_HEIGHT_PX)).w_full().px_3().text_sm().truncate()
-                                                    .text_color(cx.theme().muted_foreground).cursor_pointer()
-                                                    .child(note.text.replace('\n', " "))
-                                                    .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(full_note.clone()).build(window, cx))
-                                                    .on_click(cx.listener(move |app, _, window, cx| {
+                                        .when(tab.comment_manager.get().iter().any(|note| note.line_indices.contains(&line_idx)), |row| {
+                                            row.border_l_1().border_color(color_to_gpui(app.state.theme.comment_fg).unwrap_or(gpui_kit::gpui::rgb(0xaaaaaa))).pl_2()
+                                        })
+                                        .on_click(cx.listener(move |app, _, window, cx| {
                                                         cx.stop_propagation();
                                                         app.dispatch(Message::EditAnnotation(index), window, cx);
                                                     }))
@@ -337,6 +340,13 @@ pub fn log_pane(
                 .right_0()
                 .vertical_scrollbar(log_scroll),
         )
+}
+
+fn annotation_start(tab: &TabState, lines: &[usize]) -> Option<usize> {
+    lines
+        .iter()
+        .filter_map(|line| tab.filter.visible_indices.position_of(*line))
+        .min()
 }
 
 /// All fields are visible by default; command preferences control visibility and order.
