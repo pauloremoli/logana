@@ -10,6 +10,8 @@ pub enum Action {
     OpenDirectory,
     CloseFile,
     CloseAllFiles,
+    Undo,
+    Redo,
     ToggleFiltering,
     MarksOnly,
     Annotation,
@@ -74,6 +76,20 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::Undo,
+        label: "Undo",
+        description: "Undo the last edit",
+        aliases: "undo",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::Redo,
+        label: "Redo",
+        description: "Redo the last undone edit",
+        aliases: "redo",
+        tab: true,
+    },
     Descriptor {
         action: Action::Keybindings,
         label: "Keyboard shortcuts",
@@ -513,6 +529,9 @@ pub fn open(
     }
     state.palette.open = false;
     match action {
+        Action::Undo | Action::Redo => {
+            return crate::gui::history::apply(state, action == Action::Redo);
+        }
         Action::CloseAllFiles => {
             while !state.tabs.is_empty() {
                 crate::gui::update::update(

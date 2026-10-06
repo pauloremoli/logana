@@ -239,6 +239,41 @@ impl Database {
         Ok(Self { pool })
     }
 
+    /// Restore an undo snapshot atomically while preserving stable filter IDs.
+    pub async fn restore_filter_snapshot(
+        &self,
+        filters: &[FilterDef],
+        groups: &[GroupDef],
+        source: Option<&str>,
+    ) -> Result<()> {
+        let source = source.unwrap_or("");
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM filters WHERE source_file = ?")
+            .bind(source)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM groups WHERE source_file = ?")
+            .bind(source)
+            .execute(&mut *tx)
+            .await?;
+        for (order, filter) in filters.iter().enumerate() {
+            let colors = filter.color_config.as_ref();
+            sqlx::query("INSERT INTO filters (id, pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only, use_regex, ignore_case, group_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                .bind(filter.id as i64).bind(&filter.pattern).bind(filter_type_to_str(&filter.filter_type)).bind(filter.enabled)
+                .bind(colors.and_then(|c| c.fg).map(|c| c.to_string())).bind(colors.and_then(|c| c.bg).map(|c| c.to_string()))
+                .bind(order as i64).bind(source).bind(colors.is_none_or(|c| c.match_only)).bind(filter.use_regex).bind(filter.ignore_case).bind(&filter.group)
+                .execute(&mut *tx).await?;
+        }
+        for group in groups {
+            let colors = group.color_config.as_ref();
+            sqlx::query("INSERT INTO groups (source_file, name, fg_color, bg_color, match_only, enabled) VALUES (?, ?, ?, ?, ?, ?)")
+                .bind(source).bind(&group.name).bind(colors.and_then(|c| c.fg).map(|c| c.to_string())).bind(colors.and_then(|c| c.bg).map(|c| c.to_string()))
+                .bind(colors.is_none_or(|c| c.match_only)).bind(group.enabled).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn in_memory() -> Result<Self> {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)

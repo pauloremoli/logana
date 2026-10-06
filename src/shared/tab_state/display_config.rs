@@ -30,6 +30,7 @@ impl SidebarSide {
     }
 }
 
+#[derive(Clone)]
 pub struct DisplayConfig {
     pub wrap: bool,
     pub show_line_numbers: bool,

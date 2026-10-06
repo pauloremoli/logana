@@ -28,6 +28,50 @@ use std::sync::atomic::AtomicBool;
 /// async work or imperative widget action the gpui glue layer (`App` in
 /// `app.rs`) still needs to perform. Never touches a gpui type itself.
 pub fn update(state: &mut GuiState, message: Message) -> Effect {
+    let source = match &message {
+        Message::PaletteExecuted(_, id, _) => Some(*id),
+        Message::FiltersMutated(index, _)
+        | Message::GroupsMutated(index, _)
+        | Message::CommandExecuted(index, _)
+        | Message::FilterToggled(index, _)
+        | Message::FilterReordered(index, _, _)
+        | Message::GroupToggled(index, _) => state.tabs.get(*index).map(|tab| tab.id),
+        Message::GuiAction(action)
+            if !matches!(
+                action,
+                crate::gui::actions::Action::Undo | crate::gui::actions::Action::Redo
+            ) =>
+        {
+            state.active_tab().map(|tab| tab.id)
+        }
+        Message::EditorApply
+        | Message::GuiCommand(..)
+        | Message::SidebarToggled
+        | Message::SidebarSideToggled => state
+            .editor
+            .as_ref()
+            .and_then(|e| e.source)
+            .or_else(|| state.active_tab().map(|t| t.id)),
+        Message::KeyPressed(..) => state.active_tab().map(|t| t.id),
+        _ => None,
+    };
+    let before = source
+        .and_then(|id| state.tabs.iter().find(|tab| tab.id == id))
+        .map(crate::gui::history::Snapshot::new);
+    let effect = update_inner(state, message);
+    if let Some(before) = before {
+        if state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == before.id)
+            .is_some_and(|tab| before.changed(tab))
+        {
+            state.history.entry(before.id).or_default().record(before);
+        }
+    }
+    effect
+}
+fn update_inner(state: &mut GuiState, message: Message) -> Effect {
     match message {
         Message::BrowseDefaultMapping => match &state.editor {
             Some(e) if e.action == crate::gui::actions::Action::DefaultFilters => {
@@ -1361,6 +1405,8 @@ pub fn is_tab_live(tab: &TabState) -> bool {
 
 fn close_tab_at(state: &mut GuiState, idx: usize) {
     if idx < state.tabs.len() {
+        let id = state.tabs[idx].id;
+        state.history.remove(&id);
         state.tabs.remove(idx);
         state.active_tab = active_after_close(state.active_tab, idx, state.tabs.len());
     }

@@ -1629,6 +1629,23 @@ impl Render for App {
                 }
                 if !editing
                     && context == "LoganaLogs"
+                    && (stroke.modifiers.control || stroke.modifiers.platform)
+                    && stroke.key == "z"
+                {
+                    cx.stop_propagation();
+                    app.dispatch(
+                        Message::GuiAction(if stroke.modifiers.shift {
+                            crate::gui::actions::Action::Redo
+                        } else {
+                            crate::gui::actions::Action::Undo
+                        }),
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+                if !editing
+                    && context == "LoganaLogs"
                     && stroke.modifiers.control
                     && !stroke.modifiers.alt
                 {

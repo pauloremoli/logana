@@ -36,6 +36,7 @@ fn menus() -> Vec<Menu> {
                 Action::CloseAllFiles,
             ][..],
         ),
+        ("Edit", &[Action::Undo, Action::Redo][..]),
         (
             "Filters",
             &[

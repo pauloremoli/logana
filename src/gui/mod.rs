@@ -44,3 +44,5 @@ mod loading;
 mod startup;
 
 mod merge;
+
+mod history;

@@ -125,6 +125,9 @@ pub enum Effect {
 /// Ordered persistence operations never replace the live UI's filter snapshot.
 #[derive(Debug)]
 pub enum FilterEdit {
+    Restore {
+        manager: LogManager,
+    },
     Toggle {
         db: std::sync::Arc<crate::db::Database>,
         id: usize,
@@ -146,6 +149,16 @@ impl FilterEdit {
     pub async fn persist(self) -> anyhow::Result<()> {
         use crate::db::{FilterStore, GroupStore};
         match self {
+            Self::Restore { manager } => {
+                manager
+                    .db
+                    .restore_filter_snapshot(
+                        manager.get_filters(),
+                        manager.get_group_styles(),
+                        manager.source_file(),
+                    )
+                    .await?;
+            }
             Self::Toggle { db, id, enabled } => db.set_filter_enabled(id as i64, enabled).await?,
             Self::Group {
                 db,
