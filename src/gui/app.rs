@@ -643,6 +643,40 @@ impl App {
             }
             Effect::None => {}
             Effect::Quit => self.request_quit(cx),
+            Effect::SaveKeybindings(bindings) => {
+                cx.spawn(async move |this, cx| {
+                    let saved = bindings.clone();
+                    let result = runtime::handle()
+                        .spawn_blocking(move || {
+                            let path = dirs::config_dir()
+                                .ok_or("No configuration directory")?
+                                .join("logana/config.json");
+                            crate::gui::keyboard::save_bindings(&path, &saved)
+                        })
+                        .await
+                        .map_err(|e| e.to_string())
+                        .and_then(|r| r);
+                    this.update(cx, |app, cx| {
+                        match result {
+                            Ok(()) => {
+                                let kb = std::sync::Arc::new(bindings);
+                                for tab in &mut app.state.tabs {
+                                    tab.interaction.keybindings = kb.clone();
+                                }
+                                app.state.notify(crate::gui::state::StatusMessage::Info(
+                                    "Keyboard shortcuts saved.".into(),
+                                ));
+                            }
+                            Err(error) => app
+                                .state
+                                .notify(crate::gui::state::StatusMessage::Error(error)),
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
             Effect::CopyText(text) => {
                 cx.write_to_clipboard(gpui_kit::gpui::ClipboardItem::new_string(text))
             }
@@ -1482,6 +1516,21 @@ impl Render for App {
             .on_action(cx.listener(Self::on_quit_action))
             .capture_key_down(cx.listener(move |app, event: &KeyDownEvent, window, cx| {
                 let stroke = &event.keystroke;
+                if let Some(index) = app.state.binding_capture {
+                    cx.stop_propagation();
+                    app.state.binding_capture = None;
+                    if stroke.key != "escape" {
+                        if let Some((key, modifiers)) = crate::gui::key::from_gpui_keystroke(stroke)
+                        {
+                            let value =
+                                crate::config::keybindings::KeyBinding(key, modifiers).display();
+                            app.dispatch(Message::EditorText(index, value), window, cx);
+                        }
+                    }
+                    cx.notify();
+                    return;
+                }
+
                 if app.state.search_open && stroke.key == "enter" {
                     cx.stop_propagation();
                     app.dispatch(Message::SearchNext(!stroke.modifiers.shift), window, cx);

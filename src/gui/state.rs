@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct GuiState {
+    pub binding_capture: Option<usize>,
     pub preferences: crate::gui::persistence::Preferences,
     pub search_open: bool,
     pub editor: Option<crate::gui::actions::Editor>,
@@ -79,6 +80,7 @@ impl GuiState {
     pub fn new(db: Arc<Database>) -> Self {
         Self {
             preferences: Default::default(),
+            binding_capture: None,
             palette: Default::default(),
             editor: None,
             search_open: false,

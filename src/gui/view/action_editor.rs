@@ -179,6 +179,34 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         ));
     let mut body = div().flex().flex_col().flex_shrink_0().gap_3();
     match e.action {
+        Action::Keybindings => {
+            body =
+                body.child("Click a shortcut, then press its replacement. Escape cancels capture.");
+            for (index, (name, _)) in e.fields.iter().enumerate() {
+                body = body.child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .gap_3()
+                        .child(name.replace('_', " "))
+                        .child(
+                            Button::new(("capture-binding", index))
+                                .label(if app.state.binding_capture == Some(index) {
+                                    "Press a key…".to_string()
+                                } else if e.values[index].is_empty() {
+                                    "Unbound".into()
+                                } else {
+                                    e.values[index].clone()
+                                })
+                                .on_click(cx.listener(move |app, _, window, cx| {
+                                    app.state.binding_capture = Some(index);
+                                    app.interface_focus.focus(window, cx);
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            }
+        }
         Action::Settings => {
             use crate::db::SettingsKey;
             body = body.child(
@@ -249,7 +277,11 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     "Schema default filters",
                     Action::DefaultFilters,
                 ),
-                ("settings-shortcuts", "Keyboard shortcuts", Action::Help),
+                (
+                    "settings-shortcuts",
+                    "Keyboard shortcuts",
+                    Action::Keybindings,
+                ),
             ] {
                 links = links.child(Button::new(id).ghost().label(label).on_click(cx.listener(
                     move |app, _, window, cx| {

@@ -79,6 +79,7 @@ pub enum Effect {
     },
     None,
     Quit,
+    SaveKeybindings(crate::config::Keybindings),
     CopyText(String),
     OpenFileDialog,
     OpenDirectoryDialog,

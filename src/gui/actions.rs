@@ -39,6 +39,7 @@ pub enum Action {
     Columns,
     Appearance,
     Settings,
+    Keybindings,
     ValueColors,
     LevelColors,
     Schema,
@@ -73,6 +74,13 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::Keybindings,
+        label: "Keyboard shortcuts",
+        description: "Capture and customize keyboard shortcuts",
+        aliases: "keybindings shortcuts",
+        tab: false,
+    },
     Descriptor {
         action: Action::CloseAllFiles,
         label: "Close all files",
@@ -764,6 +772,15 @@ pub fn open(
     if action == Action::EnableMcp {
         e.values[0] = state.preferences.mcp_port.to_string();
     }
+    if action == Action::Keybindings {
+        let kb = crate::gui::keyboard::bindings(state);
+        let entries = crate::gui::keyboard::editable_bindings(&kb);
+        e.fields = entries
+            .iter()
+            .map(|(name, _)| (name.clone(), true))
+            .collect();
+        e.values = entries.into_iter().map(|(_, value)| value).collect();
+    }
     if action == Action::Settings {
         let prefs = &state.preferences;
         e.values[0] = prefs.restore_session.to_string();
@@ -883,6 +900,7 @@ pub fn open(
     Effect::None
 }
 pub fn close(state: &mut GuiState, applied: bool) {
+    state.binding_capture = None;
     if let Some(e) = state.editor.take() {
         if !applied && !state.palette.pending() && e.action == Action::Appearance {
             state.theme = e.original_theme;
@@ -903,6 +921,22 @@ pub fn apply(state: &mut GuiState) -> Effect {
     let Some(mut e) = state.editor.clone() else {
         return Effect::None;
     };
+    if e.action == Action::Keybindings {
+        match crate::gui::keyboard::edited_bindings(
+            &crate::gui::keyboard::bindings(state),
+            &e.fields,
+            &e.values,
+        ) {
+            Ok(bindings) => {
+                close(state, true);
+                return Effect::SaveKeybindings(bindings);
+            }
+            Err(error) => {
+                state.editor.as_mut().unwrap().error = Some(error);
+                return Effect::None;
+            }
+        }
+    }
     if e.action == Action::Settings {
         let mut prefs = state.preferences.clone();
         let parsed = (|| {

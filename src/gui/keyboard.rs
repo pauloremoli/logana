@@ -385,3 +385,97 @@ mod tests {
         assert_eq!(state.editor.as_ref().unwrap().action, Action::SwitchFile);
     }
 }
+
+/// Keep the editor driven by the serialized shared keybinding schema.
+pub fn editable_bindings(kb: &crate::config::Keybindings) -> Vec<(String, String)> {
+    let value = serde_json::to_value(kb).expect("keybindings serialize");
+    let mut entries = Vec::new();
+    for (group, bindings) in value.as_object().unwrap() {
+        if let Some(bindings) = bindings.as_object() {
+            for (name, keys) in bindings {
+                let keys = match keys {
+                    serde_json::Value::String(key) => key.clone(),
+                    serde_json::Value::Array(keys) => keys
+                        .iter()
+                        .filter_map(|key| key.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    _ => continue,
+                };
+                entries.push((format!("{group}.{name}"), keys));
+            }
+        }
+    }
+    entries
+}
+pub fn edited_bindings(
+    kb: &crate::config::Keybindings,
+    fields: &[(String, bool)],
+    values: &[String],
+) -> Result<crate::config::Keybindings, String> {
+    let mut value = serde_json::to_value(kb).map_err(|e| e.to_string())?;
+    for ((name, _), keys) in fields.iter().zip(values) {
+        let (group, name) = name.split_once('.').ok_or("Invalid binding name")?;
+        value[group][name] = serde_json::json!(
+            keys.split(", ")
+                .filter(|key| !key.is_empty())
+                .collect::<Vec<_>>()
+        );
+    }
+    serde_json::from_value(value).map_err(|e| e.to_string())
+}
+pub fn save_bindings(
+    path: &std::path::Path,
+    kb: &crate::config::Keybindings,
+) -> Result<(), String> {
+    let mut config: serde_json::Value = match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string())?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(error) => return Err(error.to_string()),
+    };
+    config["keybindings"] = serde_json::to_value(kb).map_err(|e| e.to_string())?;
+    let parent = path.parent().ok_or("Missing settings directory")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    use std::io::Write;
+    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    file.write_all(&serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    file.persist(path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod settings_tests {
+    #[test]
+    fn captured_bindings_round_trip_and_preserve_other_configuration() {
+        let kb = crate::config::Keybindings::default();
+        let entries = super::editable_bindings(&kb);
+        let fields: Vec<_> = entries
+            .iter()
+            .map(|(name, _)| (name.clone(), true))
+            .collect();
+        let mut values: Vec<_> = entries.into_iter().map(|(_, keys)| keys).collect();
+        let index = fields
+            .iter()
+            .position(|(name, _)| name == "normal.filter_include_auto")
+            .unwrap();
+        values[index] = "Ctrl+F2".into();
+        let edited = super::edited_bindings(&kb, &fields, &values).unwrap();
+        assert!(edited.normal.filter_include_auto.matches(
+            crate::input::KeyCode::F(2),
+            crate::input::KeyModifiers::CONTROL
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, br#"{"theme":"dark","extra":42}"#).unwrap();
+        super::save_bindings(&path, &edited).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["extra"], 42);
+        assert_eq!(saved["theme"], "dark");
+        assert_eq!(
+            saved["keybindings"]["normal"]["filter_include_auto"],
+            "Ctrl+F2"
+        );
+    }
+}
