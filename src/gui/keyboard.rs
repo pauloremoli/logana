@@ -17,11 +17,9 @@ fn action_bindings(
 ) -> Vec<(&crate::config::keybindings::KeyBindings, Action)> {
     vec![
         (&kb.normal.show_keybindings, Action::Help),
-        (&kb.normal.group_mode, Action::Group),
         (&kb.normal.filter_include, Action::Filter),
         (&kb.normal.filter_include_auto, Action::Filter),
         (&kb.normal.filter_exclude, Action::Filter),
-        (&kb.normal.filter_mode, Action::Filter),
         (&kb.normal.toggle_filtering, Action::ToggleFiltering),
         (&kb.normal.toggle_marks_only, Action::MarksOnly),
         (&kb.normal.mark_line, Action::Bookmark),
@@ -42,15 +40,31 @@ pub fn handled(state: &GuiState, key: KeyCode, modifiers: KeyModifiers) -> bool 
     } else {
         modifiers
     };
-    action_bindings(&kb)
-        .iter()
-        .any(|(binding, _)| binding.matches(key, modifiers))
+    sidebar_handled(state, key, modifiers)
+        || action_bindings(&kb)
+            .iter()
+            .any(|(binding, _)| binding.matches(key, modifiers))
         || kb
             .custom
             .iter()
             .any(|binding| binding.key.matches(key, modifiers))
         || [
+            &kb.global.quit,
             &kb.normal.search_forward,
+            &kb.normal.search_backward,
+            &kb.normal.command_mode,
+            &kb.normal.visual_mode,
+            &kb.normal.edit_comment,
+            &kb.normal.delete_comment,
+            &kb.normal.clear_all,
+            &kb.normal.scroll_left,
+            &kb.normal.scroll_right,
+            &kb.normal.start_of_line,
+            &kb.normal.end_of_line,
+            &kb.normal.next_error,
+            &kb.normal.prev_error,
+            &kb.normal.next_warning,
+            &kb.normal.prev_warning,
             &kb.normal.clear_search,
             &kb.normal.expand_continuation,
             &kb.normal.collapse_continuation,
@@ -95,6 +109,27 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
         return Effect::None;
     }
     let kb = bindings(state);
+    if state.keyboard_sidebar.is_some() && sidebar_handled(state, key, modifiers) {
+        return apply_sidebar(state, key, modifiers);
+    }
+    if kb.normal.filter_mode.matches(key, modifiers) || kb.normal.group_mode.matches(key, modifiers)
+    {
+        if state.active_tab().is_none() {
+            return Effect::None;
+        }
+        let group = kb.normal.group_mode.matches(key, modifiers);
+        state.sidebar_tab = if group {
+            crate::gui::state::SidebarTab::Groups
+        } else {
+            crate::gui::state::SidebarTab::Filters
+        };
+        state.keyboard_sidebar = Some(state.sidebar_tab);
+        state.sidebar_cursor = 0;
+        if let Some(tab) = state.active_tab_mut() {
+            tab.display.show_sidebar = true;
+        }
+        return Effect::None;
+    }
     if let Some(custom) = kb
         .custom
         .iter()
@@ -110,8 +145,101 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
         }
         return Effect::None;
     }
-    if kb.normal.search_forward.matches(key, modifiers) {
+    if state.keyboard_sidebar.is_none()
+        && state.active_tab().is_some()
+        && kb.global.quit.matches(key, modifiers)
+    {
+        return Effect::Quit;
+    }
+    if kb.normal.visual_mode.matches(key, modifiers) {
+        state.visual_lines = !state.visual_lines;
+        if let Some(tab) = state.active_tab() {
+            state.log_selection =
+                Some((tab.id, tab.scroll.scroll_offset, tab.scroll.scroll_offset));
+        }
+        return Effect::None;
+    }
+    if kb.normal.command_mode.matches(key, modifiers) {
+        return crate::gui::update::update(state, Message::OpenCommands);
+    }
+    if kb.normal.search_forward.matches(key, modifiers)
+        || kb.normal.search_backward.matches(key, modifiers)
+    {
+        let forward = kb.normal.search_forward.matches(key, modifiers);
+        if let Some(tab) = state.active_tab_mut() {
+            tab.search.query.set_forward(forward);
+        }
         return crate::gui::update::update(state, Message::SearchPopup(true));
+    }
+    if kb.normal.edit_comment.matches(key, modifiers)
+        || kb.normal.delete_comment.matches(key, modifiers)
+    {
+        let note = state.active_tab().and_then(|tab| {
+            tab.filter
+                .visible_indices
+                .get_opt(tab.scroll.scroll_offset)
+                .and_then(|line| {
+                    tab.comment_manager
+                        .get()
+                        .iter()
+                        .position(|note| note.line_indices.contains(&line))
+                })
+        });
+        if let Some(index) = note {
+            if kb.normal.edit_comment.matches(key, modifiers) {
+                return crate::gui::update::update(state, Message::EditAnnotation(index));
+            }
+            let tab = state.active_tab_mut().unwrap();
+            tab.comment_manager.remove(index);
+            tab.invalidate_parse_cache();
+        }
+        return Effect::None;
+    }
+    if kb.normal.clear_all.matches(key, modifiers) {
+        if let Some(tab) = state.active_tab_mut() {
+            tab.mark_manager.clear();
+            tab.comment_manager.clear();
+            tab.begin_filter_refresh();
+        }
+        return Effect::None;
+    }
+    if let Some(tab) = state.active_tab_mut() {
+        if kb.normal.scroll_left.matches(key, modifiers)
+            || kb.normal.scroll_right.matches(key, modifiers)
+            || kb.normal.start_of_line.matches(key, modifiers)
+            || kb.normal.end_of_line.matches(key, modifiers)
+        {
+            tab.scroll.horizontal_scroll = if kb.normal.start_of_line.matches(key, modifiers) {
+                0
+            } else if kb.normal.scroll_left.matches(key, modifiers) {
+                tab.scroll.horizontal_scroll.saturating_sub(1)
+            } else if kb.normal.scroll_right.matches(key, modifiers) {
+                tab.scroll.horizontal_scroll.saturating_add(1)
+            } else {
+                tab.filter
+                    .visible_indices
+                    .get_opt(tab.scroll.scroll_offset)
+                    .map(|line| tab.get_display_text(line).chars().count())
+                    .unwrap_or(0)
+            };
+            return Effect::ScrollHorizontal(tab.scroll.horizontal_scroll);
+        }
+        let position = tab.scroll.scroll_offset;
+        let target = if kb.normal.next_error.matches(key, modifiers) {
+            tab.next_error_position(position)
+        } else if kb.normal.prev_error.matches(key, modifiers) {
+            tab.prev_error_position(position)
+        } else if kb.normal.next_warning.matches(key, modifiers) {
+            tab.next_warning_position(position)
+        } else if kb.normal.prev_warning.matches(key, modifiers) {
+            tab.prev_warning_position(position)
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            tab.scroll.scroll_offset = target;
+            return Effect::None;
+        }
     }
     if kb.normal.clear_search.matches(key, modifiers) {
         return crate::gui::update::update(state, Message::SearchEdited(String::new()));
@@ -240,15 +368,17 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
         return crate::gui::update::update(state, Message::SearchNext(false));
     }
     let selection = state.log_selection;
+    let visual_lines = state.visual_lines;
     let Some(tab) = state.active_tab_mut() else {
         return Effect::None;
     };
-    let extend = modifiers == KeyModifiers::SHIFT
-        && matches!(
-            key,
-            KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End
-        );
-    let nav_mods = if extend {
+    let extend = visual_lines
+        || modifiers == KeyModifiers::SHIFT
+            && matches!(
+                key,
+                KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End
+            );
+    let nav_mods = if extend && modifiers == KeyModifiers::SHIFT {
         KeyModifiers::NONE
     } else {
         modifiers
@@ -486,11 +616,239 @@ pub fn shortcut_for_action(kb: &crate::config::Keybindings, action: Action) -> S
         Action::Undo => "Ctrl+Z".into(),
         Action::Redo => "Ctrl+Shift+Z".into(),
         Action::CloseFile => kb.global.close_tab.display(),
+        Action::Group => kb.normal.group_mode.display(),
         _ => action_bindings(kb)
             .iter()
             .filter(|(_, a)| *a == action)
             .map(|(keys, _)| keys.display())
             .collect::<Vec<_>>()
             .join(" / "),
+    }
+}
+
+pub fn mutates_tab(state: &GuiState, key: KeyCode, modifiers: KeyModifiers) -> bool {
+    let kb = bindings(state);
+    [
+        &kb.normal.clear_all,
+        &kb.normal.delete_comment,
+        &kb.normal.mark_line,
+        &kb.normal.toggle_filtering,
+        &kb.normal.toggle_marks_only,
+        &kb.normal.toggle_highlight_mode,
+        &kb.normal.expand_continuation,
+        &kb.normal.collapse_continuation,
+    ]
+    .iter()
+    .any(|binding| binding.matches(key, modifiers))
+        || kb
+            .custom
+            .iter()
+            .any(|binding| binding.key.matches(key, modifiers))
+}
+
+pub fn sidebar_handled(state: &GuiState, key: KeyCode, modifiers: KeyModifiers) -> bool {
+    if state.keyboard_sidebar.is_none() {
+        return false;
+    }
+    let kb = bindings(state);
+    [
+        &kb.navigation.scroll_down,
+        &kb.navigation.scroll_up,
+        &kb.navigation.page_down,
+        &kb.navigation.page_up,
+        &kb.filter.toggle_filter,
+        &kb.filter.delete_filter,
+        &kb.filter.edit_filter,
+        &kb.filter.set_color,
+        &kb.filter.move_filter_up,
+        &kb.filter.move_filter_down,
+        &kb.filter.toggle_all_filters,
+        &kb.filter.clear_all_filters,
+        &kb.filter.add_include_filter,
+        &kb.filter.add_include_filter_auto,
+        &kb.filter.add_exclude_filter,
+        &kb.filter.add_highlight_filter,
+        &kb.filter.add_date_filter,
+        &kb.filter.exit_mode,
+        &kb.group.add_group,
+    ]
+    .iter()
+    .any(|binding| binding.matches(key, modifiers))
+}
+fn apply_sidebar(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Effect {
+    use crate::gui::state::SidebarTab;
+    let kb = bindings(state);
+    let group = state.keyboard_sidebar == Some(SidebarTab::Groups);
+    if kb.filter.exit_mode.matches(key, modifiers) {
+        state.keyboard_sidebar = None;
+        return Effect::None;
+    }
+    let Some(tab) = state.active_tab() else {
+        return Effect::None;
+    };
+    let names = tab.log_manager.group_names();
+    let count = if group {
+        names.len()
+    } else {
+        tab.log_manager.get_filters().len()
+    };
+    state.sidebar_cursor = state.sidebar_cursor.min(count.saturating_sub(1));
+    if kb.navigation.scroll_down.matches(key, modifiers)
+        || kb.navigation.page_down.matches(key, modifiers)
+    {
+        state.sidebar_cursor = (state.sidebar_cursor
+            + if kb.navigation.page_down.matches(key, modifiers) {
+                10
+            } else {
+                1
+            })
+        .min(count.saturating_sub(1));
+        return Effect::None;
+    }
+    if kb.navigation.scroll_up.matches(key, modifiers)
+        || kb.navigation.page_up.matches(key, modifiers)
+    {
+        state.sidebar_cursor =
+            state
+                .sidebar_cursor
+                .saturating_sub(if kb.navigation.page_up.matches(key, modifiers) {
+                    10
+                } else {
+                    1
+                });
+        return Effect::None;
+    }
+    let index = state.active_tab;
+    if group {
+        if kb.group.add_group.matches(key, modifiers) {
+            return crate::gui::actions::open(state, Action::Group, None, None);
+        }
+        if let Some(name) = names.get(state.sidebar_cursor) {
+            let message = if kb.filter.toggle_filter.matches(key, modifiers) {
+                Some(Message::GroupToggled(index, name.clone()))
+            } else if kb.filter.delete_filter.matches(key, modifiers) {
+                Some(Message::GroupDeleted(index, name.clone()))
+            } else if kb.filter.edit_filter.matches(key, modifiers)
+                || kb.filter.set_color.matches(key, modifiers)
+            {
+                Some(Message::EditGroup(name.clone()))
+            } else {
+                None
+            };
+            if let Some(message) = message {
+                return crate::gui::update::update(state, message);
+            }
+        }
+        return Effect::None;
+    }
+    if kb.filter.add_include_filter.matches(key, modifiers)
+        || kb.filter.add_include_filter_auto.matches(key, modifiers)
+        || kb.filter.add_exclude_filter.matches(key, modifiers)
+        || kb.filter.add_highlight_filter.matches(key, modifiers)
+        || kb.filter.add_date_filter.matches(key, modifiers)
+    {
+        let effect = crate::gui::actions::open(state, Action::Filter, None, None);
+        if let Some(editor) = &mut state.editor {
+            editor.kind = if kb.filter.add_exclude_filter.matches(key, modifiers) {
+                crate::filters::FilterType::Exclude
+            } else if kb.filter.add_highlight_filter.matches(key, modifiers) {
+                crate::filters::FilterType::Highlight
+            } else {
+                crate::filters::FilterType::Include
+            };
+            editor.auto_style = kb.filter.add_include_filter_auto.matches(key, modifiers);
+            if kb.filter.add_date_filter.matches(key, modifiers) {
+                editor.values[0] = crate::filters::DATE_PREFIX.into();
+            }
+        }
+        return effect;
+    }
+    if kb.filter.clear_all_filters.matches(key, modifiers) {
+        return crate::gui::update::update(state, Message::ClearAllFilters(index));
+    }
+    if kb.filter.toggle_all_filters.matches(key, modifiers) {
+        let action = if state.tabs[index]
+            .log_manager
+            .get_filters()
+            .iter()
+            .all(|f| f.enabled)
+        {
+            Action::DisableFilters
+        } else {
+            Action::EnableFilters
+        };
+        return crate::gui::actions::open(state, action, None, None);
+    }
+    if let Some(filter) = state.tabs[index]
+        .log_manager
+        .get_filters()
+        .get(state.sidebar_cursor)
+    {
+        let id = filter.id;
+        if kb.filter.edit_filter.matches(key, modifiers)
+            || kb.filter.set_color.matches(key, modifiers)
+        {
+            return crate::gui::update::update(state, Message::EditFilter(id));
+        }
+        if kb.filter.toggle_filter.matches(key, modifiers) {
+            return crate::gui::update::update(state, Message::FilterToggled(index, id));
+        }
+        if kb.filter.delete_filter.matches(key, modifiers) {
+            return crate::gui::update::update(state, Message::FilterRemoved(index, id));
+        }
+        let target = if kb.filter.move_filter_up.matches(key, modifiers) {
+            state.sidebar_cursor.saturating_sub(1)
+        } else {
+            (state.sidebar_cursor + 1).min(count.saturating_sub(1))
+        };
+        if let Some(other) = state.tabs[index].log_manager.get_filters().get(target) {
+            let other = other.id;
+            state.sidebar_cursor = target;
+            return crate::gui::update::update(state, Message::FilterReordered(index, id, other));
+        }
+    }
+    Effect::None
+}
+
+#[cfg(test)]
+mod sidebar_tests {
+    use super::*;
+    #[tokio::test]
+    async fn filter_keys_are_scoped_and_auto_filter_opens_a_prefilled_draft() {
+        let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let mut manager = crate::db::LogManager::new(db.clone(), None).await;
+        for pattern in ["alpha", "beta"] {
+            manager
+                .add_filter_with_color(
+                    pattern.into(),
+                    crate::filters::FilterType::Highlight,
+                    crate::filters::FilterOptions::default(),
+                )
+                .await;
+        }
+        let mut state = GuiState::new(db);
+        state.tabs.push(crate::shared::TabState::new(
+            crate::ingestion::FileReader::from_bytes(b"alpha\nbeta\n".to_vec()),
+            manager,
+            "test".into(),
+        ));
+        apply(&mut state, KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(
+            state.keyboard_sidebar,
+            Some(crate::gui::state::SidebarTab::Filters)
+        );
+        assert!(state.editor.is_none());
+        apply(&mut state, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(state.sidebar_cursor, 1);
+        apply(&mut state, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(!state.tabs[0].log_manager.get_filters()[1].enabled);
+        assert!(state.tabs[0].log_manager.get_filters()[0].enabled);
+        apply(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(state.keyboard_sidebar.is_none());
+        apply(&mut state, KeyCode::Char('a'), KeyModifiers::NONE);
+        let editor = state.editor.as_ref().unwrap();
+        assert_eq!(editor.action, Action::Filter);
+        assert!(editor.auto_style);
+        assert_eq!(editor.values[0], "alpha");
     }
 }

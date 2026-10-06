@@ -183,11 +183,12 @@ pub fn row_styles(tab: &crate::shared::TabState, raw: &[u8]) -> Vec<LineStyle> {
     let mut collector = MatchCollector::new(raw);
     collector.with_priority(500);
     manager.evaluate_into(&mut collector);
-    if let Some(parts) = tab
-        .display
-        .format
-        .as_deref()
-        .and_then(|parser| parser.parse_line(raw))
+    if !tab.display.raw_mode
+        && let Some(parts) = tab
+            .display
+            .format
+            .as_deref()
+            .and_then(|parser| parser.parse_line(raw))
     {
         for date in dates {
             if parts

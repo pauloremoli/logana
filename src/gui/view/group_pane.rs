@@ -17,6 +17,7 @@ pub fn group_pane(
     names: &[String],
     group_defs: &[GroupDef],
     filter_defs: &[FilterDef],
+    selected: Option<usize>,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let mut col = div().flex().flex_col().gap_1().child(
@@ -55,13 +56,13 @@ pub fn group_pane(
                 .child("No groups"),
         );
     }
-    for name in names {
+    for (index, name) in names.iter().enumerate() {
         col = col.child(group_row(
             tab_idx,
             name.clone(),
             group_defs,
             filter_defs,
-            false,
+            selected == Some(index),
             cx,
         ));
     }
@@ -110,7 +111,24 @@ fn group_row(
     let toggle_name = name.clone();
     let delete_name = name.clone();
     let edit_name = name.clone();
+    let selected_name = name.clone();
     div()
+        .id(gpui_kit::gpui::SharedString::from(format!(
+            "group-row-{name}"
+        )))
+        .on_mouse_down(
+            gpui_kit::gpui::MouseButton::Left,
+            cx.listener(move |app, _, _, cx| {
+                app.state.keyboard_sidebar = Some(crate::gui::state::SidebarTab::Groups);
+                app.state.sidebar_cursor = app.state.tabs[tab_idx]
+                    .log_manager
+                    .group_names()
+                    .iter()
+                    .position(|name| *name == selected_name)
+                    .unwrap_or(0);
+                cx.notify();
+            }),
+        )
         .flex()
         .items_center()
         .gap_2()

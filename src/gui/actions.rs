@@ -497,26 +497,23 @@ pub fn automatic_filter_color(
     theme: &crate::theme::Theme,
     seed: usize,
 ) -> crate::style::Color {
-    let colors = [
-        theme.info_fg,
-        theme.debug_fg,
-        theme.warning_fg,
-        theme.error_fg,
-    ];
-    let hash = pattern.bytes().fold(0usize, |hash, byte| {
-        hash.wrapping_mul(31).wrapping_add(byte as usize)
-    });
-    colors[hash.wrapping_add(seed) % colors.len()]
+    automatic_filter_colors(pattern, theme, seed).1
 }
 
 pub fn automatic_filter_colors(
     pattern: &str,
-    theme: &crate::theme::Theme,
+    _theme: &crate::theme::Theme,
     seed: usize,
 ) -> (crate::style::Color, crate::style::Color) {
-    let bg = automatic_filter_color(pattern, theme, seed);
-    let (r, g, b) = crate::theme::readable_foreground_for(crate::theme::color_to_rgb(bg));
-    (crate::style::Color::Rgb(r, g, b), bg)
+    let hash = pattern.bytes().fold(
+        (seed as u64).wrapping_add(0xcbf2_9ce4_8422_2325),
+        |hash, byte| hash.wrapping_mul(0x100_0000_01b3) ^ byte as u64,
+    );
+    let (fg, bg) = crate::theme::readable_color_pair_for_seed(hash);
+    (
+        crate::style::Color::Rgb(fg.0, fg.1, fg.2),
+        crate::style::Color::Rgb(bg.0, bg.1, bg.2),
+    )
 }
 
 pub fn open(

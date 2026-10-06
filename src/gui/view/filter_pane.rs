@@ -19,6 +19,7 @@ pub fn filter_pane(
     tab_idx: usize,
     filter_defs: &[FilterDef],
     group_defs: &[GroupDef],
+    selected: Option<usize>,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let entity = cx.entity();
@@ -104,8 +105,14 @@ pub fn filter_pane(
                 ),
         );
     }
-    for def in filter_defs {
-        col = col.child(filter_row(tab_idx, def, group_defs, cx));
+    for (index, def) in filter_defs.iter().enumerate() {
+        col = col.child(filter_row(
+            tab_idx,
+            def,
+            group_defs,
+            selected == Some(index),
+            cx,
+        ));
     }
     col
 }
@@ -134,6 +141,7 @@ fn filter_row(
     tab_idx: usize,
     def: &FilterDef,
     group_defs: &[GroupDef],
+    selected: bool,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let id = def.id;
@@ -145,6 +153,20 @@ fn filter_row(
     div()
         .id(("filter-row", id))
         .group("filter-row")
+        .on_mouse_down(
+            gpui_kit::gpui::MouseButton::Left,
+            cx.listener(move |app, _, _, cx| {
+                app.state.keyboard_sidebar = Some(crate::gui::state::SidebarTab::Filters);
+                app.state.sidebar_cursor = app.state.tabs[tab_idx]
+                    .log_manager
+                    .get_filters()
+                    .iter()
+                    .position(|filter| filter.id == id)
+                    .unwrap_or(0);
+                cx.notify();
+            }),
+        )
+        .when(selected, |row| row.bg(cx.theme().secondary))
         .on_drop(
             cx.listener(move |app: &mut App, drag: &FilterDrag, window, cx| {
                 if drag.tab_idx == tab_idx {

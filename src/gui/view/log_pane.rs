@@ -113,6 +113,7 @@ pub fn log_pane(
     tab: &TabState,
     widths: &TableWidths,
     log_scroll: &ListState,
+    horizontal_scroll: &gpui_kit::gpui::ScrollHandle,
     fields: &[String],
     message_width: f32,
     text_handle: gpui_kit::base::TextSelectionHandle,
@@ -329,6 +330,7 @@ pub fn log_pane(
         .child(
             div()
                 .id("log-table-horizontal-scroll")
+                .track_scroll(horizontal_scroll)
                 .size_full()
                 .overflow_x_scrollbar()
                 .child(table),
@@ -924,7 +926,6 @@ fn cell_highlights(
         .filter_map(|pair| {
             highlights
                 .iter()
-                .rev()
                 .find(|(range, _)| range.contains(&pair[0]))
                 .map(|(_, style)| (pair[0]..pair[1], *style))
         })

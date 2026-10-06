@@ -64,7 +64,15 @@ pub fn from_gpui_keystroke(keystroke: &Keystroke) -> Option<(KeyCode, KeyModifie
             } else if let Some(c) = keystroke.key_char.as_deref().and_then(|s| s.chars().next()) {
                 KeyCode::Char(c)
             } else {
-                other.chars().next().map(KeyCode::Char)?
+                let mut ch = other.chars().next()?;
+                if keystroke.modifiers.shift
+                    && !keystroke.modifiers.control
+                    && !keystroke.modifiers.alt
+                    && !keystroke.modifiers.platform
+                {
+                    ch = ch.to_ascii_uppercase();
+                }
+                KeyCode::Char(ch)
             }
         }
     };

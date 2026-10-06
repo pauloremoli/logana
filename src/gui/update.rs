@@ -52,7 +52,16 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
             .as_ref()
             .and_then(|e| e.source)
             .or_else(|| state.active_tab().map(|t| t.id)),
-        Message::KeyPressed(..) => state.active_tab().map(|t| t.id),
+        Message::KeyPressed(key, modifiers)
+            if crate::gui::keyboard::mutates_tab(state, *key, *modifiers) =>
+        {
+            state.active_tab().map(|t| t.id)
+        }
+        Message::LogRowAction(id, _, _) => Some(*id),
+        Message::FilterRemoved(index, _)
+        | Message::ClearAllFilters(index)
+        | Message::GroupDeleted(index, _)
+        | Message::FacetValueToggled(index, _, _) => state.tabs.get(*index).map(|tab| tab.id),
         _ => None,
     };
     let before = source
@@ -501,6 +510,7 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             Effect::None
         }
         Message::SelectLog(index, extend) => {
+            state.keyboard_sidebar = None;
             if let Some(tab) = state.active_tab() {
                 let anchor = if extend {
                     state
@@ -640,6 +650,8 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             Effect::None
         }
         Message::TabSelected(idx) => {
+            state.visual_lines = false;
+            state.keyboard_sidebar = None;
             if idx < state.tabs.len() {
                 state.active_tab = idx;
             }
@@ -663,7 +675,7 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
                     if query.is_empty() {
                         tab.cancel_search();
                     } else {
-                        tab.begin_search(&query, true, false);
+                        tab.begin_search(&query, tab.search.query.is_forward(), false);
                     }
                 }
             }
@@ -791,6 +803,8 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
         }
         Message::SidebarTabSelected(tab) => {
             state.sidebar_tab = tab;
+            state.keyboard_sidebar = Some(tab);
+            state.sidebar_cursor = 0;
             Effect::None
         }
         Message::FacetBrowserToggled => {
@@ -1197,16 +1211,6 @@ fn palette_executed(
     Effect::None
 }
 
-/// Loads and applies a theme by name, mirroring the TUI's
-/// `apply_theme_preview`/`cmd_set_theme` (`src/ui/commands/display.rs`) —
-/// `Theme::from_file` is a synchronous file read, so (like
-/// `apply_display_command`) this applies directly in the reducer rather
-/// than through an async `Effect`. Silently no-ops on a load failure, same
-/// as `apply_theme_preview` (the picker stays open either way, so there's
-/// nothing to show an error about yet). Doesn't persist to
-/// `AppSettingsStore` — the same deliberate, documented simplification as
-/// `apply_display_command`.
-
 /// Mirrors the TUI's `App::cmd_set_theme` (`src/ui/commands/display.rs`)
 /// for `:set-theme <name>` — unlike `apply_theme_by_name` (used for the
 /// `:theme` picker's silent-on-failure live preview, where a bad name
@@ -1294,10 +1298,6 @@ fn toggle_display(state: &mut GuiState, f: impl FnOnce(&mut crate::shared::Displ
         f(&mut tab.display);
     }
 }
-
-/// Command bindings and GUI controls use the same explicit outcome dispatcher.
-/// Keep their existing effect shape for callers that also use this reducer
-/// without a palette, while carrying the request and stable source identity.
 
 /// Handles `Commands::Pause`/`Resume`/`Stop`/`Tail` directly on
 /// `tab.stream`, mirroring the TUI's `cmd_pause`/`cmd_resume`/`cmd_stop`/

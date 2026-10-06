@@ -78,7 +78,7 @@ fn tab_label(
         .id(("file-tab", idx))
         .test_support()
         .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
-        .context_menu(move |mut menu, _, _| {
+        .context_menu(move |mut menu, _, cx| {
             use crate::gui::actions::{Action, CATALOG};
             for action in [
                 Action::SaveLogs,
@@ -93,6 +93,13 @@ fn tab_label(
             ] {
                 let entity = entity.clone();
                 let label = CATALOG.iter().find(|d| d.action == action).unwrap().label;
+                let kb = crate::gui::keyboard::bindings(&entity.read(cx).state);
+                let shortcut = crate::gui::keyboard::shortcut_for_action(&kb, action);
+                let label = if shortcut.is_empty() {
+                    label.to_owned()
+                } else {
+                    format!("{label}    {shortcut}")
+                };
                 menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
                     entity.update(cx, |app, cx| {
                         if let Some(index) = app.state.tabs.iter().position(|tab| tab.id == source)

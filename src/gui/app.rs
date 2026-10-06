@@ -49,6 +49,7 @@ pub struct App {
     editor_synced: Vec<String>,
     filter_edits: tokio::sync::mpsc::UnboundedSender<crate::gui::effect::FilterEdit>,
     pub log_scroll: ListState,
+    pub horizontal_scroll: gpui_kit::gpui::ScrollHandle,
     pub field_widths: Option<crate::gui::column_widths::FieldWidthCache>,
     notification_timer_revision: u64,
     pub table_layout: Option<crate::gui::view::log_pane::LayoutCache>,
@@ -215,6 +216,7 @@ impl App {
             editor_field_select: None,
             editor_epoch: 0,
             editor_synced: Vec::new(),
+            horizontal_scroll: gpui_kit::gpui::ScrollHandle::new(),
             log_scroll: ListState::new(0, ListAlignment::Top, gpui_kit::gpui::px(60.)),
             table_layout: None,
             notification_timer_revision: 0,
@@ -642,6 +644,13 @@ impl App {
                 .detach();
             }
             Effect::None => {}
+            Effect::ScrollHorizontal(column) => {
+                self.horizontal_scroll.set_offset(gpui_kit::gpui::point(
+                    -gpui_kit::gpui::px(column as f32 * 7.2),
+                    gpui_kit::gpui::px(0.),
+                ));
+                cx.notify();
+            }
             Effect::Quit => self.request_quit(cx),
             Effect::SaveKeybindings(bindings) => {
                 cx.spawn(async move |this, cx| {
@@ -1538,7 +1547,88 @@ impl Render for App {
                     return;
                 }
 
+                if let Some(editor) = &app.state.editor {
+                    if let Some((key, modifiers)) = crate::gui::key::from_gpui_keystroke(stroke) {
+                        let kb = crate::gui::keyboard::bindings(&app.state);
+                        let (confirm, cancel) = match editor.action {
+                            crate::gui::actions::Action::Docker => {
+                                (&kb.docker_select.confirm, &kb.docker_select.cancel)
+                            }
+                            crate::gui::actions::Action::Dlt => {
+                                (&kb.dlt_select.confirm, &kb.dlt_select.cancel)
+                            }
+                            crate::gui::actions::Action::ValueColors => {
+                                (&kb.value_colors.apply, &kb.value_colors.cancel)
+                            }
+                            crate::gui::actions::Action::Columns
+                            | crate::gui::actions::Action::Merge => {
+                                (&kb.select_fields.apply, &kb.select_fields.cancel)
+                            }
+                            _ => (&kb.filter_edit.confirm, &kb.filter_edit.cancel),
+                        };
+                        let typing =
+                            matches!(key, crate::input::KeyCode::Char(_))
+                                && !modifiers.contains(crate::input::KeyModifiers::CONTROL)
+                                && !modifiers.contains(crate::input::KeyModifiers::ALT)
+                                && (app.editor_inputs.iter().any(|input| {
+                                    input.read(cx).focus_handle(cx).is_focused(window)
+                                }) || app.editor_textareas.values().any(|input| {
+                                    input.read(cx).focus_handle(cx).is_focused(window)
+                                }));
+                        // Let native pickers and inputs handle Enter before it bubbles to Apply.
+                        if !typing
+                            && key != crate::input::KeyCode::Enter
+                            && confirm.matches(key, modifiers)
+                        {
+                            cx.stop_propagation();
+                            app.dispatch(Message::EditorApply, window, cx);
+                            return;
+                        }
+                        if !typing && cancel.matches(key, modifiers) {
+                            cx.stop_propagation();
+                            app.dispatch(Message::EditorCancel, window, cx);
+                            return;
+                        }
+                    }
+                }
+                if app
+                    .state
+                    .editor
+                    .as_ref()
+                    .is_some_and(|e| e.action == crate::gui::actions::Action::Annotation)
+                {
+                    if let Some((key, modifiers)) = crate::gui::key::from_gpui_keystroke(stroke) {
+                        let kb = crate::gui::keyboard::bindings(&app.state);
+                        if kb.comment.save.matches(key, modifiers) {
+                            cx.stop_propagation();
+                            app.dispatch(Message::EditorApply, window, cx);
+                            return;
+                        }
+                        if kb.comment.cancel.matches(key, modifiers) {
+                            cx.stop_propagation();
+                            app.dispatch(Message::EditorCancel, window, cx);
+                            return;
+                        }
+                    }
+                }
+                if stroke.key == "escape" && app.state.visual_lines && context == "LoganaLogs" {
+                    app.state.visual_lines = false;
+                    app.state.log_selection = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if stroke.key == "escape" {
+                    if app.state.editor.is_none()
+                        && !app.state.palette.visible()
+                        && !app.state.time_range_open
+                        && !app.state.search_open
+                        && app.state.keyboard_sidebar.take().is_some()
+                    {
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    }
                     if app.state.editor.is_some() {
                         cx.stop_propagation();
                         app.dispatch(Message::EditorCancel, window, cx);
@@ -1660,6 +1750,15 @@ impl Render for App {
                         cx.stop_propagation();
                         app.dispatch(Message::GuiAction(action), window, cx);
                         return;
+                    }
+                }
+                if !editing && context == "LoganaLogs" && app.state.keyboard_sidebar.is_some() {
+                    if let Some((key, modifiers)) = crate::gui::key::from_gpui_keystroke(stroke) {
+                        if crate::gui::keyboard::sidebar_handled(&app.state, key, modifiers) {
+                            cx.stop_propagation();
+                            app.dispatch(Message::KeyPressed(key, modifiers), window, cx);
+                            return;
+                        }
                     }
                 }
                 if !editing && context == "LoganaLogs" {

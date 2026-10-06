@@ -22,6 +22,7 @@ pub fn sidebar(
     tab_idx: usize,
     tab: &TabState,
     sidebar_tab: SidebarTab,
+    keyboard_selection: Option<(SidebarTab, usize)>,
     facet_browser_open: bool,
     facet_expanded: &HashMap<String, bool>,
     facet_search: Option<&Entity<InputState>>,
@@ -51,6 +52,9 @@ pub fn sidebar(
                 tab_idx,
                 filter_defs,
                 group_defs,
+                keyboard_selection
+                    .filter(|(scope, _)| *scope == SidebarTab::Filters)
+                    .map(|(_, index)| index),
                 cx,
             ));
             if !facet_browser_open {
@@ -82,6 +86,9 @@ pub fn sidebar(
             &names,
             group_defs,
             filter_defs,
+            keyboard_selection
+                .filter(|(scope, _)| *scope == SidebarTab::Groups)
+                .map(|(_, index)| index),
             cx,
         )),
     };

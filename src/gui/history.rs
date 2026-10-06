@@ -12,6 +12,8 @@ pub struct Snapshot {
     notes: Vec<Comment>,
     enabled: bool,
     marks_only: bool,
+    highlight_mode: bool,
+    overridden_groups: std::collections::HashSet<usize>,
 }
 impl Snapshot {
     pub fn new(tab: &TabState) -> Self {
@@ -23,6 +25,8 @@ impl Snapshot {
             notes: tab.comment_manager.get().to_vec(),
             enabled: tab.filter.enabled,
             marks_only: tab.filter.show_marks_only,
+            highlight_mode: tab.filter.highlight_mode,
+            overridden_groups: tab.filter.overridden_groups.clone(),
         }
     }
     pub fn changed(&self, tab: &TabState) -> bool {
@@ -32,6 +36,8 @@ impl Snapshot {
             || self.notes != tab.comment_manager.get()
             || self.enabled != tab.filter.enabled
             || self.marks_only != tab.filter.show_marks_only
+            || self.highlight_mode != tab.filter.highlight_mode
+            || self.overridden_groups != tab.filter.overridden_groups
             || self.display.hidden_fields != tab.display.hidden_fields
             || self.display.field_layout.columns != tab.display.field_layout.columns
             || self.display.wrap != tab.display.wrap
@@ -51,6 +57,8 @@ impl Snapshot {
         tab.comment_manager.set(self.notes);
         tab.filter.enabled = self.enabled;
         tab.filter.show_marks_only = self.marks_only;
+        tab.filter.highlight_mode = self.highlight_mode;
+        tab.filter.overridden_groups = self.overridden_groups;
         tab.filter.saved_view = None;
         tab.filter.cached_scan = None;
         tab.invalidate_parse_cache();
@@ -100,6 +108,47 @@ pub fn apply(state: &mut crate::gui::state::GuiState, redo: bool) -> crate::gui:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn undo_redo_restore_filters_and_persist_the_same_snapshot() {
+        let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let mut manager = LogManager::new(db.clone(), Some("logs".into())).await;
+        manager
+            .add_filter_with_color(
+                "line".into(),
+                crate::filters::FilterType::Highlight,
+                crate::filters::FilterOptions::default().fg("Red"),
+            )
+            .await;
+        let id = manager.get_filters()[0].id;
+        let mut state = crate::gui::state::GuiState::new(db.clone());
+        state.tabs.push(TabState::new(
+            crate::ingestion::FileReader::from_bytes(b"line\n".to_vec()),
+            manager,
+            "logs".into(),
+        ));
+        let effect = crate::gui::update::update(
+            &mut state,
+            crate::gui::message::Message::FilterToggled(0, id),
+        );
+        let crate::gui::effect::Effect::PersistFilterEdit(edit) = effect else {
+            panic!("filter persistence")
+        };
+        edit.persist().await.unwrap();
+        assert!(!state.tabs[0].log_manager.get_filters()[0].enabled);
+        for (redo, expected) in [(false, true), (true, false)] {
+            let crate::gui::effect::Effect::PersistFilterEdit(edit) = apply(&mut state, redo)
+            else {
+                panic!("undo persistence")
+            };
+            edit.persist().await.unwrap();
+            assert_eq!(state.tabs[0].log_manager.get_filters()[0].enabled, expected);
+            let reloaded = LogManager::new(db.clone(), Some("logs".into())).await;
+            assert_eq!(
+                reloaded.get_filters(),
+                state.tabs[0].log_manager.get_filters()
+            );
+        }
+    }
     #[tokio::test]
     async fn undo_redo_restore_edits_and_clear_redo_after_a_new_edit() {
         let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());

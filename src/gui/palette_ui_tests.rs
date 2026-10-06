@@ -51,11 +51,11 @@ fn application_menus_dispatch_filter_view_export_and_close_actions(cx: &mut Test
     let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
     cx.update(|cx| add_log_tab(&app, cx, false));
     for (step, menu, item) in [
-        (0, 1usize, 0usize),
-        (1, 1, 0),
-        (2, 2, 2),
+        (0, 2usize, 0usize),
+        (1, 2, 0),
+        (2, 3, 2),
         (3, 0, 6),
-        (4, 0, 7),
+        (4, 0, 9),
     ] {
         if step == 4 {
             cx.update_window(handle.into(), |_, window, cx| {

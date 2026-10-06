@@ -31,6 +31,9 @@ pub struct GuiState {
     pub time_range_open: bool,
     pub time_range_preset: TimeRangePreset,
     pub sidebar_tab: SidebarTab,
+    pub keyboard_sidebar: Option<SidebarTab>,
+    pub visual_lines: bool,
+    pub sidebar_cursor: usize,
     /// Field-value picker is hidden until explicitly opened from the filter menu.
     pub facet_browser_open: bool,
     /// Per-field expand/collapse state for the sidebar's "Available
@@ -100,6 +103,9 @@ impl GuiState {
             time_range_open: false,
             time_range_preset: TimeRangePreset::default(),
             sidebar_tab: SidebarTab::default(),
+            keyboard_sidebar: None,
+            visual_lines: false,
+            sidebar_cursor: 0,
             facet_browser_open: false,
             facet_expanded: HashMap::new(),
             column_widths: ColumnWidths::default(),

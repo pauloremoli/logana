@@ -158,6 +158,7 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                             tab,
                             &widths,
                             &app.log_scroll,
+                            &app.horizontal_scroll,
                             &fields,
                             message_width,
                             app.text_handle.clone(),
@@ -174,6 +175,9 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                     active_tab,
                     tab,
                     sidebar_tab,
+                    app.state
+                        .keyboard_sidebar
+                        .map(|scope| (scope, app.state.sidebar_cursor)),
                     app.state.facet_browser_open,
                     &app.state.facet_expanded,
                     app.facet_search.as_ref(),

@@ -933,8 +933,13 @@ pub fn color_to_rgb(c: Color) -> (u8, u8, u8) {
     }
 }
 
-/// A random, readable `(fg, bg)` RGB color pair for `:filter`/`:highlight --auto`
-/// — `bg` a random color, `fg` a random shade of gray (never a competing hue).
+/// Stable preview colors using the same contrast rule as TUI auto styles.
+pub fn readable_color_pair_for_seed(seed: u64) -> ((u8, u8, u8), (u8, u8, u8)) {
+    random_readable_pair_from(&mut SmallRng::from_seed(seed))
+}
+
+/// A random, readable `(fg, bg)` RGB pair for TUI auto styles.
+/// The background has a random hue and the foreground a readable gray shade.
 pub fn random_readable_color_pair() -> ((u8, u8, u8), (u8, u8, u8)) {
     let mut rng = SmallRng::seeded();
     random_readable_pair_from(&mut rng)
