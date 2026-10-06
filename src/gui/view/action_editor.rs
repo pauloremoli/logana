@@ -523,7 +523,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 } else {
                     format!("{}:{}", e.values[1], e.values[2])
                 };
-                let color = crate::gui::actions::automatic_filter_color(
+                let (color, background) = crate::gui::actions::automatic_filter_colors(
                     &preview_pattern,
                     &app.state.theme,
                     e.style_seed,
@@ -551,6 +551,12 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                             d.child(
                                 div()
                                     .text_sm()
+                                    .px_2()
+                                    .py_1()
+                                    .when_some(
+                                        crate::gui::color::color_to_gpui(background),
+                                        |d, bg| d.bg(bg),
+                                    )
                                     .when_some(
                                         crate::gui::color::color_to_gpui(color),
                                         |d, color| d.text_color(color),

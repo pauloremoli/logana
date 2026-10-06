@@ -469,6 +469,16 @@ pub fn automatic_filter_color(
     colors[hash.wrapping_add(seed) % colors.len()]
 }
 
+pub fn automatic_filter_colors(
+    pattern: &str,
+    theme: &crate::theme::Theme,
+    seed: usize,
+) -> (crate::style::Color, crate::style::Color) {
+    let bg = automatic_filter_color(pattern, theme, seed);
+    let (r, g, b) = crate::theme::readable_foreground_for(crate::theme::color_to_rgb(bg));
+    (crate::style::Color::Rgb(r, g, b), bg)
+}
+
 pub fn open(
     state: &mut GuiState,
     action: Action,
@@ -1258,18 +1268,23 @@ pub fn apply(state: &mut GuiState) -> Effect {
             crate::filters::encode_field_filter(&e.conditions, nonempty(&e.values[0]).as_deref())
         };
         let automatic = e.auto_style && (e.kind != FilterType::Exclude || timestamp);
+        let style_key = if e.values[1].is_empty() {
+            e.values[0].clone()
+        } else {
+            format!("{}:{}", e.values[1], e.values[2])
+        };
+        let (auto_fg, auto_bg) = automatic_filter_colors(&style_key, &state.theme, e.style_seed);
         let options = crate::filters::FilterOptions {
             fg: if automatic && e.values[4..6].iter().all(String::is_empty) {
-                let style_key = if e.values[1].is_empty() {
-                    e.values[0].clone()
-                } else {
-                    format!("{}:{}", e.values[1], e.values[2])
-                };
-                Some(automatic_filter_color(&style_key, &state.theme, e.style_seed).to_string())
+                Some(auto_fg.to_string())
             } else {
                 nonempty(&e.values[4])
             },
-            bg: nonempty(&e.values[5]),
+            bg: if automatic && e.values[4..6].iter().all(String::is_empty) {
+                Some(auto_bg.to_string())
+            } else {
+                nonempty(&e.values[5])
+            },
             match_only: !e.whole_line,
             use_regex: !timestamp && e.regex,
             ignore_case: !timestamp && e.ignore_case,
@@ -1662,7 +1677,15 @@ mod tests {
         else {
             panic!("expected save")
         };
-        assert_eq!(options.fg.as_deref(), Some(expected.to_string().as_str()));
+        let (foreground, background) = automatic_filter_colors("error", &state.theme, 1);
+        assert_eq!(options.fg.as_deref(), Some(foreground.to_string().as_str()));
+        assert_eq!(options.bg.as_deref(), Some(background.to_string().as_str()));
+        assert!(
+            crate::theme::contrast_ratio(
+                crate::theme::color_to_rgb(foreground),
+                crate::theme::color_to_rgb(background)
+            ) >= crate::theme::MIN_READABLE_CONTRAST
+        );
         update(
             &mut state,
             Message::GuiFinished(request_id, Ok("Saved".into())),
