@@ -20,8 +20,7 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
         .items_center()
         .gap_1()
         .flex_wrap()
-        .min_w(px(0.))
-        .child(super::search_bar::view_mode_control(state, cx));
+        .min_w(px(0.));
     for (idx, tab) in state.tabs.iter().enumerate() {
         tabs = tabs.child(tab_label(
             idx,

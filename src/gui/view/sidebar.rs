@@ -18,6 +18,21 @@ use std::collections::HashMap;
 pub(super) const SIDEBAR_WIDTH: f32 = 360.0;
 const SIDEBAR_HEADER_HEIGHT: f32 = 40.0;
 
+/// Wraps `content` in its own independently-scrollable region — the header
+/// stays put while only this list scrolls. `id` must be unique among
+/// sibling scroll regions (gpui keys scroll offsets by element id).
+fn scroll_region(id: &'static str, content: impl IntoElement) -> impl IntoElement {
+    div()
+        .id(id)
+        .flex_1()
+        .min_h(px(0.))
+        .overflow_y_scroll()
+        .px_4()
+        .pt_4()
+        .pb_4()
+        .child(content)
+}
+
 pub fn sidebar(
     tab_idx: usize,
     tab: &TabState,
@@ -32,23 +47,21 @@ pub fn sidebar(
     let names = tab.log_manager.group_names();
     let filter_defs = tab.log_manager.get_filters();
     let group_defs = tab.log_manager.get_group_styles();
-    let mut col = div()
+    let outer = div()
         .flex()
         .flex_col()
         .flex_shrink_0()
-        .gap_4()
+        .min_h(px(0.))
         .w(px(SIDEBAR_WIDTH))
-        .p_4()
         .bg(cx.theme().sidebar)
-        .id("sidebar-scroll")
-        .overflow_y_scroll()
         .when(tab.display.sidebar_side.is_left(), |d| d.border_r_1())
         .when(!tab.display.sidebar_side.is_left(), |d| d.border_l_1())
         .border_color(cx.theme().border)
         .child(sidebar_header(sidebar_tab, tab, cx));
-    col = match sidebar_tab {
+    let body = div().flex().flex_col().flex_1().min_h(px(0.));
+    let body = match sidebar_tab {
         SidebarTab::Filters => {
-            let col = col.child(filter_pane::filter_pane(
+            let filters_pane = filter_pane::filter_pane(
                 tab_idx,
                 filter_defs,
                 group_defs,
@@ -56,43 +69,54 @@ pub fn sidebar(
                     .filter(|(scope, _)| *scope == SidebarTab::Filters)
                     .map(|(_, index)| index),
                 cx,
-            ));
-            if !facet_browser_open {
-                return col;
-            }
-            let col = col.child(
-                Button::new("close-field-browser")
-                    .ghost()
-                    .small()
-                    .label("Close field picker")
-                    .on_click(cx.listener(|app, _, window, cx| {
-                        app.dispatch(Message::FacetBrowserToggled, window, cx)
-                    })),
             );
-            match facet_counts {
-                Some(counts) => col.child(field_facets::field_facets(
+            if !facet_browser_open {
+                return outer.child(scroll_region("sidebar-filters-scroll", filters_pane));
+            }
+            let facets = match facet_counts {
+                Some(counts) => field_facets::field_facets(
                     tab_idx,
                     counts,
                     filter_defs,
                     facet_expanded,
                     facet_search,
                     cx,
-                )),
-                None => col.child("Loading available filters…"),
-            }
+                )
+                .into_any_element(),
+                None => "Loading available filters…".into_any_element(),
+            };
+            let facets_pane = div()
+                .child(
+                    Button::new("close-field-browser")
+                        .ghost()
+                        .small()
+                        .label("Close field picker")
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            app.dispatch(Message::FacetBrowserToggled, window, cx)
+                        })),
+                )
+                .child(facets);
+            // Both halves get `flex_1`, splitting the available height evenly
+            // between them, each scrolling independently so the other stays visible.
+            body.child(scroll_region("sidebar-filters-scroll", filters_pane))
+                .child(div().border_t_1().border_color(cx.theme().border))
+                .child(scroll_region("sidebar-facets-scroll", facets_pane))
         }
-        SidebarTab::Groups => col.child(group_pane::group_pane(
-            tab_idx,
-            &names,
-            group_defs,
-            filter_defs,
-            keyboard_selection
-                .filter(|(scope, _)| *scope == SidebarTab::Groups)
-                .map(|(_, index)| index),
-            cx,
+        SidebarTab::Groups => body.child(scroll_region(
+            "sidebar-groups-scroll",
+            group_pane::group_pane(
+                tab_idx,
+                &names,
+                group_defs,
+                filter_defs,
+                keyboard_selection
+                    .filter(|(scope, _)| *scope == SidebarTab::Groups)
+                    .map(|(_, index)| index),
+                cx,
+            ),
         )),
     };
-    col
+    outer.child(body)
 }
 
 fn sidebar_header(active: SidebarTab, tab: &TabState, cx: &mut Context<App>) -> impl IntoElement {
@@ -102,6 +126,7 @@ fn sidebar_header(active: SidebarTab, tab: &TabState, cx: &mut Context<App>) -> 
         .justify_between()
         .h(px(SIDEBAR_HEADER_HEIGHT))
         .flex_shrink_0()
+        .px_4()
         .border_b_1()
         .border_color(cx.theme().border)
         .overflow_hidden()

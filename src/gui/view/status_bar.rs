@@ -1,4 +1,5 @@
 use crate::gui::app::App;
+use crate::gui::state::NavPage;
 use crate::gui::status::{
     status_bar_info, status_bar_left_text, status_bar_right_text, status_bar_schema_text,
 };
@@ -10,7 +11,11 @@ use gpui_kit::gpui::{Context, div, px};
 const STATUS_ROW_HEIGHT: f32 = 40.0;
 
 /// Log counts, schema, cursor position, and active filtering progress.
-pub fn status_bar(tab: Option<&TabState>, cx: &mut Context<App>) -> impl IntoElement {
+pub fn status_bar(
+    tab: Option<&TabState>,
+    nav_page: NavPage,
+    cx: &mut Context<App>,
+) -> impl IntoElement {
     let (left, schema, right) = match tab {
         Some(tab) => {
             let info = status_bar_info(tab);
@@ -58,7 +63,15 @@ pub fn status_bar(tab: Option<&TabState>, cx: &mut Context<App>) -> impl IntoEle
             .border_color(cx.theme().border)
             .text_size(gpui_kit::gpui::rems(12. / 13.))
             .text_color(cx.theme().muted_foreground)
-            .child(left.replace("   ", "   |   "))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .min_w(px(0.))
+                    .child(super::search_bar::view_mode_control(nav_page, cx))
+                    .child(left.replace("   ", "   |   ")),
+            )
             .child(schema)
             .child(right),
     )

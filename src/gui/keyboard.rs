@@ -292,26 +292,17 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
     {
         let effect = crate::gui::actions::open(state, *action, None, None);
         if *action == Action::Filter {
-            let selected = state
-                .active_tab()
-                .and_then(|tab| {
-                    tab.filter
-                        .visible_indices
-                        .get_opt(tab.scroll.scroll_offset)
-                        .map(|line| {
-                            crate::gui::view::log_pane::raw_log_message(&tab.file_reader, line)
-                        })
-                })
-                .unwrap_or_default();
             if let Some(editor) = &mut state.editor {
                 editor.kind = if kb.normal.filter_exclude.matches(key, modifiers) {
                     crate::filters::FilterType::Exclude
                 } else {
                     crate::filters::FilterType::Include
                 };
-                editor.auto_style = kb.normal.filter_include_auto.matches(key, modifiers);
-                if editor.auto_style {
-                    editor.values[0] = selected;
+                // `App::dispatch` fills `values[0]` from a manual text
+                // selection (if any) once this returns; it never comes
+                // from the cursor line alone.
+                if kb.normal.filter_include_auto.matches(key, modifiers) {
+                    editor.regenerate_auto_style();
                 }
             }
         }
@@ -756,9 +747,11 @@ fn apply_sidebar(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) ->
             } else {
                 crate::filters::FilterType::Include
             };
-            editor.auto_style = kb.filter.add_include_filter_auto.matches(key, modifiers);
             if kb.filter.add_date_filter.matches(key, modifiers) {
                 editor.values[0] = crate::filters::DATE_PREFIX.into();
+            }
+            if kb.filter.add_include_filter_auto.matches(key, modifiers) {
+                editor.regenerate_auto_style();
             }
         }
         return effect;
@@ -849,6 +842,9 @@ mod sidebar_tests {
         let editor = state.editor.as_ref().unwrap();
         assert_eq!(editor.action, Action::Filter);
         assert!(editor.auto_style);
-        assert_eq!(editor.values[0], "alpha");
+        // `keyboard::apply` alone never prefills from the cursor line —
+        // `App::dispatch` fills `values[0]` from a manual text selection
+        // (if any) afterward; see `auto_filter_prefills_from_a_manual_text_selection_only`.
+        assert_eq!(editor.values[0], "");
     }
 }

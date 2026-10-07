@@ -165,6 +165,70 @@ fn settings_open_without_a_file_and_save_restore_preferences(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
+fn auto_filter_prefills_from_a_manual_text_selection_only(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 600.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            // "plain"[1..4] == "lai" — a manual selection of part of the line.
+            let mut doc = app.text_document.borrow_mut();
+            doc.columns = vec!["message".into()];
+            doc.selection = Some((
+                crate::gui::text_selection::Endpoint {
+                    line: 0,
+                    row: 0,
+                    column: 0,
+                    offset: 1,
+                },
+                crate::gui::text_selection::Endpoint {
+                    line: 0,
+                    row: 0,
+                    column: 0,
+                    offset: 4,
+                },
+            ));
+            drop(doc);
+            app.dispatch(
+                super::message::Message::KeyPressed(
+                    crate::input::KeyCode::Char('a'),
+                    crate::input::KeyModifiers::NONE,
+                ),
+                window,
+                cx,
+            );
+        });
+    })
+    .unwrap();
+    let editor = app
+        .read_with(cx, |app, _| app.state.editor.clone())
+        .unwrap();
+    assert_eq!(editor.values[0], "lai");
+}
+
+#[gpui_kit::test]
+fn auto_filter_does_not_prefill_from_the_cursor_line_without_a_selection(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 600.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                super::message::Message::KeyPressed(
+                    crate::input::KeyCode::Char('a'),
+                    crate::input::KeyModifiers::NONE,
+                ),
+                window,
+                cx,
+            );
+        });
+    })
+    .unwrap();
+    let editor = app
+        .read_with(cx, |app, _| app.state.editor.clone())
+        .unwrap();
+    assert_eq!(editor.values[0], "");
+}
+
+#[gpui_kit::test]
 fn actions_scroll_without_moving_background_logs(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (1000., 600.), "dracula");
     cx.update_window(handle.into(), |_, window, cx| {
@@ -321,7 +385,7 @@ fn view_mode_switches_between_logs_and_bookmarks(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn slash_opens_search_popup_and_escape_preserves_query(cx: &mut TestAppContext) {
+fn slash_opens_search_popup_and_escape_clears_query(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
     cx.update_window(handle.into(), |_, window, cx| {
         add_log_tab(&app, cx, false);
@@ -338,13 +402,10 @@ fn slash_opens_search_popup_and_escape_preserves_query(cx: &mut TestAppContext) 
         window.render_frame(cx);
         assert!(!app.read(cx).state.search_open);
         assert!(window.try_find("log-search-input").is_none());
-        assert_eq!(
-            app.read(cx).state.tabs[0].search.query.get_pattern(),
-            Some("plain/line")
-        );
+        assert_eq!(app.read(cx).state.tabs[0].search.query.get_pattern(), None);
         window.press("/", cx);
         window.render_frame(cx);
-        assert_eq!(window.find("log-search-input").value(), Some("plain/line"));
+        assert_eq!(window.find("log-search-input").value(), Some(""));
         window.press("enter", cx);
         assert!(!app.read(cx).state.search_open);
     })
@@ -891,7 +952,7 @@ fn filter_editor_timestamp_time_only_uses_segmented_time_control(cx: &mut TestAp
 }
 
 #[gpui_kit::test]
-fn filter_editor_common_case_is_compact_and_auto_styled(cx: &mut TestAppContext) {
+fn filter_editor_common_case_is_compact_and_supports_auto_style(cx: &mut TestAppContext) {
     use crate::gui::{actions::Action, message::Message};
     let (handle, app) = palette_window(cx, (800., 650.), "github-light");
     cx.update_window(handle.into(), |_, window, cx| {
@@ -905,8 +966,9 @@ fn filter_editor_common_case_is_compact_and_auto_styled(cx: &mut TestAppContext)
         assert!(window.try_find("filter-group-select").is_none());
         assert!(window.try_find(("color-reset", 0usize)).is_none());
         assert!(window.try_find(("filter-option", 0usize)).is_none());
-        assert!(app.read(cx).state.editor.as_ref().unwrap().auto_style);
+        assert!(!app.read(cx).state.editor.as_ref().unwrap().auto_style);
         window.click("filter-auto-style", cx);
+        assert!(app.read(cx).state.editor.as_ref().unwrap().auto_style);
         assert_eq!(app.read(cx).state.editor.as_ref().unwrap().style_seed, 1);
         window.click("filter-advanced", cx);
         window.render_frame(cx);

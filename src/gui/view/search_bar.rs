@@ -93,7 +93,7 @@ pub fn filter_button(cx: &mut Context<App>) -> impl IntoElement {
         )
 }
 
-pub fn view_mode_control(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
+pub fn view_mode_control(nav_page: NavPage, cx: &mut Context<App>) -> impl IntoElement {
     let entity = cx.entity();
     div()
         .flex()
@@ -106,7 +106,7 @@ pub fn view_mode_control(state: &GuiState, cx: &mut Context<App>) -> impl IntoEl
             Button::new("view-mode")
                 .ghost()
                 .small()
-                .label(match state.nav_page {
+                .label(match nav_page {
                     NavPage::Logs => "Logs",
                     NavPage::Bookmarks => "Bookmarks",
                     _ => "View",

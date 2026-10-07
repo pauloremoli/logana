@@ -351,6 +351,29 @@ impl App {
         };
         let effect = update::update(&mut self.state, message);
         crate::gui::view::bookmarks::sync(&mut self.state);
+        // The auto-filter keybinding opens a prefilled draft; it should
+        // prefill from a manually selected text range, never from the
+        // whole cursor line (`editor.auto_style` is only set here and by
+        // `Message::EditorStyle`/the filter sidebar's auto-color toggle,
+        // neither of which opens a *new* editor, so `!had_editor` scopes
+        // this to the auto-filter keybinding alone).
+        if !had_editor
+            && self
+                .state
+                .editor
+                .as_ref()
+                .is_some_and(|e| e.action == crate::gui::actions::Action::Filter && e.auto_style)
+        {
+            let selected = self
+                .state
+                .active_tab()
+                .map(|tab| self.text_document.borrow().copy(tab))
+                .unwrap_or_default();
+            if let Some(editor) = self.state.editor.as_mut() {
+                editor.values[0] = selected;
+                editor.regenerate_auto_style();
+            }
+        }
         if self.state.editor.is_some() || self.state.palette.visible() {
             self.state.search_open = false;
         }

@@ -21,7 +21,7 @@ pub fn filter_pane(
     group_defs: &[GroupDef],
     selected: Option<usize>,
     cx: &mut Context<App>,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
     let entity = cx.entity();
     let empty = filter_defs.is_empty();
     let enabled = filter_defs.iter().filter(|def| def.enabled).count();

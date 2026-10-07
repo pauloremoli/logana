@@ -490,16 +490,41 @@ pub struct Editor {
     pub advanced: bool,
     pub auto_style: bool,
     pub style_seed: usize,
+    /// Pattern/field key the auto style's color was last generated from —
+    /// frozen at the moment auto style was (re)enabled, so further edits to
+    /// the pattern don't shift the color; only `regenerate_auto_style` does.
+    pub style_key: String,
     pub merge_sources: Vec<(TabId, bool)>,
 }
-pub fn automatic_filter_color(
-    pattern: &str,
-    theme: &crate::theme::Theme,
-    seed: usize,
-) -> crate::style::Color {
-    automatic_filter_colors(pattern, theme, seed).1
+impl Editor {
+    /// The pattern/field key auto style colors are derived from: the field
+    /// value when matching on a specific field, otherwise the raw pattern.
+    fn style_pattern_key(&self) -> String {
+        if self.values[1].is_empty() {
+            self.values[0].clone()
+        } else {
+            format!("{}:{}", self.values[1], self.values[2])
+        }
+    }
+    /// Turns on auto style, freezing a fresh color snapshot from the
+    /// current pattern — only this (the "Auto style" button, or the
+    /// auto-filter keybinding) changes the generated color; typing
+    /// afterward does not.
+    pub fn regenerate_auto_style(&mut self) {
+        self.values[4].clear();
+        self.values[5].clear();
+        self.style_seed = self.style_seed.wrapping_add(1);
+        self.style_key = self.style_pattern_key();
+        self.auto_style = true;
+        self.error = None;
+    }
+    /// Switches to a manually chosen style.
+    pub fn disable_auto_style(&mut self) {
+        self.advanced = true;
+        self.auto_style = false;
+        self.error = None;
+    }
 }
-
 pub fn automatic_filter_colors(
     pattern: &str,
     _theme: &crate::theme::Theme,
@@ -707,8 +732,9 @@ pub fn open(
         edit_id,
         group_name_locked: false,
         advanced: false,
-        auto_style: edit_id.is_none(),
+        auto_style: false,
         style_seed: 0,
+        style_key: String::new(),
         merge_sources: Vec::new(),
     };
     if let Some(tab) = state.active_tab_mut() {
@@ -1354,12 +1380,7 @@ pub fn apply(state: &mut GuiState) -> Effect {
             crate::filters::encode_field_filter(&e.conditions, nonempty(&e.values[0]).as_deref())
         };
         let automatic = e.auto_style && (e.kind != FilterType::Exclude || timestamp);
-        let style_key = if e.values[1].is_empty() {
-            e.values[0].clone()
-        } else {
-            format!("{}:{}", e.values[1], e.values[2])
-        };
-        let (auto_fg, auto_bg) = automatic_filter_colors(&style_key, &state.theme, e.style_seed);
+        let (auto_fg, auto_bg) = automatic_filter_colors(&e.style_key, &state.theme, e.style_seed);
         let options = crate::filters::FilterOptions {
             fg: if automatic && e.values[4..6].iter().all(String::is_empty) {
                 Some(auto_fg.to_string())
@@ -1747,15 +1768,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn filter_auto_style_defaults_generates_and_preserves_custom_colors() {
+    async fn filter_auto_style_is_opt_in_and_frozen_until_regenerated() {
         let mut state = state().await;
         open(&mut state, Action::Filter, None, None);
-        assert!(state.editor.as_ref().unwrap().auto_style);
+        assert!(!state.editor.as_ref().unwrap().auto_style);
         update(&mut state, Message::EditorText(0, "error".into()));
-        let initial = automatic_filter_color("error", &state.theme, 0);
+        assert!(!state.editor.as_ref().unwrap().auto_style);
+
         update(&mut state, Message::EditorStyle(true));
-        let expected = automatic_filter_color("error", &state.theme, 1);
-        assert_ne!(initial, expected);
+        let e = state.editor.as_ref().unwrap();
+        assert!(e.auto_style);
+        assert_eq!(e.style_key, "error");
+        let first = automatic_filter_colors(&e.style_key, &state.theme, e.style_seed);
+
+        // Typing after enabling auto style must not shift the frozen color.
+        update(&mut state, Message::EditorText(0, "error-extended".into()));
+        let e = state.editor.as_ref().unwrap();
+        assert_eq!(e.style_key, "error");
+        assert_eq!(
+            automatic_filter_colors(&e.style_key, &state.theme, e.style_seed),
+            first
+        );
+
+        // Only clicking "Auto style" again re-freezes from the current pattern.
+        update(&mut state, Message::EditorStyle(true));
+        let e = state.editor.as_ref().unwrap();
+        assert_eq!(e.style_key, "error-extended");
+        let regenerated = automatic_filter_colors(&e.style_key, &state.theme, e.style_seed);
+        assert_ne!(regenerated, first);
+
         let Effect::SaveGuiFilter {
             request_id,
             options,
@@ -1764,7 +1805,7 @@ mod tests {
         else {
             panic!("expected save")
         };
-        let (foreground, background) = automatic_filter_colors("error", &state.theme, 1);
+        let (foreground, background) = regenerated;
         assert_eq!(options.fg.as_deref(), Some(foreground.to_string().as_str()));
         assert_eq!(options.bg.as_deref(), Some(background.to_string().as_str()));
         assert!(

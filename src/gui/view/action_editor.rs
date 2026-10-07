@@ -553,13 +553,8 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 body = body.child(timestamp_editor(app, cx));
             }
             if e.kind != FilterType::Exclude || timestamp {
-                let preview_pattern = if e.values[1].is_empty() {
-                    e.values[0].clone()
-                } else {
-                    format!("{}:{}", e.values[1], e.values[2])
-                };
                 let (color, background) = crate::gui::actions::automatic_filter_colors(
-                    &preview_pattern,
+                    &e.style_key,
                     &app.state.theme,
                     e.style_seed,
                 );

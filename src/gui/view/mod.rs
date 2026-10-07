@@ -176,7 +176,7 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                             cx,
                         )),
                 )
-                .child(status_bar::status_bar(Some(tab), cx))
+                .child(status_bar::status_bar(Some(tab), app.state.nav_page, cx))
                 .into_any_element();
             let sidebar = {
                 let sidebar_tab = app.state.sidebar_tab;

@@ -258,14 +258,10 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
         Message::EditorStyle(automatic) => {
             if let Some(e) = &mut state.editor {
                 if automatic {
-                    e.values[4].clear();
-                    e.values[5].clear();
-                    e.style_seed = e.style_seed.wrapping_add(1);
+                    e.regenerate_auto_style();
                 } else {
-                    e.advanced = true;
+                    e.disable_auto_style();
                 }
-                e.auto_style = automatic;
-                e.error = None;
             }
             Effect::None
         }
