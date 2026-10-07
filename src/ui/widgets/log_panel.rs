@@ -509,6 +509,23 @@ fn stable_hash(s: &str) -> usize {
     })
 }
 
+/// Push a highlight span for every occurrence of `needle` in `rendered`,
+/// matching the GUI's per-cell highlighting (which highlights every repeat
+/// of a matched value, not just the first).
+fn push_every_occurrence(
+    collector: &mut MatchCollector,
+    rendered: &str,
+    needle: &str,
+    style: crate::filters::StyleId,
+) {
+    if needle.is_empty() {
+        return;
+    }
+    for (pos, _) in rendered.match_indices(needle) {
+        collector.push(pos, pos + needle.len(), style);
+    }
+}
+
 fn find_token_offset(haystack: &str, needle: &str) -> Option<usize> {
     if needle.is_empty() {
         return None;
@@ -896,9 +913,12 @@ pub fn prepare_log_panel(
                             if dfs.filter.matches(ts, None) {
                                 collector.with_priority(500);
                                 if dfs.match_only {
-                                    if let Some(ts_pos) = c.timestamp_offset {
-                                        collector.push(ts_pos, ts_pos + ts.len(), dfs.style_id);
-                                    }
+                                    push_every_occurrence(
+                                        &mut collector,
+                                        rendered,
+                                        ts,
+                                        dfs.style_id,
+                                    );
                                 } else {
                                     collector.push(0, rendered.len(), dfs.style_id);
                                 }
@@ -926,15 +946,22 @@ pub fn prepare_log_panel(
                                 for (field, pattern) in &ffs.field_filter.conditions {
                                     if let Some(val) = crate::filters::resolve_field(field, &parts)
                                         .filter(|v| v.contains(pattern.as_str()))
-                                        && let Some(pos) = rendered.find(val)
                                     {
-                                        collector.push(pos, pos + val.len(), ffs.style_id);
+                                        push_every_occurrence(
+                                            &mut collector,
+                                            rendered,
+                                            val,
+                                            ffs.style_id,
+                                        );
                                     }
                                 }
-                                if let Some(text) = &ffs.field_filter.text
-                                    && let Some(pos) = rendered.find(text.as_str())
-                                {
-                                    collector.push(pos, pos + text.len(), ffs.style_id);
+                                if let Some(text) = &ffs.field_filter.text {
+                                    push_every_occurrence(
+                                        &mut collector,
+                                        rendered,
+                                        text,
+                                        ffs.style_id,
+                                    );
                                 }
                             }
                         }
@@ -2411,5 +2438,63 @@ mod tests {
             has_progress,
             "expected progress bar characters in rendered output"
         );
+    }
+
+    #[tokio::test]
+    async fn test_field_highlight_match_only_colors_every_occurrence() {
+        use crate::filters::FilterType;
+
+        let mut app = make_app(&[r#"{"level":"INFO","msg":"hello hello"}"#]).await;
+        let pattern = crate::filters::encode_field_filter(
+            &[("level".to_string(), "INFO".to_string())],
+            Some("hello"),
+        );
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                pattern,
+                FilterType::Highlight,
+                crate::filters::FilterOptions::default().fg("red"),
+            )
+            .await;
+        app.tabs[0].refresh_visible();
+        app.tabs[0].display.show_sidebar = false;
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let width = buf.area.width;
+        let row_content = |y: u16| -> String {
+            (0..width)
+                .map(|x| buf.cell((x, y)).map_or(" ", |c| c.symbol()).to_string())
+                .collect()
+        };
+        let log_row = (0..buf.area.height)
+            .find(|&y| row_content(y).contains("hello"))
+            .expect("the log line should be rendered somewhere");
+        let content = row_content(log_row);
+
+        let mut occurrences = Vec::new();
+        let mut search_from = 0;
+        while let Some(pos) = content[search_from..].find("hello") {
+            occurrences.push(search_from + pos);
+            search_from += pos + 1;
+        }
+        assert_eq!(
+            occurrences.len(),
+            2,
+            "expected two occurrences of 'hello' on the log row, got: {content}"
+        );
+        for start in occurrences {
+            let cell = buf
+                .cell((start as u16, log_row))
+                .expect("cell should exist");
+            assert_eq!(
+                cell.fg,
+                ratatui::style::Color::Red,
+                "every occurrence of a match-only field highlight's text should be colored, \
+                 not just the first"
+            );
+        }
     }
 }

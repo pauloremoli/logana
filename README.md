@@ -40,6 +40,10 @@ curl -fsSL https://github.com/pauloremoli/logana/releases/latest/download/logana
 irm https://github.com/pauloremoli/logana/releases/latest/download/logana-installer.ps1 | iex
 ```
 
+These install the TUI (`logana`). For the GUI only, swap in
+`logana-gui-installer.sh` / `.ps1`; for both frontends, use
+`logana-full-installer.sh` / `.ps1`.
+
 ### Homebrew (macOS / Linux)
 
 ```sh
@@ -55,8 +59,8 @@ cargo binstall logana
 ```
 
 Source builds enable `tui` by default.
-Build only the GUI with `cargo build --no-default-features --features gui --bin logana-gui`,
-or both frontends with `cargo build --features gui`. See
+Build only the GUI with `cargo build -p logana-gui`, or both frontends with
+`cargo build -p logana-full`. See
 [frontend build configurations](CONTRIBUTING.md#frontend-features).
 
 The GUI accepts the same arguments as the TUI, including filters, tail mode,

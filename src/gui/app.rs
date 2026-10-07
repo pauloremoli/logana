@@ -1521,7 +1521,7 @@ impl Render for App {
             .track_focus(&self.root_focus)
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .text_size(gpui_kit::gpui::rems(13. / 13.))
+            .text_size(gpui_kit::gpui::rems(1.))
             .flex()
             .flex_col()
             .on_action(cx.listener(Self::on_open_file_action))

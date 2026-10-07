@@ -19,20 +19,25 @@ Before making changes, read [ARCHITECTURE.md](ARCHITECTURE.md) to get your beari
 
 The `tui` feature is enabled by default and includes the `logana` CLI, terminal
 rendering, clipboard support, and `--headless` processing. The `gui` feature
-builds `logana-gui` independently. Cargo features are additive.
+builds the GUI. Cargo features are additive. This is a Cargo workspace: the
+root `logana` package is the TUI app and shared library; `logana-gui` and
+`logana-full` are thin sibling packages that depend on it to produce
+separate, installable binaries for the GUI-only and TUI+GUI-bundled builds
+(see [cargo-dist's "one feature set per package" model](dist-workspace.toml)
+for why they're split out).
 
 | Build | Command |
 |---|---|
-| TUI and headless CLI (default) | `cargo build --bin logana` |
-| GUI only | `cargo build --no-default-features --features gui --bin logana-gui` |
-| Both frontends | `cargo build --features gui` |
-| Shared library and schema tooling | `cargo build --no-default-features` |
+| TUI and headless CLI (default) | `cargo build -p logana` |
+| GUI only | `cargo build -p logana-gui` |
+| Both frontends (`logana` + `logana-gui`) | `cargo build -p logana-full` |
+| Shared library and schema tooling | `cargo build -p logana --no-default-features` |
 
-Run `cargo test` for TUI and headless tests, `cargo test --no-default-features`
-for shared tests, and `cargo test --no-default-features --features gui` for GUI
-and shared tests. Native GUI event tests use `gui-test` and require a working
-graphical environment. Run `python3 scripts/check-feature-deps.py` to verify
-that frontend dependencies remain isolated.
+Run `cargo test` for TUI and headless tests, `cargo test -p logana
+--no-default-features` for shared tests, and `cargo test -p logana-gui` for
+GUI and shared tests. Native GUI event tests use `gui-test` and require a
+working graphical environment. Run `python3 scripts/check-feature-deps.py` to
+verify that frontend dependencies remain isolated.
 
 Themes, colors/styles, tab state, sessions, field layout, and command helpers
 live in `shared` and `style`; terminal code lives in `ui`, and GPUI code in

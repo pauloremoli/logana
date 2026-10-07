@@ -45,7 +45,7 @@ pub fn sidebar(
         .when(tab.display.sidebar_side.is_left(), |d| d.border_r_1())
         .when(!tab.display.sidebar_side.is_left(), |d| d.border_l_1())
         .border_color(cx.theme().border)
-        .child(sidebar_header(sidebar_tab, cx));
+        .child(sidebar_header(sidebar_tab, tab, cx));
     col = match sidebar_tab {
         SidebarTab::Filters => {
             let col = col.child(filter_pane::filter_pane(
@@ -95,7 +95,7 @@ pub fn sidebar(
     col
 }
 
-fn sidebar_header(active: SidebarTab, cx: &mut Context<App>) -> impl IntoElement {
+fn sidebar_header(active: SidebarTab, tab: &TabState, cx: &mut Context<App>) -> impl IntoElement {
     div()
         .flex()
         .items_center()
@@ -108,6 +108,7 @@ fn sidebar_header(active: SidebarTab, cx: &mut Context<App>) -> impl IntoElement
         .child(
             div()
                 .flex()
+                .items_center()
                 .gap_2()
                 .child(sidebar_tab_button(
                     SidebarTabButtonArgs {
@@ -126,7 +127,22 @@ fn sidebar_header(active: SidebarTab, cx: &mut Context<App>) -> impl IntoElement
                         active: active == SidebarTab::Groups,
                     },
                     cx,
-                )),
+                ))
+                .child(
+                    Button::new("sidebar-filtering-toggle")
+                        .ghost()
+                        .small()
+                        .icon(IconName::ListFilter)
+                        .selected(tab.filter.enabled)
+                        .tooltip("Toggle filtering (F)")
+                        .on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
+                            app.dispatch(
+                                Message::GuiAction(crate::gui::actions::Action::ToggleFiltering),
+                                window,
+                                cx,
+                            );
+                        })),
+                ),
         )
         .child(
             Button::new("sidebar-close")

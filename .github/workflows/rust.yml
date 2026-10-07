@@ -33,16 +33,20 @@ jobs:
       matrix:
         include:
           - name: core
+            package: logana
             flags: --no-default-features
             gui: false
           - name: tui
+            package: logana
             flags: ""
             gui: false
           - name: gui
-            flags: --no-default-features --features gui
+            package: logana-gui
+            flags: ""
             gui: true
-          - name: both
-            flags: --features gui
+          - name: full
+            package: logana-full
+            flags: ""
             gui: true
     steps:
     - uses: actions/checkout@v4
@@ -58,11 +62,11 @@ jobs:
       with:
         key: ${{ matrix.name }}
     - name: Clippy
-      run: cargo clippy --locked --all-targets ${{ matrix.flags }} -- -D warnings
+      run: cargo clippy --locked --all-targets -p ${{ matrix.package }} ${{ matrix.flags }} -- -D warnings
     - name: Build
-      run: cargo build --locked ${{ matrix.flags }}
+      run: cargo build --locked -p ${{ matrix.package }} ${{ matrix.flags }}
     - name: Run tests
-      run: cargo test --locked ${{ matrix.flags }}
+      run: cargo test --locked -p ${{ matrix.package }} ${{ matrix.flags }}
     - name: Verify dependency isolation
       if: matrix.name == 'core'
       run: python3 scripts/check-feature-deps.py

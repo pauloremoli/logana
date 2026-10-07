@@ -12,6 +12,9 @@ categories = ["command-line-utilities", "development-tools::debugging"]
 exclude = [".github", "pkg", "docs"]
 default-run = "logana"
 
+[workspace]
+members = ["crates/logana-gui", "crates/logana-full"]
+
 [package.metadata.wix]
 upgrade-guid = "40A718EC-7645-458F-A8AB-6DE8BC5A8183"
 path-guid = "0D696C66-ABEF-4551-A553-0530BA66BEC7"
@@ -100,11 +103,6 @@ default = ["tui"]
 tui = ["dep:ratatui", "dep:crossterm", "dep:arboard"]
 gui = ["dep:gpui-kit", "dep:futures"]
 gui-test = ["gui", "gpui-kit/test-support"]
-
-[[bin]]
-name = "logana-gui"
-path = "src/bin/logana_gui.rs"
-required-features = ["gui"]
 
 [[bin]]
 name = "logana"

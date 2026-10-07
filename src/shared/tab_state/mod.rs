@@ -256,8 +256,9 @@ impl<'a> FilterEvalContext<'a> {
 /// Date filters act as strict AND constraints on the timestamp field.
 ///
 /// Pass-through rules (field filters only):
-/// - If the line cannot be parsed (e.g. a stack-trace continuation) → field filters do not apply.
-/// - If the line was parsed but the named field is absent → treated as Miss (hidden).
+/// - Field excludes never match an unparseable line or an absent field → the line stays visible.
+/// - Field includes treat an unparseable line the same as an absent field → Miss (hidden),
+///   since neither can satisfy the filter's condition.
 pub fn line_is_visible(
     text_dec: FilterDecision,
     ctx: &mut FilterEvalContext<'_>,
@@ -5009,6 +5010,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_field_include_hides_line_that_fails_to_parse() {
+        // A line that doesn't match the detected format can't satisfy a
+        // field include filter's condition, so it should be hidden —
+        // the same as a parsed line with the field absent.
+        let lines = [
+            r#"{"level":"error","msg":"boom"}"#, // matches format, level=error → visible
+            "not a json line at all",            // fails to parse → hidden
+        ];
+        let mut tab = make_tab(&lines).await;
+
+        tab.log_manager
+            .add_filter_with_color(
+                "@field:level:error".to_string(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        tab.filter.enabled = true;
+        tab.refresh_visible();
+
+        assert_eq!(tab.filter.visible_indices, VisibleLines::Filtered(vec![0]));
+    }
+
+    #[tokio::test]
     async fn test_begin_filter_refresh_fast_path_no_filters() {
         let mut tab = make_tab(&["a", "b", "c"]).await;
         tab.begin_filter_refresh();
@@ -7169,7 +7194,7 @@ mod tests {
     }
 
     #[test]
-    fn test_line_is_visible_field_passthrough_when_unparseable() {
+    fn test_line_is_visible_field_include_hides_when_unparseable() {
         use crate::filters::FieldFilter;
         fn make_inc() -> FieldFilter {
             FieldFilter {
@@ -7178,15 +7203,14 @@ mod tests {
                 decision: FilterDecision::Include,
             }
         }
-        // parts=None → field filters do not apply → falls back to text-only logic.
-        // has_text_includes=false → visible (no include filter applies)
-        assert!(line_is_visible(
+        // parts=None → can't satisfy the field condition → Miss → hidden,
+        // regardless of whether a text include filter is also configured.
+        assert!(!line_is_visible(
             FilterDecision::Neutral,
             &mut FilterEvalContext::new(false, &[], &mut [], &[make_inc()], &[], None),
             None,
             b"",
         ));
-        // has_text_includes=true → hidden (include filter present but nothing matched)
         assert!(!line_is_visible(
             FilterDecision::Neutral,
             &mut FilterEvalContext::new(true, &[], &mut [], &[make_inc()], &[], None),

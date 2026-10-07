@@ -836,7 +836,10 @@ pub(crate) fn displayed_values(tab: &TabState, line: usize, fields: &[String]) -
                 raw_log_text(&String::from_utf8_lossy(row_message_bytes(tab, &bytes)))
             }
             _ => {
-                let value = if field == "source" {
+                // `get_col` (shared with the TUI) also resolves span/fields.*
+                // sub-fields and indexed repeated-group columns, which plain
+                // `resolve_field` does not.
+                let value: String = if field == "source" {
                     tab.file_reader
                         .merged_entries()
                         .and_then(|entries| entries.get(line))
@@ -845,18 +848,20 @@ pub(crate) fn displayed_values(tab: &TabState, line: usize, fields: &[String]) -
                                 .as_ref()
                                 .and_then(|m| m.source_labels.get(entry.source_idx))
                         })
-                        .map(String::as_str)
-                        .unwrap_or("")
+                        .cloned()
+                        .unwrap_or_default()
                 } else {
                     parts
                         .as_ref()
-                        .and_then(|parts| crate::filters::resolve_field(field, parts))
-                        .unwrap_or("")
+                        .and_then(|parts| {
+                            crate::shared::field_layout::get_col(parts, field, false, None)
+                        })
+                        .unwrap_or_default()
                 };
                 if tab.display.show_keys && !value.is_empty() {
                     format!("{field}={value}")
                 } else {
-                    value.into()
+                    value
                 }
             }
         })
@@ -1266,6 +1271,39 @@ mod tests {
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, None).await;
         TabState::new(reader, log_manager, "test.log".to_string())
+    }
+
+    /// Always parses to a fixed [`DisplayParts`] with one repeated-group
+    /// item, regardless of the raw line — exercises `displayed_values`'s
+    /// field-group lookup without needing a real custom schema.
+    #[derive(Debug)]
+    struct GroupFieldParser;
+    impl crate::parser::LogFormatParser for GroupFieldParser {
+        fn parse_line<'a>(&self, _line: &'a [u8]) -> Option<crate::parser::DisplayParts<'a>> {
+            Some(crate::parser::DisplayParts {
+                field_groups: vec![(
+                    "mygroup",
+                    vec![crate::parser::GroupItem {
+                        fields: vec![(crate::parser::FieldSemantic::Extra, "key1", "value1")],
+                    }],
+                )],
+                ..Default::default()
+            })
+        }
+        fn name(&self) -> &str {
+            "group-field-test"
+        }
+        fn collect_field_names(&self, _lines: &[&[u8]]) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    #[tokio::test]
+    async fn displayed_values_resolves_indexed_group_fields() {
+        let mut t = tab().await;
+        t.display.format = Some(std::sync::Arc::new(GroupFieldParser));
+        let values = displayed_values(&t, 0, &["mygroup.0.key1".to_string()]);
+        assert_eq!(values, vec!["value1".to_string()]);
     }
 
     #[test]

@@ -15,19 +15,15 @@ pub(crate) const TAB_BAR_HEIGHT: f32 = 40.0;
 const TAB_HEIGHT: f32 = 36.0;
 
 pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
-    let mut bar = div()
+    let mut tabs = div()
         .flex()
         .items_center()
         .gap_1()
-        .px(px(4.))
-        .min_h(px(TAB_BAR_HEIGHT))
         .flex_wrap()
-        .bg(cx.theme().tab)
-        .overflow_hidden()
-        .border_b_1()
-        .border_color(cx.theme().border);
+        .min_w(px(0.))
+        .child(super::search_bar::view_mode_control(state, cx));
     for (idx, tab) in state.tabs.iter().enumerate() {
-        bar = bar.child(tab_label(
+        tabs = tabs.child(tab_label(
             idx,
             tab.id,
             tab.title.clone(),
@@ -36,7 +32,7 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
             cx,
         ));
     }
-    bar.child(
+    tabs = tabs.child(
         Button::new("open-file")
             .ghost()
             .icon(Icon::new(IconName::Plus))
@@ -44,22 +40,40 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
             .on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
                 app.dispatch(Message::OpenFileDialog, window, cx);
             })),
-    )
-    .child(super::search_bar::search_button(cx))
-    .child(super::search_bar::filter_button(cx))
-    .child(super::search_bar::filtering_button(state, cx))
-    .child(super::search_bar::live_indicator(state, cx))
-    .child(super::search_bar::view_mode_control(state, cx))
-    .child(
-        Button::new("open-commands")
-            .ghost()
-            .icon(Icon::new(IconName::SquareTerminal))
-            .label("Actions")
-            .tooltip("Actions (: or Ctrl+Shift+P)")
-            .on_click(cx.listener(|app: &mut App, _, window, cx| {
-                app.dispatch(Message::OpenCommands, window, cx)
-            })),
-    )
+    );
+
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .px(px(4.))
+        .min_h(px(TAB_BAR_HEIGHT))
+        .bg(cx.theme().tab)
+        .overflow_hidden()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .child(tabs)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .gap_1()
+                .child(super::search_bar::search_button(cx))
+                .child(super::search_bar::filter_button(cx))
+                .child(super::search_bar::live_indicator(state, cx))
+                .child(
+                    Button::new("open-commands")
+                        .ghost()
+                        .icon(Icon::new(IconName::SquareTerminal))
+                        .label("Actions")
+                        .tooltip("Actions (: or Ctrl+Shift+P)")
+                        .on_click(cx.listener(|app: &mut App, _, window, cx| {
+                            app.dispatch(Message::OpenCommands, window, cx)
+                        })),
+                ),
+        )
 }
 
 /// A tab chip: file icon, title, close button. The active tab is marked

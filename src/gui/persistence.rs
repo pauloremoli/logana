@@ -296,27 +296,6 @@ impl Persistence {
     }
 }
 
-fn session_files(tabs: &[TabState]) -> Vec<String> {
-    tabs.iter()
-        .filter(|tab| {
-            !tab.is_temp_backed()
-                && tab.merged.is_none()
-                && !tab
-                    .stream
-                    .watch
-                    .as_ref()
-                    .is_some_and(|w| w.temp_file.is_some())
-        })
-        .filter_map(|tab| tab.log_manager.source_file())
-        .filter(|source| {
-            !source.contains("://")
-                && !source.starts_with("run:")
-                && crate::ingestion::detect_archive_type(source).is_none()
-        })
-        .map(str::to_owned)
-        .collect()
-}
-
 impl App {
     pub(super) fn save_preferences(&mut self, prefs: Preferences) {
         let save = Save {
@@ -355,7 +334,7 @@ impl App {
                 }
             }
         }
-        let files = session_files(&self.state.tabs);
+        let files = crate::shared::session::session_source_files(&self.state.tabs);
         // Opening and immediately quitting an empty window must not erase the last session.
         if (!self.state.tabs.is_empty() || self.persistence.session.is_some())
             && self.persistence.session.as_ref() != Some(&files)
@@ -795,9 +774,15 @@ mod tests {
             ));
         }
         tabs[2].merged_temp = Some(tempfile::NamedTempFile::new().unwrap());
-        assert_eq!(session_files(&tabs), vec!["second.log"]);
+        assert_eq!(
+            crate::shared::session::session_source_files(&tabs),
+            vec!["second.log"]
+        );
         tabs[2].merged_temp = None;
-        assert_eq!(session_files(&tabs), vec!["second.log", "first.log"]);
+        assert_eq!(
+            crate::shared::session::session_source_files(&tabs),
+            vec!["second.log", "first.log"]
+        );
     }
 }
 

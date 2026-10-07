@@ -15,6 +15,32 @@ pub struct SessionManager {
     pub startup_warnings: Vec<String>,
 }
 
+/// Source-file paths worth remembering across restarts: skips temp-backed
+/// tabs (e.g. a picker-triggered merge result), merged and stream-temp
+/// tabs, and non-restorable sources (archives, `run:`/`://`-prefixed
+/// streams). Shared by the TUI's [`SessionManager::save_all_contexts`] and
+/// the GUI's equivalent, so both frontends agree on what a "session" is.
+pub fn session_source_files(tabs: &[TabState]) -> Vec<String> {
+    tabs.iter()
+        .filter(|tab| {
+            !tab.is_temp_backed()
+                && tab.merged.is_none()
+                && !tab
+                    .stream
+                    .watch
+                    .as_ref()
+                    .is_some_and(|w| w.temp_file.is_some())
+        })
+        .filter_map(|tab| tab.log_manager.source_file())
+        .filter(|source| {
+            !source.contains("://")
+                && !source.starts_with("run:")
+                && crate::ingestion::detect_archive_type(source).is_none()
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 impl SessionManager {
     pub async fn save_tab_context(&self, tab: &TabState) {
         if let Some(ctx) = tab.to_file_context() {
@@ -23,13 +49,7 @@ impl SessionManager {
     }
 
     pub async fn save_all_contexts(&self, tabs: &[TabState]) {
-        let tmp_dir = std::env::temp_dir();
-        let source_files: Vec<String> = tabs
-            .iter()
-            .filter_map(|t| t.log_manager.source_file().map(|s| s.to_string()))
-            .filter(|p| !std::path::Path::new(p).starts_with(&tmp_dir))
-            .filter(|p| crate::ingestion::detect_archive_type(p).is_none())
-            .collect();
+        let source_files = session_source_files(tabs);
 
         let contexts: Vec<crate::db::FileContext> =
             tabs.iter().filter_map(|t| t.to_file_context()).collect();
@@ -131,5 +151,19 @@ mod tests {
         session.save_all_contexts(&[tab]).await;
         let files = db.load_session().await.unwrap();
         assert!(!files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_session_source_files_excludes_temp_backed_merged_stream_and_non_restorable_sources()
+     {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut tabs = Vec::new();
+        for path in ["second.log", "run:echo", "first.log", "otlp://4318"] {
+            tabs.push(make_tab(db.clone(), Some(path)).await);
+        }
+        tabs[2].merged_temp = Some(tempfile::NamedTempFile::new().unwrap());
+        assert_eq!(session_source_files(&tabs), vec!["second.log"]);
+        tabs[2].merged_temp = None;
+        assert_eq!(session_source_files(&tabs), vec!["second.log", "first.log"]);
     }
 }

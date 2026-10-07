@@ -4352,6 +4352,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "logana-full"
+version = "0.7.7"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "gpui-kit",
+ "jsonschema",
+ "logana",
+ "ratatui",
+ "schemars 0.8.22",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "logana-gui"
+version = "0.7.7"
+dependencies = [
+ "clap",
+ "gpui-kit",
+ "logana",
+]
+
+[[package]]
 name = "loop9"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,47 @@
+[package]
+name = "logana-full"
+version = "0.7.7"
+edition = "2024"
+authors = ["Paulo Remoli"]
+description = "Bundled TUI + GUI build of logana — turn any log source into structured data from the terminal or a desktop app."
+license = "GPL-3.0"
+repository = "https://github.com/pauloremoli/logana"
+homepage = "https://github.com/pauloremoli/logana"
+publish = false
+
+[package.metadata.dist]
+dist = true
+installers = ["shell", "powershell", "msi"]
+
+[package.metadata.wix]
+upgrade-guid = "DED29FA3-740E-4C4B-975C-E97D66DA8784"
+path-guid = "B9578FF8-6E94-4866-B72B-3142CBAE77C4"
+license = false
+eula = false
+
+[dependencies]
+logana = { path = "../..", default-features = false, features = ["tui", "gui"] }
+anyhow = { version = "1.0", default-features = false, features = ["std"] }
+clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
+crossterm = "0.29"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros"] }
+gpui-kit = "0.7"
+schemars = { version = "0.8", default-features = false, features = ["derive", "preserve_order"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+jsonschema = { version = "0.28", default-features = false }
+tempfile = "3.10"
+
+[[bin]]
+name = "logana"
+path = "../../src/main.rs"
+
+[[bin]]
+name = "logana-gui"
+path = "../logana-gui/src/main.rs"
+
+[[bin]]
+name = "schema"
+path = "../../src/bin/schema.rs"

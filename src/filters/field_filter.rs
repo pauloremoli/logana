@@ -288,9 +288,11 @@ pub fn resolve_field<'a>(field: &str, parts: &'a DisplayParts<'a>) -> Option<&'a
 pub enum FieldVote {
     /// At least one field include filter matched.
     Match,
-    /// The line was parsed but no include filter matched (field absent or value mismatch).
+    /// No include filter matched — field absent, value mismatch, or the
+    /// line couldn't be parsed at all.
     Miss,
-    /// The line could not be parsed at all (e.g. a stack-trace continuation line) — pass through.
+    /// No include filters are configured; the caller should fall back to
+    /// text-filter-only visibility logic.
     PassThrough,
 }
 
@@ -314,9 +316,10 @@ pub fn any_field_exclude_matches(
 /// Evaluate field include filters and return a [`FieldVote`].
 ///
 /// - `Match` — at least one include filter's conditions (and text, if any) all matched.
-/// - `Miss` — at least one field was present and evaluated, but none matched.
-/// - `PassThrough` — `parts` is `None` or all relevant fields were absent; the
-///   caller should fall back to text-filter-only visibility logic.
+/// - `Miss` — no include filter matched: field absent, value mismatch, or
+///   the line couldn't be parsed at all (an unparseable line can't satisfy
+///   a field condition, so it doesn't match).
+/// - `PassThrough` — no include filters are configured.
 pub fn field_include_vote(
     includes: &[FieldFilter],
     parts: Option<&DisplayParts<'_>>,
@@ -326,7 +329,7 @@ pub fn field_include_vote(
         return FieldVote::PassThrough;
     }
     let Some(parts) = parts else {
-        return FieldVote::PassThrough; // line could not be parsed → pass through
+        return FieldVote::Miss;
     };
 
     // Line was successfully parsed: any filter that matches → Match; otherwise → Miss.
@@ -673,10 +676,12 @@ mod tests {
     }
 
     #[test]
-    fn test_include_parts_none_passthrough() {
+    fn test_include_parts_none_is_miss() {
+        // A line that failed to parse can't match any field condition,
+        // so it's a miss — same as a parsed line with an absent field.
         assert_eq!(
             field_include_vote(&[inc("level", "error")], None, b""),
-            FieldVote::PassThrough
+            FieldVote::Miss
         );
     }
 

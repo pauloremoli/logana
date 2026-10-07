@@ -3,10 +3,10 @@ use crate::gui::message::Message;
 use crate::gui::state::{GuiState, NavPage};
 use crate::gui::update::is_tab_live;
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{Disableable, Selectable};
+use gpui_kit::base::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, Icon};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div, px};
 
@@ -95,25 +95,39 @@ pub fn filter_button(cx: &mut Context<App>) -> impl IntoElement {
 
 pub fn view_mode_control(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
     let entity = cx.entity();
-    Button::new("view-mode")
-        .label(match state.nav_page {
-            NavPage::Logs => "Logs",
-            NavPage::Bookmarks => "Bookmarks",
-            _ => "View",
-        })
-        .icon(IconName::ChevronDown)
-        .tooltip("View mode")
-        .dropdown_menu(move |mut menu, _, _| {
-            for (label, page) in [("Logs", NavPage::Logs), ("Bookmarks", NavPage::Bookmarks)] {
-                let entity = entity.clone();
-                menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                    entity.update(cx, |app, cx| {
-                        app.dispatch(Message::NavPageSelected(page), window, cx);
-                    });
-                }));
-            }
-            menu
-        })
+    div()
+        .flex()
+        .items_center()
+        .h(px(32.))
+        .px(px(4.))
+        .rounded(px(6.))
+        .bg(cx.theme().secondary)
+        .child(
+            Button::new("view-mode")
+                .ghost()
+                .small()
+                .label(match state.nav_page {
+                    NavPage::Logs => "Logs",
+                    NavPage::Bookmarks => "Bookmarks",
+                    _ => "View",
+                })
+                .icon(IconName::ChevronDown)
+                .tooltip("View mode")
+                .dropdown_menu(move |mut menu, _, _| {
+                    for (label, page) in
+                        [("Logs", NavPage::Logs), ("Bookmarks", NavPage::Bookmarks)]
+                    {
+                        let entity = entity.clone();
+                        menu =
+                            menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                entity.update(cx, |app, cx| {
+                                    app.dispatch(Message::NavPageSelected(page), window, cx);
+                                });
+                            }));
+                    }
+                    menu
+                }),
+        )
 }
 
 /// A colored dot (live = green, idle/paused = gray) plus a Pause/Play
@@ -147,11 +161,8 @@ pub fn live_indicator(state: &GuiState, cx: &mut Context<App>) -> impl IntoEleme
         .items_center()
         .gap_1()
         .overflow_hidden()
-        .h(px(38.))
-        .px(px(10.))
-        .rounded(px(6.))
-        .border_1()
-        .border_color(cx.theme().border)
+        .h(px(32.))
+        .px(px(6.))
         .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(dot_color))
         .child(if live { "Live" } else { "Paused" })
         .child(
@@ -167,22 +178,4 @@ pub fn live_indicator(state: &GuiState, cx: &mut Context<App>) -> impl IntoEleme
                 ),
         )
         .into_any_element()
-}
-
-/// The sidebar control and filtering control have distinct effects.
-pub fn filtering_button(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
-    Button::new("toggle-filtering")
-        .ghost()
-        .icon(IconName::Funnel)
-        .label("Filters")
-        .selected(state.active_tab().is_some_and(|tab| tab.filter.enabled))
-        .disabled(state.active_tab().is_none())
-        .tooltip("Toggle filtering (F)")
-        .on_click(cx.listener(|app, _, window, cx| {
-            app.dispatch(
-                Message::GuiAction(crate::gui::actions::Action::ToggleFiltering),
-                window,
-                cx,
-            );
-        }))
 }
