@@ -133,6 +133,31 @@ fn single_line_inputs_leave_room_for_text_and_padding(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn keybindings_editor_captures_a_new_binding_for_the_first_grouped_item(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                super::message::Message::GuiAction(super::actions::Action::Keybindings),
+                window,
+                cx,
+            )
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().action,
+            super::actions::Action::Keybindings
+        );
+        window.click(("capture-binding", 0usize), cx);
+        assert_eq!(app.read(cx).state.binding_capture, Some(0));
+        window.press("f", cx);
+        assert_eq!(app.read(cx).state.binding_capture, None);
+        assert_eq!(app.read(cx).state.editor.as_ref().unwrap().values[0], "f");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn settings_open_without_a_file_and_save_restore_preferences(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
     cx.update_window(handle.into(), |_, window, cx| {

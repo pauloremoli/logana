@@ -1,7 +1,7 @@
 use crate::commands::Commands;
 use crate::filters::FilterType;
 use crate::gui::{
-    actions::{Action, CATALOG},
+    actions::{Action, CATALOG, Editor},
     app::App,
     message::Message,
 };
@@ -12,15 +12,125 @@ use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::color_picker::ColorPicker;
 use gpui_kit::component::date_picker::DatePicker;
+use gpui_kit::component::group_box::{GroupBox, GroupBoxVariant, GroupBoxVariants};
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::select::Select;
+use gpui_kit::component::setting::{SettingGroup, SettingItem, SettingPage, Settings};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::time_field::TimeField;
 use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::gpui::{
-    AnyElement, ClipboardItem, Context, MouseButton, Pixels, Size, anchored, deferred, div, point,
-    prelude::*, px,
+    AnyElement, ClipboardItem, Context, Entity, MouseButton, Pixels, Size, anchored, deferred, div,
+    point, prelude::*, px,
 };
+
+/// Chunks `keyboard::editable_bindings`'s "group.field" flat list into
+/// contiguous per-group runs of indices, for display as [`SettingGroup`]s —
+/// entries are already emitted group-by-group by that function, so a
+/// changed prefix always starts a new run.
+fn chunk_by_group(fields: &[(String, bool)]) -> Vec<(&str, Vec<usize>)> {
+    let mut groups: Vec<(&str, Vec<usize>)> = Vec::new();
+    for (index, (name, _)) in fields.iter().enumerate() {
+        let group = name.split_once('.').map(|(g, _)| g).unwrap_or(name);
+        match groups.last_mut() {
+            Some((last_group, indices)) if *last_group == group => indices.push(index),
+            _ => groups.push((group, vec![index])),
+        }
+    }
+    groups
+}
+
+/// "docker_select" -> "Docker Select"; a couple of acronyms are
+/// special-cased since title-casing alone renders them as "Ui"/"Dlt".
+fn humanize(key: &str) -> String {
+    key.split('_')
+        .map(|word| match word {
+            "ui" => "UI".to_string(),
+            "dlt" => "DLT".to_string(),
+            _ => {
+                let mut chars = word.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One capture-binding row (label + current/"Unbound"/"Press a key…"
+/// button) as a [`SettingItem`], wired through `entity` instead of
+/// `cx.listener` since `SettingItem::render`'s closure only hands back a
+/// plain `&mut App`.
+fn keybinding_item(entity: &Entity<App>, app: &App, e: &Editor, index: usize) -> SettingItem {
+    let name = e.fields[index]
+        .0
+        .split_once('.')
+        .map_or(e.fields[index].0.as_str(), |(_, field)| field);
+    let label = humanize(name);
+    let item_label = label.clone();
+    let capturing = app.state.binding_capture == Some(index);
+    let value = e.values[index].clone();
+    let entity = entity.clone();
+    SettingItem::render(move |_, _, _| {
+        let entity = entity.clone();
+        div()
+            .flex()
+            .justify_between()
+            .items_center()
+            .gap_3()
+            .child(item_label.clone())
+            .child(
+                Button::new(("capture-binding", index))
+                    .label(if capturing {
+                        "Press a key…".to_string()
+                    } else if value.is_empty() {
+                        "Unbound".into()
+                    } else {
+                        value.clone()
+                    })
+                    .on_click(move |_, window, cx| {
+                        entity.update(cx, |app, cx| {
+                            app.state.binding_capture = Some(index);
+                            app.interface_focus.focus(window, cx);
+                            cx.notify();
+                        });
+                    }),
+            )
+    })
+    .keywords([label])
+}
+
+/// One restore-policy row (title + always/ask/never button group).
+fn restore_policy_row(
+    app: &App,
+    e: &Editor,
+    index: usize,
+    title: &str,
+    key: crate::db::SettingsKey,
+    cx: &mut Context<App>,
+) -> impl IntoElement {
+    let locked = app.state.preferences.locked.contains(&key);
+    let mut choices = div().flex().gap_2();
+    for (choice, value) in ["always", "ask", "never"].into_iter().enumerate() {
+        choices = choices.child(
+            Button::new(("restore-policy", index * 3 + choice))
+                .label(value)
+                .selected(e.values[index] == value)
+                .disabled(locked)
+                .on_click(cx.listener(move |app, _, window, cx| {
+                    app.dispatch(Message::EditorText(index, value.into()), window, cx)
+                })),
+        );
+    }
+    let mut row = div().flex().flex_col().gap_1().child(title.to_string());
+    row = row.child(choices);
+    if locked {
+        row = row.child("Set in config.json");
+    }
+    row
+}
 
 fn text(app: &App, index: usize, label: &str, _cx: &mut Context<App>) -> AnyElement {
     if let Some(input) = app.editor_textareas.get(&index) {
@@ -39,16 +149,16 @@ fn text(app: &App, index: usize, label: &str, _cx: &mut Context<App>) -> AnyElem
         .child(label.to_string())
         .children(app.editor_inputs.get(index).map(|input| {
             super::input(input).id(("editor-input", index)).disabled(
-                app.state
+                (app.state
                     .editor
                     .as_ref()
                     .is_some_and(|e| e.action == Action::Settings)
-                    && [
-                        (2, crate::db::SettingsKey::PreviewBytes),
-                        (3, crate::db::SettingsKey::McpPort),
-                    ]
-                    .iter()
-                    .any(|(i, key)| *i == index && app.state.preferences.locked.contains(key))
+                    && index == 3
+                    && app
+                        .state
+                        .preferences
+                        .locked
+                        .contains(&crate::db::SettingsKey::McpPort))
                     || index == 0
                         && app
                             .state
@@ -183,82 +293,67 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
     let mut body = div().flex().flex_col().flex_shrink_0().gap_3();
     match e.action {
         Action::Keybindings => {
-            body =
-                body.child("Click a shortcut, then press its replacement. Escape cancels capture.");
-            for (index, (name, _)) in e.fields.iter().enumerate() {
-                body = body.child(
-                    div()
-                        .flex()
-                        .justify_between()
-                        .gap_3()
-                        .child(name.replace('_', " "))
-                        .child(
-                            Button::new(("capture-binding", index))
-                                .label(if app.state.binding_capture == Some(index) {
-                                    "Press a key…".to_string()
-                                } else if e.values[index].is_empty() {
-                                    "Unbound".into()
-                                } else {
-                                    e.values[index].clone()
-                                })
-                                .on_click(cx.listener(move |app, _, window, cx| {
-                                    app.state.binding_capture = Some(index);
-                                    app.interface_focus.focus(window, cx);
-                                    cx.notify();
-                                })),
-                        ),
+            let entity = cx.entity();
+            let groups = chunk_by_group(&e.fields)
+                .into_iter()
+                .map(|(group, indices)| {
+                    SettingGroup::new().title(humanize(group)).items(
+                        indices
+                            .into_iter()
+                            .map(|index| keybinding_item(&entity, app, e, index))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            body = body
+                .child("Click a shortcut, then press its replacement. Escape cancels capture.")
+                .child(
+                    div().h(px(440.)).child(
+                        Settings::new("keybindings-settings")
+                            .with_group_variant(GroupBoxVariant::Outline)
+                            .page(
+                                SettingPage::new("Keyboard Shortcuts")
+                                    .resettable(false)
+                                    .groups(groups),
+                            ),
+                    ),
                 );
-            }
         }
         Action::Settings => {
             use crate::db::SettingsKey;
-            body = body.child(
-                "Changes apply to future opens. Values pinned in config.json are read-only.",
-            );
-            for (index, key, label) in [
-                (0, SettingsKey::RestoreSession, "Restore previous session"),
-                (
-                    1,
-                    SettingsKey::RestoreFileContext,
-                    "Restore file position, bookmarks, and display options",
-                ),
-            ] {
-                let locked = app.state.preferences.locked.contains(&key);
-                let mut row = div().flex().flex_col().gap_1().child(label);
-                let mut choices = div().flex().gap_2();
-                for (choice, value) in ["always", "ask", "never"].into_iter().enumerate() {
-                    choices = choices.child(
-                        Button::new(("restore-policy", index * 3 + choice))
-                            .label(value)
-                            .selected(e.values[index] == value)
-                            .disabled(locked)
-                            .on_click(cx.listener(move |app, _, window, cx| {
-                                app.dispatch(Message::EditorText(index, value.into()), window, cx)
-                            })),
-                    );
-                }
-                row = row.child(choices);
-                if locked {
-                    row = row.child("Set in config.json");
-                }
-                body = body.child(row);
-            }
-            body = body
-                .child(text(
+            let session = GroupBox::new()
+                .outline()
+                .title("Session")
+                .gap_3()
+                .child(restore_policy_row(
                     app,
-                    2,
-                    "Initial preview size (bytes, maximum 128 MiB)",
+                    e,
+                    0,
+                    "Restore previous session",
+                    SettingsKey::RestoreSession,
                     cx,
                 ))
-                .child(text(app, 3, "Default MCP port", cx))
-                .child(div().mt_3().child("Defaults for newly opened files"));
+                .child(restore_policy_row(
+                    app,
+                    e,
+                    1,
+                    "Restore file position, bookmarks, and display options",
+                    SettingsKey::RestoreFileContext,
+                    cx,
+                ));
+            let mcp =
+                GroupBox::new()
+                    .outline()
+                    .title("MCP")
+                    .child(text(app, 3, "Default MCP port", cx));
+            let mut display = GroupBox::new().outline().title("Display settings").gap_2();
             for (i, (label, on)) in e.fields.iter().enumerate() {
                 let locked = app
                     .state
                     .preferences
                     .locked
                     .contains(&crate::gui::persistence::DISPLAY_KEYS[i]);
-                body = body.child(
+                display = display.child(
                     Checkbox::new(("setting-default", i))
                         .label(if locked {
                             format!("{label} (config.json)")
@@ -272,7 +367,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                         })),
                 );
             }
-            let mut links = div().flex().flex_wrap().gap_2();
+            let mut more = GroupBox::new().outline().title("More").gap_2();
             for (id, label, action) in [
                 ("settings-appearance", "Appearance", Action::Appearance),
                 (
@@ -286,13 +381,18 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     Action::Keybindings,
                 ),
             ] {
-                links = links.child(Button::new(id).ghost().label(label).on_click(cx.listener(
+                more = more.child(Button::new(id).ghost().label(label).on_click(cx.listener(
                     move |app, _, window, cx| {
                         app.dispatch(Message::EditorNavigate(action), window, cx)
                     },
                 )));
             }
-            body = body.child(links);
+            body = body
+                .child("Changes apply to future opens. Values pinned in config.json are read-only.")
+                .child(session)
+                .child(mcp)
+                .child(display)
+                .child(more);
         }
         Action::Help => {
             for (label, keys) in crate::gui::keyboard::shortcuts(&app.state) {
