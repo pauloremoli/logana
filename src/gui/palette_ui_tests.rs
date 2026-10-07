@@ -1489,6 +1489,54 @@ fn minimal_filter_sidebar_hides_fields_and_opens_prefilled_conditions(cx: &mut T
 }
 
 #[gpui_kit::test]
+fn filter_sidebar_keyboard_navigation_scrolls_selection_into_view(cx: &mut TestAppContext) {
+    use crate::filters::{FilterOptions, FilterType};
+    use crate::input::{KeyCode, KeyModifiers};
+    let (handle, app) = palette_window(cx, (1000., 500.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            for i in 0..40 {
+                runtime::handle().block_on(app.state.tabs[0].log_manager.add_filter_with_color(
+                    format!("pattern{i}"),
+                    FilterType::Highlight,
+                    FilterOptions::default(),
+                ));
+            }
+            app.state.tabs[0].display.show_sidebar = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                super::message::Message::KeyPressed(KeyCode::Char('f'), KeyModifiers::NONE),
+                window,
+                cx,
+            );
+        });
+        window.render_frame(cx);
+        assert_eq!(app.read(cx).state.sidebar_cursor, 0);
+        assert_eq!(app.read(cx).filter_sidebar_scroll.offset().y, px(0.));
+        app.update(cx, |app, cx| {
+            for _ in 0..30 {
+                app.dispatch(
+                    super::message::Message::KeyPressed(KeyCode::Char('j'), KeyModifiers::NONE),
+                    window,
+                    cx,
+                );
+            }
+        });
+        window.render_frame(cx);
+        assert_eq!(app.read(cx).state.sidebar_cursor, 30);
+        assert!(
+            app.read(cx).filter_sidebar_scroll.offset().y < px(0.),
+            "selecting a filter far down the list must scroll it into view"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn annotations_are_visible_in_logs_and_bookmark_their_lines(cx: &mut TestAppContext) {
     use crate::gui::{actions::Action, message::Message, state::NavPage};
     let (handle, app) = palette_window(cx, (1000., 800.), "dracula");

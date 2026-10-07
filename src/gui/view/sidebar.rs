@@ -33,6 +33,7 @@ fn scroll_region(id: &'static str, content: impl IntoElement) -> impl IntoElemen
         .child(content)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn sidebar(
     tab_idx: usize,
     tab: &TabState,
@@ -42,6 +43,8 @@ pub fn sidebar(
     facet_expanded: &HashMap<String, bool>,
     facet_search: Option<&Entity<InputState>>,
     facet_counts: Option<&crate::shared::FieldValueCounts>,
+    filter_scroll: &gpui_kit::gpui::ScrollHandle,
+    group_scroll: &gpui_kit::gpui::ScrollHandle,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let names = tab.log_manager.group_names();
@@ -68,10 +71,11 @@ pub fn sidebar(
                 keyboard_selection
                     .filter(|(scope, _)| *scope == SidebarTab::Filters)
                     .map(|(_, index)| index),
+                filter_scroll,
                 cx,
             );
             if !facet_browser_open {
-                return outer.child(scroll_region("sidebar-filters-scroll", filters_pane));
+                return outer.child(filters_pane);
             }
             let facets = match facet_counts {
                 Some(counts) => field_facets::field_facets(
@@ -98,22 +102,20 @@ pub fn sidebar(
                 .child(facets);
             // Both halves get `flex_1`, splitting the available height evenly
             // between them, each scrolling independently so the other stays visible.
-            body.child(scroll_region("sidebar-filters-scroll", filters_pane))
+            body.child(filters_pane)
                 .child(div().border_t_1().border_color(cx.theme().border))
                 .child(scroll_region("sidebar-facets-scroll", facets_pane))
         }
-        SidebarTab::Groups => body.child(scroll_region(
-            "sidebar-groups-scroll",
-            group_pane::group_pane(
-                tab_idx,
-                &names,
-                group_defs,
-                filter_defs,
-                keyboard_selection
-                    .filter(|(scope, _)| *scope == SidebarTab::Groups)
-                    .map(|(_, index)| index),
-                cx,
-            ),
+        SidebarTab::Groups => body.child(group_pane::group_pane(
+            tab_idx,
+            &names,
+            group_defs,
+            filter_defs,
+            keyboard_selection
+                .filter(|(scope, _)| *scope == SidebarTab::Groups)
+                .map(|(_, index)| index),
+            group_scroll,
+            cx,
         )),
     };
     outer.child(body)

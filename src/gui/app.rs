@@ -50,6 +50,12 @@ pub struct App {
     filter_edits: tokio::sync::mpsc::UnboundedSender<crate::gui::effect::FilterEdit>,
     pub log_scroll: ListState,
     pub horizontal_scroll: gpui_kit::gpui::ScrollHandle,
+    /// Keyboard navigation (filter/group mode) moves `sidebar_cursor`
+    /// without necessarily scrolling it into view — these keep the
+    /// selected row visible the same way `command_scroll` does for the
+    /// command palette.
+    pub filter_sidebar_scroll: gpui_kit::gpui::ScrollHandle,
+    pub group_sidebar_scroll: gpui_kit::gpui::ScrollHandle,
     pub field_widths: Option<crate::gui::column_widths::FieldWidthCache>,
     notification_timer_revision: u64,
     pub table_layout: Option<crate::gui::view::log_pane::LayoutCache>,
@@ -217,6 +223,8 @@ impl App {
             editor_epoch: 0,
             editor_synced: Vec::new(),
             horizontal_scroll: gpui_kit::gpui::ScrollHandle::new(),
+            filter_sidebar_scroll: gpui_kit::gpui::ScrollHandle::new(),
+            group_sidebar_scroll: gpui_kit::gpui::ScrollHandle::new(),
             log_scroll: ListState::new(0, ListAlignment::Top, gpui_kit::gpui::px(60.)),
             table_layout: None,
             notification_timer_revision: 0,

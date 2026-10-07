@@ -194,6 +194,8 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                     app.facet_counts
                         .get(&tab.id)
                         .and_then(|entry| entry.counts.as_ref()),
+                    &app.filter_sidebar_scroll,
+                    &app.group_sidebar_scroll,
                     cx,
                 )
                 .into_any_element()

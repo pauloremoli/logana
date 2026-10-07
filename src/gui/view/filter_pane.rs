@@ -14,77 +14,102 @@ use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Empty, div, px};
 
+/// The filter list's own header row occupies child index 0 of the
+/// scrollable container (see `filter_pane`), so a selected filter at
+/// `index` sits at `index + FILTER_LIST_HEADER_ROWS` for `scroll_to_item`.
+const FILTER_LIST_HEADER_ROWS: usize = 1;
+
 /// Native filter controls: add, edit, enable, remove, and drag to reorder.
 pub fn filter_pane(
     tab_idx: usize,
     filter_defs: &[FilterDef],
     group_defs: &[GroupDef],
     selected: Option<usize>,
+    scroll: &gpui_kit::gpui::ScrollHandle,
     cx: &mut Context<App>,
 ) -> impl IntoElement + use<> {
     let entity = cx.entity();
     let empty = filter_defs.is_empty();
     let enabled = filter_defs.iter().filter(|def| def.enabled).count();
-    let mut col = div().flex().flex_col().gap_2().child(
-        div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .child(
-                div()
-                    .flex_1()
-                    .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
-                    .child("Filters")
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui_kit::gpui::FontWeight::NORMAL)
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("{enabled} of {} enabled", filter_defs.len())),
-                    ),
-            )
-            .child(
-                Button::new("add-filter")
-                    .primary()
-                    .small()
-                    .icon(IconName::Plus)
-                    .label("Add filter")
-                    .on_click(cx.listener(|app, _, window, cx| {
-                        app.dispatch(
-                            Message::GuiAction(crate::gui::actions::Action::Filter),
-                            window,
-                            cx,
-                        )
-                    })),
-            )
-            .child(
-                Button::new("filter-menu")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Ellipsis)
-                    .tooltip("Filter options")
-                    .dropdown_menu(move |menu, _, _| {
-                        let fields = entity.clone();
-                        let clear = entity.clone();
-                        menu.item(PopupMenuItem::new("Add from field").on_click(
-                            move |_, window, cx| {
-                                fields.update(cx, |app, cx| {
-                                    app.dispatch(Message::FacetBrowserToggled, window, cx)
-                                });
-                            },
-                        ))
-                        .item(
-                            PopupMenuItem::new("Clear all").disabled(empty).on_click(
+    if let Some(index) = selected {
+        scroll.scroll_to_item(index + FILTER_LIST_HEADER_ROWS);
+    }
+    let mut col = div()
+        .id("sidebar-filters-scroll")
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h(px(0.))
+        .gap_2()
+        .overflow_y_scroll()
+        .track_scroll(scroll)
+        .px_4()
+        .pt_4()
+        .pb_4()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .flex_1()
+                        .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
+                        .child("Filters")
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(gpui_kit::gpui::FontWeight::NORMAL)
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("{enabled} of {} enabled", filter_defs.len())),
+                        ),
+                )
+                .child(
+                    Button::new("add-filter")
+                        .primary()
+                        .small()
+                        .icon(IconName::Plus)
+                        .label("Add filter")
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            app.dispatch(
+                                Message::GuiAction(crate::gui::actions::Action::Filter),
+                                window,
+                                cx,
+                            )
+                        })),
+                )
+                .child(
+                    Button::new("filter-menu")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Ellipsis)
+                        .tooltip("Filter options")
+                        .dropdown_menu(move |menu, _, _| {
+                            let fields = entity.clone();
+                            let clear = entity.clone();
+                            menu.item(PopupMenuItem::new("Add from field").on_click(
                                 move |_, window, cx| {
-                                    clear.update(cx, |app, cx| {
-                                        app.dispatch(Message::ClearAllFilters(tab_idx), window, cx)
+                                    fields.update(cx, |app, cx| {
+                                        app.dispatch(Message::FacetBrowserToggled, window, cx)
                                     });
                                 },
-                            ),
-                        )
-                    }),
-            ),
-    );
+                            ))
+                            .item(
+                                PopupMenuItem::new("Clear all").disabled(empty).on_click(
+                                    move |_, window, cx| {
+                                        clear.update(cx, |app, cx| {
+                                            app.dispatch(
+                                                Message::ClearAllFilters(tab_idx),
+                                                window,
+                                                cx,
+                                            )
+                                        });
+                                    },
+                                ),
+                            )
+                        }),
+                ),
+        );
     if empty {
         col = col.child(
             div()

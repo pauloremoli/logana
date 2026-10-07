@@ -11,6 +11,11 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div, px};
 
+/// The group list's own header row occupies child index 0 of the
+/// scrollable container (see `group_pane`), so a selected group at
+/// `index` sits at `index + GROUP_LIST_HEADER_ROWS` for `scroll_to_item`.
+const GROUP_LIST_HEADER_ROWS: usize = 1;
+
 /// Native group management, including groups without member filters.
 pub fn group_pane(
     tab_idx: usize,
@@ -18,35 +23,51 @@ pub fn group_pane(
     group_defs: &[GroupDef],
     filter_defs: &[FilterDef],
     selected: Option<usize>,
+    scroll: &gpui_kit::gpui::ScrollHandle,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
-    let mut col = div().flex().flex_col().gap_1().child(
-        div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .child(
-                div()
-                    .flex_1()
-                    .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
-                    .child(format!("Groups [{}]", names.len())),
-            )
-            .child(
-                Button::new("add-group")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Plus)
-                    .label("Add")
-                    .tooltip("Add group")
-                    .on_click(cx.listener(|app, _, window, cx| {
-                        app.dispatch(
-                            Message::GuiAction(crate::gui::actions::Action::Group),
-                            window,
-                            cx,
-                        )
-                    })),
-            ),
-    );
+    if let Some(index) = selected {
+        scroll.scroll_to_item(index + GROUP_LIST_HEADER_ROWS);
+    }
+    let mut col = div()
+        .id("sidebar-groups-scroll")
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h(px(0.))
+        .gap_1()
+        .overflow_y_scroll()
+        .track_scroll(scroll)
+        .px_4()
+        .pt_4()
+        .pb_4()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .flex_1()
+                        .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
+                        .child(format!("Groups [{}]", names.len())),
+                )
+                .child(
+                    Button::new("add-group")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Plus)
+                        .label("Add")
+                        .tooltip("Add group")
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            app.dispatch(
+                                Message::GuiAction(crate::gui::actions::Action::Group),
+                                window,
+                                cx,
+                            )
+                        })),
+                ),
+        );
     if names.is_empty() {
         col = col.child(
             div()
