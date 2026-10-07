@@ -1682,6 +1682,14 @@ impl Render for App {
                 }
                 if app.state.search_open && stroke.key == "escape" {
                     cx.stop_propagation();
+                    // Clearing the input first makes `dispatch`'s own
+                    // close-time sync (below) see a changed, empty query and
+                    // route it through `SearchEdited` into `cancel_search` —
+                    // so Escape discards the search instead of just hiding
+                    // the popup with results and highlights left behind.
+                    if let Some(input) = &app.log_search {
+                        input.update(cx, |input, cx| input.set_value(String::new(), window, cx));
+                    }
                     app.dispatch(Message::SearchPopup(false), window, cx);
                     return;
                 }
