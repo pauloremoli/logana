@@ -221,28 +221,18 @@ fn filter_row(
                         .items_center()
                         .gap_1()
                         .child(Tag::secondary().small().child(type_label))
-                        .when(!def.enabled, |d| {
-                            d.child(Tag::secondary().small().child("Off"))
-                        })
                         .when(def.use_regex, |d| {
                             d.child(Tag::secondary().small().child("Regex"))
                         })
                         .when(def.ignore_case, |d| {
                             d.child(Tag::secondary().small().child("Ignore case"))
                         })
+                        .when_some(def.group.clone(), |d, group| {
+                            d.child(Tag::secondary().small().child(format!("Group: {group}")))
+                        })
                         .tooltip(move |window, cx| Tooltip::new(type_label).build(window, cx)),
                 )
                 .cursor_pointer()
-                .when_some(def.group.as_ref(), |d, group| {
-                    d.child(
-                        div()
-                            .max_w_full()
-                            .truncate()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("Group: {group}")),
-                    )
-                })
                 .child(
                     div()
                         .max_w_full()
