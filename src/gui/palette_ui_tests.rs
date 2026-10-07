@@ -1074,10 +1074,24 @@ fn log_mouse_text_selection_copies_unicode_and_preserves_row_selection(cx: &mut 
         );
         window.render_frame(cx);
         assert_eq!(app.read(cx).state.log_selection, Some((id, 1, 2)));
+        // The "#" column renders as a generic resizable field (see
+        // `header_row`), so its dragged width lands in the per-format
+        // `preferences.column_widths` map, not the legacy fixed
+        // `state.column_widths.line_no` (which only `ColumnWidths`'s other,
+        // now-unused `LineNo` variant would write to).
+        let format = crate::gui::column_widths::format_key(&app.read(cx).state.tabs[0]);
         let before = app.read(cx).state.column_widths.line_no;
-        let handle = window.find("resize-line-no").bounds().center();
+        let handle = window.find("resize-#").bounds().center();
         window.drag(handle, handle + point(px(30.), px(0.)), cx);
-        assert!(app.read(cx).state.column_widths.line_no > before);
+        let after = app
+            .read(cx)
+            .state
+            .preferences
+            .column_widths
+            .get(&format)
+            .and_then(|widths| widths.get("#"))
+            .copied();
+        assert!(after.is_some_and(|w| w > before));
         assert!(app.read(cx).text_document.borrow().selection.is_none());
     })
     .unwrap();
