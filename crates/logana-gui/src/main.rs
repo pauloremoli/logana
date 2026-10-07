@@ -73,7 +73,20 @@ fn main() {
             // manager's — the window falls back to server-side decorations
             // on its own when the platform can't honor that, in which case
             // `TitleBar` detects it and skips drawing duplicate controls.
-            gpui_kit::open_window(TitleBar::window_options(), cx, |window, cx| {
+            //
+            // Opens maximized; the given bounds are only the size the
+            // window restores to when the user un-maximizes it.
+            let window_options = gpui_kit::gpui::WindowOptions {
+                window_bounds: Some(gpui_kit::gpui::WindowBounds::Maximized(
+                    gpui_kit::gpui::Bounds::centered(
+                        None,
+                        gpui_kit::gpui::size(gpui_kit::gpui::px(1280.), gpui_kit::gpui::px(800.)),
+                        cx,
+                    ),
+                )),
+                ..TitleBar::window_options()
+            };
+            gpui_kit::open_window(window_options, cx, |window, cx| {
                 let app = cx.new(|cx| App::new(Arc::clone(&db), theme.clone(), cx));
                 app.update(cx, |app, cx| {
                     app.start_cli(args.clone(), preferences.clone(), files.clone(), window, cx);

@@ -507,17 +507,24 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
         }
         Message::SelectLog(index, extend) => {
             state.keyboard_sidebar = None;
-            if let Some(tab) = state.active_tab() {
+            let existing_anchor = state.active_tab().and_then(|tab| {
+                state
+                    .log_selection
+                    .filter(|(id, _, _)| *id == tab.id)
+                    .map(|(_, anchor, _)| anchor)
+            });
+            if let Some(tab) = state.active_tab_mut() {
+                let id = tab.id;
+                // A mouse click moves the cursor the same way keyboard
+                // navigation does, so the status bar's "Ln N" follows it.
+                tab.scroll.scroll_offset =
+                    index.min(tab.filter.visible_indices.len().saturating_sub(1));
                 let anchor = if extend {
-                    state
-                        .log_selection
-                        .filter(|(id, _, _)| *id == tab.id)
-                        .map(|(_, anchor, _)| anchor)
-                        .unwrap_or(index)
+                    existing_anchor.unwrap_or(index)
                 } else {
                     index
                 };
-                state.log_selection = Some((tab.id, anchor, index));
+                state.log_selection = Some((id, anchor, index));
             }
             Effect::None
         }
@@ -2608,6 +2615,22 @@ mod tests {
         assert_eq!(state.tabs[0].scroll.scroll_offset, last);
         handle_command_string(&mut state, "tail".to_string());
         assert!(!state.tabs[0].stream.tail_mode);
+    }
+
+    #[tokio::test]
+    async fn clicking_a_log_row_moves_the_cursor_to_it() {
+        // The status bar's "Ln N" reads `scroll.scroll_offset`, so a mouse
+        // click on a row — not just keyboard navigation — must move it,
+        // the same way it already updates `log_selection`.
+        let (mut state, _file) = state_with_one_tab().await;
+        assert_eq!(state.tabs[0].scroll.scroll_offset, 0);
+        update(&mut state, Message::SelectLog(1, false));
+        assert_eq!(state.tabs[0].scroll.scroll_offset, 1);
+        assert_eq!(
+            state.log_selection,
+            Some((state.tabs[0].id, 1, 1)),
+            "selection anchor/row must still be set alongside the cursor move"
+        );
     }
 
     #[tokio::test]
