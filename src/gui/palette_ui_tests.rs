@@ -2070,3 +2070,47 @@ fn notes_search_preserves_source_row_actions(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn field_facets_page_values_and_search_every_page(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1100., 1100.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.state.facet_browser_open = true;
+            let id = app.state.tabs[0].id;
+            let cache = app.facet_counts.get_mut(&id).unwrap();
+            cache.counts = Some(crate::shared::FieldValueCounts {
+                names: vec!["service".into()],
+                counts: std::collections::HashMap::from([(
+                    "service".into(),
+                    (0..100).map(|i| (format!("value{i:03}"), 1)).collect(),
+                )]),
+            });
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("facet-next:service").is_some());
+        assert!(window.try_find("facet-value:service:value000").is_some());
+        assert!(window.try_find("facet-value:service:value040").is_none());
+        window.click("facet-next:service", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("facet-value:service:value000").is_none());
+        assert!(window.try_find("facet-value:service:value040").is_some());
+        window.click("facet-previous:service", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("facet-value:service:value000").is_some());
+        window.click("facet-next:service", cx);
+        window.render_frame(cx);
+        window.click("facet-next:service", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("facet-value:service:value080").is_some());
+
+        window.click("facet-search-input", cx);
+        window.input("value099", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("facet-value:service:value099").is_some());
+        assert!(window.try_find("facet-next:service").is_none());
+    })
+    .unwrap();
+}

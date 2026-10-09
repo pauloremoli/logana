@@ -208,6 +208,7 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                         .map(|scope| (scope, app.state.sidebar_cursor)),
                     app.state.facet_browser_open,
                     &app.state.facet_expanded,
+                    &app.facet_pages,
                     app.facet_search.as_ref(),
                     app.facet_counts
                         .get(&tab.id)

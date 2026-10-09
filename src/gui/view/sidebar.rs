@@ -40,6 +40,7 @@ pub fn sidebar(
     keyboard_selection: Option<(SidebarTab, usize)>,
     facet_browser_open: bool,
     facet_expanded: &HashMap<String, bool>,
+    facet_pages: &HashMap<String, usize>,
     facet_search: Option<&Entity<InputState>>,
     facet_counts: Option<&crate::shared::FieldValueCounts>,
     filter_scroll: &gpui_kit::gpui::ScrollHandle,
@@ -82,6 +83,7 @@ pub fn sidebar(
                     counts,
                     filter_defs,
                     facet_expanded,
+                    facet_pages,
                     facet_search,
                     cx,
                 )

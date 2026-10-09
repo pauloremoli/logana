@@ -4,12 +4,16 @@ use crate::gui::message::Message;
 use crate::gui::update::filter_id_for_field_equality;
 use crate::shared::FieldValueCounts;
 use gpui_kit::assets::IconName;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::{ActiveTheme, Icon};
+use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Entity, Window, div, px};
 use std::collections::HashMap;
+
+const VALUES_PER_PAGE: usize = 40;
 
 /// "Available Filters": one collapsible category per field `counts`
 /// reports, each listing its values with a checkbox and occurrence count.
@@ -17,11 +21,13 @@ use std::collections::HashMap;
 /// `Message::FacetValueToggled`) — toggling a checkbox adds or removes a
 /// real `--field name=value` filter via the normal command pipeline, same
 /// as typing `:filter --field name=value` in the TUI.
+#[allow(clippy::too_many_arguments)]
 pub fn field_facets(
     tab_idx: usize,
     counts: &FieldValueCounts,
     filter_defs: &[FilterDef],
     expanded: &HashMap<String, bool>,
+    pages: &HashMap<String, usize>,
     search: Option<&Entity<InputState>>,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
@@ -87,6 +93,7 @@ pub fn field_facets(
             &values,
             filter_defs,
             is_expanded,
+            pages.get(name).copied().unwrap_or(0),
             cx,
         ));
     }
@@ -106,12 +113,14 @@ pub fn field_facets(
     col
 }
 
+#[allow(clippy::too_many_arguments)]
 fn facet_category(
     tab_idx: usize,
     field: &str,
     values: &[(String, usize)],
     filter_defs: &[FilterDef],
     expanded: bool,
+    page: usize,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let chevron = if expanded {
@@ -150,8 +159,14 @@ fn facet_category(
                 ),
         );
     if expanded {
+        let page = page.min(values.len().saturating_sub(1) / VALUES_PER_PAGE);
+        let start = page * VALUES_PER_PAGE;
+        let end = (start + VALUES_PER_PAGE).min(values.len());
         let mut list = div().flex().flex_col();
-        for (value, count) in values {
+        if values.len() > VALUES_PER_PAGE {
+            list = list.child(facet_pagination(field, page, end, values.len(), cx));
+        }
+        for (value, count) in &values[start..end] {
             list = list.child(facet_value_row(
                 tab_idx,
                 field,
@@ -164,6 +179,54 @@ fn facet_category(
         category = category.child(list);
     }
     category
+}
+
+fn facet_pagination(
+    field: &str,
+    page: usize,
+    end: usize,
+    total: usize,
+    cx: &mut Context<App>,
+) -> impl IntoElement {
+    let previous_field = field.to_owned();
+    let next_field = field.to_owned();
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_1()
+        .pb_2()
+        .child(
+            Button::new(format!("facet-previous:{field}"))
+                .small()
+                .ghost()
+                .icon(IconName::ChevronLeft)
+                .accessibility_label(format!("Previous values for {field}"))
+                .disabled(page == 0)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.facet_pages
+                        .insert(previous_field.clone(), page.saturating_sub(1));
+                    cx.notify();
+                })),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(format!("{}–{end} of {total}", page * VALUES_PER_PAGE + 1)),
+        )
+        .child(
+            Button::new(format!("facet-next:{field}"))
+                .small()
+                .ghost()
+                .icon(IconName::ChevronRight)
+                .accessibility_label(format!("Next values for {field}"))
+                .disabled(end == total)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.facet_pages.insert(next_field.clone(), page + 1);
+                    cx.notify();
+                })),
+        )
 }
 
 fn facet_value_row(

@@ -48,7 +48,7 @@ needed to assess the finished layouts visually.
 
 - [x] Search Notes while keeping note attachment and navigation source-based.
 - [x] Group application menu actions with native separators.
-- [ ] Make high-cardinality field facets bounded without losing hierarchical selection.
+- [x] Page high-cardinality field values while searching across every page.
 - [ ] Search archive/directory entries while preserving lazy expansion and selection.
 - [ ] Add a structured/raw row inspector with the existing copy and annotation actions.
 - [ ] Offer column drag reordering alongside accessible keyboard controls.

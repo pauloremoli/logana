@@ -67,6 +67,7 @@ pub struct App {
     pub menu_bar: Entity<AppMenuBar>,
     pub facet_counts: std::collections::HashMap<crate::shared::TabId, FacetCache>,
     pub facet_search: Option<Entity<InputState>>,
+    pub facet_pages: std::collections::HashMap<String, usize>,
     pub log_search: Option<Entity<InputState>>,
     pub command_input: Option<Entity<InputState>>,
     pub command_scroll: gpui_kit::gpui::ScrollHandle,
@@ -245,6 +246,7 @@ impl App {
             menu_bar: AppMenuBar::new(cx),
             facet_counts: Default::default(),
             facet_search: None,
+            facet_pages: Default::default(),
             log_search: None,
             command_input: None,
             command_scroll: gpui_kit::gpui::ScrollHandle::new(),
@@ -1171,13 +1173,11 @@ impl Render for App {
         }
         if self.facet_search.is_none() {
             let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search filters..."));
-            cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
-                if matches!(
-                    event,
-                    InputEvent::Change | InputEvent::Focus | InputEvent::Blur
-                ) {
-                    cx.notify();
+            cx.subscribe(&input, |app, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    app.facet_pages.clear();
                 }
+                cx.notify();
             })
             .detach();
             self.facet_search = Some(input);
