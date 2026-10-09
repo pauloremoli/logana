@@ -13,7 +13,7 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::color_picker::ColorPicker;
 use gpui_kit::component::date_picker::DatePicker;
 use gpui_kit::component::description_list::DescriptionList;
-use gpui_kit::component::group_box::{GroupBox, GroupBoxVariant, GroupBoxVariants};
+use gpui_kit::component::group_box::GroupBoxVariant;
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::select::Select;
 use gpui_kit::component::setting::{SettingGroup, SettingItem, SettingPage, Settings};
@@ -113,7 +113,7 @@ fn restore_policy_row(
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let locked = app.state.preferences.locked.contains(&key);
-    let mut choices = div().flex().gap_2();
+    let mut choices = ButtonGroup::new(("restore-policy-group", index)).outline();
     for (choice, value) in ["always", "ask", "never"].into_iter().enumerate() {
         choices = choices.child(
             Button::new(("restore-policy", index * 3 + choice))
@@ -265,6 +265,8 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         0.,
         if e.action == Action::Filter {
             520.
+        } else if matches!(e.action, Action::Settings | Action::Keybindings) {
+            960.
         } else {
             720.
         },
@@ -312,7 +314,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             body = body
                 .child("Click a shortcut, then press its replacement. Escape cancels capture.")
                 .child(
-                    div().h(px(440.)).child(
+                    div().h(px((height - 180.).max(120.))).child(
                         Settings::new("keybindings-settings")
                             .with_group_variant(GroupBoxVariant::Outline)
                             .page(
@@ -325,53 +327,72 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         }
         Action::Settings => {
             use crate::db::SettingsKey;
-            let session = GroupBox::new()
-                .outline()
-                .title("Session")
-                .gap_3()
-                .child(restore_policy_row(
-                    app,
-                    e,
-                    0,
-                    "Restore previous session",
-                    SettingsKey::RestoreSession,
-                    cx,
-                ))
-                .child(restore_policy_row(
-                    app,
-                    e,
+            let entity = cx.entity();
+            let mut general = SettingGroup::new().title("Session");
+            for (index, label, key) in [
+                (0, "Restore previous session", SettingsKey::RestoreSession),
+                (
                     1,
                     "Restore file position, bookmarks, and display options",
                     SettingsKey::RestoreFileContext,
-                    cx,
-                ));
-            let mcp =
-                GroupBox::new()
-                    .outline()
-                    .title("MCP")
-                    .child(text(app, 3, "Default MCP port", cx));
-            let mut display = GroupBox::new().outline().title("Display settings").gap_2();
-            for (i, (label, on)) in e.fields.iter().enumerate() {
+                ),
+            ] {
+                let entity = entity.clone();
+                general = general.item(
+                    SettingItem::render(move |_, _, cx| {
+                        entity.update(cx, |app, cx| {
+                            let Some(editor) = app.state.editor.as_ref() else {
+                                return div().into_any_element();
+                            };
+                            restore_policy_row(app, editor, index, label, key, cx)
+                                .into_any_element()
+                        })
+                    })
+                    .keywords([label]),
+                );
+            }
+            let mut display = SettingGroup::new().title("New file defaults");
+            for (index, (label, on)) in e.fields.iter().enumerate() {
                 let locked = app
                     .state
                     .preferences
                     .locked
-                    .contains(&crate::gui::persistence::DISPLAY_KEYS[i]);
-                display = display.child(
-                    Checkbox::new(("setting-default", i))
-                        .label(if locked {
-                            format!("{label} (config.json)")
-                        } else {
-                            label.clone()
-                        })
-                        .checked(*on)
-                        .disabled(locked)
-                        .on_click(cx.listener(move |app, _, window, cx| {
-                            app.dispatch(Message::EditorField(i), window, cx)
-                        })),
+                    .contains(&crate::gui::persistence::DISPLAY_KEYS[index]);
+                let label = if locked {
+                    format!("{label} (set in config.json)")
+                } else {
+                    label.clone()
+                };
+                let keywords = label.clone();
+                let on = *on;
+                let entity = entity.clone();
+                display = display.item(
+                    SettingItem::render(move |_, _, _| {
+                        let entity = entity.clone();
+                        Checkbox::new(("setting-default", index))
+                            .label(label.clone())
+                            .checked(on)
+                            .disabled(locked)
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |app, cx| {
+                                    app.dispatch(Message::EditorField(index), window, cx)
+                                })
+                            })
+                    })
+                    .keywords([keywords]),
                 );
             }
-            let mut more = GroupBox::new().outline().title("More").gap_2();
+            let port_entity = entity.clone();
+            let mcp = SettingGroup::new()
+                .title("MCP server")
+                .description("Default port used when starting the server.")
+                .item(
+                    SettingItem::render(move |_, _, cx| {
+                        port_entity.update(cx, |app, cx| text(app, 3, "Default MCP port", cx))
+                    })
+                    .keywords(["port", "MCP"]),
+                );
+            let mut customize = SettingGroup::new().title("Customize");
             for (id, label, action) in [
                 ("settings-appearance", "Appearance", Action::Appearance),
                 (
@@ -385,18 +406,43 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     Action::Keybindings,
                 ),
             ] {
-                more = more.child(Button::new(id).ghost().label(label).on_click(cx.listener(
-                    move |app, _, window, cx| {
-                        app.dispatch(Message::EditorNavigate(action), window, cx)
-                    },
-                )));
+                let entity = entity.clone();
+                customize = customize.item(
+                    SettingItem::render(move |_, _, _| {
+                        let entity = entity.clone();
+                        Button::new(id)
+                            .ghost()
+                            .label(label)
+                            .on_click(move |_, window, cx| {
+                                entity.update(cx, |app, cx| {
+                                    app.dispatch(Message::EditorNavigate(action), window, cx)
+                                })
+                            })
+                    })
+                    .keywords([label]),
+                );
             }
             body = body
-                .child("Changes apply to future opens. Values pinned in config.json are read-only.")
-                .child(session)
-                .child(mcp)
-                .child(display)
-                .child(more);
+                .child("Changes apply to future opens. Values set in config.json are read-only.")
+                .child(
+                    div().h(px((height - 180.).max(120.))).child(
+                        Settings::new("preferences-settings")
+                            .sidebar_width(px(180.))
+                            .with_group_variant(GroupBoxVariant::Outline)
+                            .page(SettingPage::new("General").resettable(false).group(general))
+                            .page(SettingPage::new("Display").resettable(false).group(display))
+                            .page(
+                                SettingPage::new("Integrations")
+                                    .resettable(false)
+                                    .group(mcp),
+                            )
+                            .page(
+                                SettingPage::new("Customize")
+                                    .resettable(false)
+                                    .group(customize),
+                            ),
+                    ),
+                );
         }
         Action::Help => {
             for (label, keys) in crate::gui::keyboard::shortcuts(&app.state) {
