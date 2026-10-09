@@ -2233,3 +2233,86 @@ fn schema_preview_shows_a_bounded_sample_for_the_latest_choice(cx: &mut TestAppC
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn export_preview_renders_notes_bookmarks_and_updated_fields(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1100., 1000.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.state.tabs[0].mark_manager.mark(0);
+            app.state.tabs[0]
+                .comment_manager
+                .add("Note1".into(), vec![0]);
+            app.dispatch(
+                crate::gui::message::Message::GuiAction(crate::gui::actions::Action::Export),
+                window,
+                cx,
+            );
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("export-preview").is_some());
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll(
+            "editor-content",
+            gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-900.))),
+            cx,
+        );
+        window.render_frame(cx);
+        window.click("export-preview-copy", cx);
+        let output = cx
+            .read_from_clipboard()
+            .unwrap()
+            .text()
+            .unwrap()
+            .to_string();
+        assert!(output.contains("Note1"));
+        assert!(output.contains("hello"));
+        let field = app
+            .read(cx)
+            .state
+            .editor
+            .as_ref()
+            .unwrap()
+            .fields
+            .iter()
+            .position(|(name, _)| name == "context")
+            .unwrap();
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                crate::gui::message::Message::EditorText(field + 6, "value1".into()),
+                window,
+                cx,
+            )
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll(
+            "editor-content",
+            gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-900.))),
+            cx,
+        );
+        window.render_frame(cx);
+        window.click("export-preview-copy", cx);
+        assert!(
+            cx.read_from_clipboard()
+                .unwrap()
+                .text()
+                .unwrap()
+                .contains("value1")
+        );
+        assert_eq!(
+            app.read(cx).state.tabs[0].comment_manager.get()[0].text,
+            "Note1"
+        );
+    })
+    .unwrap();
+}

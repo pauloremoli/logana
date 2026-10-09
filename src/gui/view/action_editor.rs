@@ -902,7 +902,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                         .item("Notes", tab.comment_manager.get().len().to_string(), 1)
                         .item(
                             "Bookmarked rows",
-                            tab.mark_manager.get_indices().len().to_string(),
+                            tab.mark_manager.indices().len().to_string(),
                             1,
                         ),
                 );
@@ -913,7 +913,9 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             for (index, (key, _)) in e.fields.iter().enumerate() {
                 body = body.child(text(app, index + 6, &humanize(key), cx));
             }
-            body = body.child("Choose the destination file after clicking Export.");
+            body = body
+                .child("Choose the destination file after clicking Export.")
+                .child(super::export_preview::panel(app, cx));
         }
         Action::Annotation => {
             body = body
@@ -1583,11 +1585,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                         1,
                     )
                     .item("Size", format!("{} bytes", tab.file_reader.total_len()), 1)
-                    .item(
-                        "Bookmarks",
-                        tab.mark_manager.get_indices().len().to_string(),
-                        1,
-                    )
+                    .item("Bookmarks", tab.mark_manager.indices().len().to_string(), 1)
                     .item("Notes", tab.comment_manager.get().len().to_string(), 1);
                 if let Some(merged) = &tab.merged {
                     details =

@@ -16,6 +16,7 @@ pub mod time_range;
 pub mod update;
 pub mod view;
 
+mod export_preview;
 pub mod palette;
 pub mod preview;
 mod schema_preview;

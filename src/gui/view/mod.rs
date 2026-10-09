@@ -2,6 +2,7 @@ pub mod action_editor;
 pub mod annotations;
 pub mod bookmarks;
 pub mod command_palette;
+mod export_preview;
 pub mod field_facets;
 pub mod filter_pane;
 pub mod group_pane;

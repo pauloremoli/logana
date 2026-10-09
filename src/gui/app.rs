@@ -71,6 +71,9 @@ pub struct App {
     pub inspected_row: Option<(crate::shared::TabId, usize)>,
     pub inspector_raw: bool,
     pub schema_preview: Option<Result<crate::gui::schema_preview::Sample, String>>,
+    pub export_preview: Option<Result<crate::gui::export_preview::Sample, String>>,
+    pub(super) export_preview_key: Option<crate::gui::export_preview::Key>,
+    pub(super) export_preview_task: Option<gpui_kit::gpui::Task<()>>,
     pub(super) schema_preview_key: Option<crate::gui::schema_preview::Key>,
     pub(super) schema_preview_task: Option<gpui_kit::gpui::Task<()>>,
     archive_search_operation: Option<u64>,
@@ -257,6 +260,9 @@ impl App {
             inspected_row: None,
             inspector_raw: false,
             schema_preview: None,
+            export_preview: None,
+            export_preview_key: None,
+            export_preview_task: None,
             schema_preview_key: None,
             schema_preview_task: None,
             archive_search_operation: None,
@@ -1678,6 +1684,7 @@ impl Render for App {
             self.text_context = text_context;
         }
         self.sync_schema_preview(cx);
+        self.sync_export_preview(cx);
         let focused = |input: &Option<Entity<InputState>>| {
             input
                 .as_ref()

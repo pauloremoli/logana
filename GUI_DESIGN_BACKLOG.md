@@ -53,7 +53,7 @@ needed to assess the finished layouts visually.
 - [x] Add a structured/raw row inspector with the existing copy and annotation actions.
 - [x] Offer column drag reordering alongside accessible keyboard controls.
 - [x] Show a bounded parsed sample when selecting a schema.
-- [ ] Show a bounded export preview using the existing export renderer.
+- [x] Show a bounded export preview using the existing export renderer.
 - [ ] Review final layouts in the running desktop application at narrow and wide sizes.
 
 Preview generation must use bounded samples and the existing parser/export code.
@@ -70,3 +70,7 @@ replace GUI-only checks because frontend compilation depends on feature selectio
 
 Schema previews parse at most eight source rows of up to 64 KiB each in a
 background task. Editor, source, and selected-schema guards discard stale results.
+
+Export previews sample up to three notes, eight rows per note, and eight
+bookmarks. Rendering uses the source reader and original row numbers in a
+background task; editor/source/value guards reject stale results.
