@@ -36,6 +36,7 @@ pub struct App {
     pub text_document: crate::gui::text_selection::SharedDocument,
     pub text_handle: gpui_kit::base::TextSelectionHandle,
     text_context: Option<(crate::shared::TabId, u64, u64, Vec<String>, bool, bool)>,
+    pub loading_details_open: bool,
     pub editor_inputs: Vec<Entity<InputState>>,
     pub editor_textareas:
         std::collections::HashMap<usize, Entity<gpui_kit::component::input::TextareaState>>,
@@ -214,6 +215,7 @@ impl App {
             mcp: Default::default(),
             default_formats: Default::default(),
             stream_pending: Default::default(),
+            loading_details_open: false,
             editor_inputs: Vec::new(),
             editor_textareas: Default::default(),
             editor_colors: Vec::new(),

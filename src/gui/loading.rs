@@ -1379,6 +1379,8 @@ mod ui_tests {
                 cx.notify();
             });
             window.render_frame(cx);
+            window.click("loading-details-toggle", cx);
+            window.render_frame(cx);
             let _ = window.find(("load-progress", 7_u64));
             assert_eq!(
                 app.read(cx).loading.operations[0].progress.fraction,

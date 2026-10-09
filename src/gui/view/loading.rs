@@ -5,11 +5,12 @@ use crate::{
 };
 use gpui_kit::{
     assets::IconName,
-    base::{Disableable, TestSupportExt},
+    base::{Disableable, Selectable, TestSupportExt},
     component::{
-        ActiveTheme,
+        ActiveTheme, Sizable,
         button::{Button, ButtonVariants},
         checkbox::Checkbox,
+        collapsible::Collapsible,
         progress::Progress,
     },
     gpui::{AnyElement, Context, MouseButton, div, prelude::*, px},
@@ -19,94 +20,131 @@ pub fn operations(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
     if app.loading.operations.is_empty() {
         return None;
     }
+    let details = div()
+        .id("loading-operations")
+        .test_support()
+        .max_h(px(180.))
+        .overflow_y_scroll()
+        .border_t_1()
+        .border_color(cx.theme().border)
+        .bg(cx.theme().background)
+        .p_3()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .children(app.loading.operations.iter().map(|op| {
+            let id = op.id;
+            let progress = &op.progress;
+            let counts = if progress.total_files > 0 {
+                format!(" · {}/{} files", progress.completed, progress.total_files)
+            } else {
+                String::new()
+            };
+            let amount = match progress.total_bytes {
+                Some(total) => {
+                    format!("{} / {} MiB", progress.bytes / 1_048_576, total / 1_048_576)
+                }
+                None if progress.bytes > 0 => {
+                    format!("{} MiB processed", progress.bytes / 1_048_576)
+                }
+                _ => String::new(),
+            };
+            let choosing = op.picker.is_some();
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(div().truncate().child(format!(
+                            "{} — {}{counts}",
+                            op.path.file_name().unwrap_or_default().to_string_lossy(),
+                            progress.phase
+                        )))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(if progress.entry.is_empty() {
+                                    amount.clone()
+                                } else {
+                                    format!("{}  {amount}", progress.entry)
+                                }),
+                        )
+                        .when(!choosing, |el| {
+                            el.child(
+                                div().id(("load-progress", id)).test_support().child(
+                                    Progress::new(("load-progress-value", id))
+                                        .accessibility_label(format!("{} progress", progress.phase))
+                                        .loading(progress.fraction.is_none())
+                                        .value(progress.fraction.unwrap_or(0.) as f32 * 100.),
+                                ),
+                            )
+                        }),
+                )
+                .when(choosing, |el| {
+                    el.child(
+                        Button::new(("archive-choose", id))
+                            .label("Choose files")
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                app.loading.selected_picker = Some(id);
+                                cx.notify();
+                            })),
+                    )
+                })
+                .child(
+                    Button::new(("load-cancel", id))
+                        .label("Cancel")
+                        .disabled(op.control.cancelled())
+                        .on_click(cx.listener(move |app, _, _, cx| app.cancel_loading(id, cx))),
+                )
+        }))
+        .into_any_element();
+    let first = &app.loading.operations[0];
+    let count = app.loading.operations.len();
+    let summary = format!(
+        "{count} background {} · {}",
+        if count == 1 { "task" } else { "tasks" },
+        first.progress.phase
+    );
     Some(
-        div()
-            .id("loading-operations")
-            .test_support()
-            .max_h(px(180.))
-            .overflow_y_scroll()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
-            .p_3()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .children(app.loading.operations.iter().map(|op| {
-                let id = op.id;
-                let progress = &op.progress;
-                let counts = if progress.total_files > 0 {
-                    format!(" · {}/{} files", progress.completed, progress.total_files)
-                } else {
-                    String::new()
-                };
-                let amount = match progress.total_bytes {
-                    Some(total) => {
-                        format!("{} / {} MiB", progress.bytes / 1_048_576, total / 1_048_576)
-                    }
-                    None if progress.bytes > 0 => {
-                        format!("{} MiB processed", progress.bytes / 1_048_576)
-                    }
-                    _ => String::new(),
-                };
-                let choosing = op.picker.is_some();
+        Collapsible::new()
+            .open(app.loading_details_open)
+            .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_3()
+                    .px_3()
+                    .py_1()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(div().truncate().child(format!(
-                                "{} — {}{counts}",
-                                op.path.file_name().unwrap_or_default().to_string_lossy(),
-                                progress.phase
-                            )))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(if progress.entry.is_empty() {
-                                        amount.clone()
-                                    } else {
-                                        format!("{}  {amount}", progress.entry)
-                                    }),
-                            )
-                            .when(!choosing, |el| {
-                                el.child(
-                                    div().id(("load-progress", id)).test_support().child(
-                                        Progress::new(("load-progress-value", id))
-                                            .accessibility_label(format!(
-                                                "{} progress",
-                                                progress.phase
-                                            ))
-                                            .loading(progress.fraction.is_none())
-                                            .value(progress.fraction.unwrap_or(0.) as f32 * 100.),
-                                    ),
-                                )
-                            }),
+                        Button::new("loading-details-toggle")
+                            .ghost()
+                            .small()
+                            .label(summary)
+                            .selected(app.loading_details_open)
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.loading_details_open = !app.loading_details_open;
+                                cx.notify();
+                            })),
                     )
-                    .when(choosing, |el| {
-                        el.child(
-                            Button::new(("archive-choose", id))
-                                .label("Choose files")
-                                .on_click(cx.listener(move |app, _, _, cx| {
-                                    app.loading.selected_picker = Some(id);
-                                    cx.notify();
-                                })),
-                        )
-                    })
                     .child(
-                        Button::new(("load-cancel", id))
-                            .label("Cancel")
-                            .disabled(op.control.cancelled())
-                            .on_click(cx.listener(move |app, _, _, cx| app.cancel_loading(id, cx))),
-                    )
-            }))
+                        div().flex_1().child(
+                            Progress::new("loading-summary-progress")
+                                .accessibility_label("Background task progress")
+                                .loading(first.progress.fraction.is_none())
+                                .value(first.progress.fraction.unwrap_or(0.) as f32 * 100.),
+                        ),
+                    ),
+            )
+            .content(details)
             .into_any_element(),
     )
 }
