@@ -1117,6 +1117,15 @@ impl App {
 
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.inspected_row.is_some_and(|(source, line)| {
+            !self
+                .state
+                .tabs
+                .iter()
+                .any(|tab| tab.id == source && line < tab.file_reader.line_count())
+        }) {
+            self.inspected_row = None;
+        }
         crate::gui::view::bookmarks::sync(&mut self.state);
         if let Some((source, line)) = self.pending_source_jump {
             if self.state.active_tab().is_none_or(|tab| tab.id != source) {

@@ -42,6 +42,28 @@ mod tests {
         assert_eq!(&*prefix, b"val");
         assert!(truncated);
         assert!(!reader.get_raw_line_prefix(1, 100).1);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), b"value1\nvalue2\n").unwrap();
+        let paged = crate::ingestion::FileReader::try_new_paged(
+            file.path().to_str().unwrap(),
+            std::sync::Arc::new(file.path().canonicalize().unwrap()),
+        )
+        .unwrap()
+        .unwrap();
+        let merged = crate::ingestion::FileReader::from_merged(
+            std::sync::Arc::new(vec![crate::ingestion::file_reader::MergedEntry {
+                source_idx: 0,
+                line_idx: 1,
+                sort_key: [0; 23],
+            }]),
+            std::sync::Arc::new(vec![paged.clone()]),
+        );
+        for source in [&paged, &merged] {
+            let (prefix, truncated) = source.get_raw_line_prefix(0, 3);
+            assert_eq!(&*prefix, b"val");
+            assert!(truncated);
+            assert!(!source.get_raw_line_prefix(0, 100).1);
+        }
         let long = "東京".repeat(MAX_TEXT_CHARS);
         assert_eq!(text(&long).chars().count(), MAX_TEXT_CHARS + 1);
         let line = br#"{"key1":"value1","message":"value2"}"#;

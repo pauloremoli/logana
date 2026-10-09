@@ -74,3 +74,15 @@ background task. Editor, source, and selected-schema guards discard stale result
 Export previews sample up to three notes, eight rows per note, and eight
 bookmarks. Rendering uses the source reader and original row numbers in a
 background task; editor/source/value guards reject stale results.
+
+## Final review record
+
+The inspector's controls fit 600×740 and 1440×1000 windows in the light and
+dark built-in themes. Closing its source dismisses the inspector. Native
+interaction tests cover archive search and preserved selection, raw copying,
+annotation attachment, schema choices, and updated export document fields.
+
+The running GUI was launched with an isolated temporary profile and sample log.
+GNOME denied automated window capture (`ScreenshotWindow is not allowed`), so
+fresh screenshot-based inspection remains pending. Geometry and interaction
+checks do not substitute for that visual review.

@@ -2316,3 +2316,48 @@ fn export_preview_renders_notes_bookmarks_and_updated_fields(cx: &mut TestAppCon
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn inspector_controls_fit_narrow_and_wide_windows_in_both_themes(cx: &mut TestAppContext) {
+    for theme in ["github-light", "github-dark"] {
+        for dimensions in [(600., 740.), (1440., 1000.)] {
+            let (handle, app) = palette_window(cx, dimensions, theme);
+            cx.update_window(handle.into(), |_, window, cx| {
+                add_log_tab(&app, cx, true);
+                window.render_frame(cx);
+                window.click("inspect-selected-row", cx);
+                window.render_frame(cx);
+                let panel = window.find("row-inspector").bounds();
+                assert!(panel.origin.x >= px(0.));
+                assert!(panel.origin.x + panel.size.width <= px(dimensions.0));
+                for id in [
+                    "inspector-close",
+                    "inspector-copy-raw",
+                    "inspector-bookmark",
+                    "inspector-annotate",
+                ] {
+                    let bounds = window.find(id).bounds();
+                    assert!(bounds.origin.x >= panel.origin.x);
+                    assert!(
+                        bounds.origin.x + bounds.size.width <= panel.origin.x + panel.size.width
+                    );
+                    assert!(bounds.origin.y + bounds.size.height <= px(dimensions.1));
+                }
+                window.click("inspector-raw", cx);
+                window.render_frame(cx);
+                window.click("inspector-close", cx);
+                window.render_frame(cx);
+                assert!(window.try_find("row-inspector").is_none());
+                window.click("inspect-selected-row", cx);
+                app.update(cx, |app, cx| {
+                    app.state.tabs.clear();
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert!(app.read(cx).inspected_row.is_none());
+                assert!(window.try_find("row-inspector").is_none());
+            })
+            .unwrap();
+        }
+    }
+}
