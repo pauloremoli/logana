@@ -1824,3 +1824,25 @@ fn narrow_workspace_retains_log_canvas_with_sidebar_open(cx: &mut TestAppContext
         .unwrap();
     }
 }
+
+#[gpui_kit::test]
+fn file_switcher_searches_source_paths_and_selects_stable_tab(cx: &mut TestAppContext) {
+    use super::actions::Action;
+    use super::message::Message;
+    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            app.state.tabs[0].source_path = Some("/services/api/server.log".into());
+            app.state.tabs[1].source_path = Some("/services/worker/server.log".into());
+            app.dispatch(Message::GuiAction(Action::SwitchFile), window, cx);
+            app.dispatch(Message::EditorText(0, "worker".into()), window, cx);
+        });
+        window.render_frame(cx);
+        window.click(("switch-file", 1usize), cx);
+        assert_eq!(app.read(cx).state.active_tab, 1);
+        assert!(app.read(cx).state.editor.is_none());
+    })
+    .unwrap();
+}

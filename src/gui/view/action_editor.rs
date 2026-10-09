@@ -15,6 +15,7 @@ use gpui_kit::component::date_picker::DatePicker;
 use gpui_kit::component::description_list::DescriptionList;
 use gpui_kit::component::group_box::GroupBoxVariant;
 use gpui_kit::component::input::Textarea;
+use gpui_kit::component::list::ListItem;
 use gpui_kit::component::select::Select;
 use gpui_kit::component::setting::{SettingGroup, SettingItem, SettingPage, Settings};
 use gpui_kit::component::switch::Switch;
@@ -487,20 +488,49 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             ));
         }
         Action::SwitchFile => {
-            body = body.child(text(app, 0, "Search open files", cx));
+            body = body.child(text(app, 0, "Search open files by name or path", cx));
+            let query = e.values[0].trim().to_lowercase();
+            let mut count = 0;
             for (index, tab) in app.state.tabs.iter().enumerate() {
-                if !tab
-                    .title
-                    .to_lowercase()
-                    .contains(&e.values[0].to_lowercase())
+                if !tab.title.to_lowercase().contains(&query)
+                    && !tab
+                        .display_source_path()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&query)
                 {
                     continue;
                 }
+                count += 1;
                 let id = tab.id;
                 body = body.child(
-                    Button::new(("switch-file", index))
-                        .label(tab.title.clone())
+                    ListItem::new(("switch-file", index))
                         .selected(index == app.state.active_tab)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .w_full()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .justify_between()
+                                        .child(tab.title.clone())
+                                        .when(index == app.state.active_tab, |row| {
+                                            row.child("Active")
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(
+                                            tab.display_source_path()
+                                                .unwrap_or("Temporary source")
+                                                .to_string(),
+                                        ),
+                                ),
+                        )
                         .on_click(cx.listener(move |app, _, window, cx| {
                             if let Some(index) = app.state.tabs.iter().position(|tab| tab.id == id)
                             {
@@ -509,6 +539,9 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                             }
                         })),
                 );
+            }
+            if count == 0 {
+                body = body.child("No open files match this name or path. Try a shorter search.");
             }
         }
         Action::EnableMcp => {
