@@ -624,7 +624,7 @@ fn filter_form_shows_validation_without_terminal_mode(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn notifications_are_dismissible_and_expire_five_seconds_after_each_event(cx: &mut TestAppContext) {
+fn errors_persist_until_dismissed_and_information_expires(cx: &mut TestAppContext) {
     use crate::gui::message::Message;
     use std::time::Duration;
     let (handle, app) = palette_window(cx, (1000., 800.), "github-light");
@@ -678,12 +678,32 @@ fn notifications_are_dismissible_and_expire_five_seconds_after_each_event(cx: &m
         assert!(app.read(cx).state.status.is_some());
     })
     .unwrap();
-    cx.background_executor.advance_clock(Duration::from_secs(4));
+    cx.background_executor
+        .advance_clock(Duration::from_secs(30));
     cx.run_until_parked();
-    cx.update_window(handle.into(), |_, _, cx| {
-        assert!(app.read(cx).state.status.is_none());
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(app.read(cx).state.status.is_some());
+        window.render_frame(cx);
+        window.click("notification-copy", cx);
+        assert!(
+            cx.read_from_clipboard()
+                .unwrap()
+                .text()
+                .unwrap()
+                .contains("repeated")
+        );
+        window.click("notification-dismiss", cx);
+        app.update(cx, |app, cx| {
+            app.state
+                .notify(crate::gui::state::StatusMessage::Info("Saved".into()));
+            app.sync_notification_timer(cx);
+        });
     })
     .unwrap();
+    cx.run_until_parked();
+    cx.background_executor.advance_clock(Duration::from_secs(5));
+    cx.run_until_parked();
+    cx.update(|cx| assert!(app.read(cx).state.status.is_none()));
 }
 
 #[gpui_kit::test]

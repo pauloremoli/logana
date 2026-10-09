@@ -15,7 +15,7 @@ pub fn notification(
     let status = app.state.status.as_ref()?;
     let revision = app.state.notification_revision;
     let (title, message, accent) = match status {
-        StatusMessage::Error(message) => ("Error", message, cx.theme().danger),
+        StatusMessage::Error(message) => ("Action failed", message, cx.theme().danger),
         StatusMessage::Info(message) => ("Notification", message, cx.theme().primary),
     };
     Some(
@@ -49,6 +49,19 @@ pub fn notification(
                         .child(div().text_color(accent).child(title))
                         .child(div().child(message.clone())),
                 )
+                .child({
+                    let details = message.clone();
+                    Button::new("notification-copy")
+                        .ghost()
+                        .icon(IconName::Copy)
+                        .accessibility_label("Copy notification details")
+                        .tooltip("Copy details")
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(gpui_kit::gpui::ClipboardItem::new_string(
+                                details.clone(),
+                            ))
+                        })
+                })
                 .child(
                     Button::new("notification-dismiss")
                         .ghost()

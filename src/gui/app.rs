@@ -3,7 +3,7 @@ use crate::db::{Database, LogManager};
 use crate::gui::effect::Effect;
 use crate::gui::message::Message;
 use crate::gui::runtime;
-use crate::gui::state::GuiState;
+use crate::gui::state::{GuiState, StatusMessage};
 use crate::gui::update;
 use crate::theme::Theme as TuiTheme;
 use gpui_kit::component::ActiveTheme;
@@ -436,7 +436,10 @@ impl App {
 
     pub(super) fn sync_notification_timer(&mut self, cx: &mut Context<Self>) {
         let revision = self.state.notification_revision;
-        if self.state.status.is_none() || self.notification_timer_revision == revision {
+        if self.state.status.is_none()
+            || matches!(self.state.status, Some(StatusMessage::Error(_)))
+            || self.notification_timer_revision == revision
+        {
             return;
         }
         self.notification_timer_revision = revision;
