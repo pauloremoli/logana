@@ -50,6 +50,7 @@ pub fn command_palette(
                     Button::new("command-close")
                         .ghost()
                         .icon(IconName::X)
+                        .accessibility_label("Close")
                         .tooltip("Close (Escape)")
                         .on_click(cx.listener(|app, _, window, cx| {
                             app.dispatch(Message::PaletteClose, window, cx)

@@ -161,6 +161,7 @@ fn sidebar_header(active: SidebarTab, tab: &TabState, cx: &mut Context<App>) -> 
                         .small()
                         .icon(IconName::ListFilter)
                         .selected(tab.filter.enabled)
+                        .accessibility_label("Toggle filtering")
                         .tooltip("Toggle filtering (F)")
                         .on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
                             app.dispatch(
@@ -175,6 +176,7 @@ fn sidebar_header(active: SidebarTab, tab: &TabState, cx: &mut Context<App>) -> 
             Button::new("sidebar-close")
                 .ghost()
                 .icon(Icon::new(IconName::X))
+                .accessibility_label("Hide sidebar")
                 .tooltip("Hide sidebar")
                 .on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
                     app.dispatch(Message::SidebarToggled, window, cx);

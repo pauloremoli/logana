@@ -139,7 +139,7 @@ fn text(app: &App, index: usize, label: &str, _cx: &mut Context<App>) -> AnyElem
             .flex_col()
             .gap_1()
             .child(label.to_string())
-            .child(Textarea::new(input))
+            .child(Textarea::new(input).aria_label(label.to_string()))
             .into_any_element();
     }
     div()
@@ -148,24 +148,27 @@ fn text(app: &App, index: usize, label: &str, _cx: &mut Context<App>) -> AnyElem
         .gap_1()
         .child(label.to_string())
         .children(app.editor_inputs.get(index).map(|input| {
-            super::input(input).id(("editor-input", index)).disabled(
-                (app.state
-                    .editor
-                    .as_ref()
-                    .is_some_and(|e| e.action == Action::Settings)
-                    && index == 3
-                    && app
-                        .state
-                        .preferences
-                        .locked
-                        .contains(&crate::db::SettingsKey::McpPort))
-                    || index == 0
+            super::input(input)
+                .aria_label(label.to_string())
+                .id(("editor-input", index))
+                .disabled(
+                    (app.state
+                        .editor
+                        .as_ref()
+                        .is_some_and(|e| e.action == Action::Settings)
+                        && index == 3
                         && app
                             .state
-                            .editor
-                            .as_ref()
-                            .is_some_and(|e| e.group_name_locked),
-            )
+                            .preferences
+                            .locked
+                            .contains(&crate::db::SettingsKey::McpPort))
+                        || index == 0
+                            && app
+                                .state
+                                .editor
+                                .as_ref()
+                                .is_some_and(|e| e.group_name_locked),
+                )
         }))
         .into_any_element()
 }
@@ -830,6 +833,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                                         .ghost()
                                         .small()
                                         .icon(IconName::Pencil)
+                                        .accessibility_label("Edit condition")
                                         .tooltip("Edit condition")
                                         .on_click(cx.listener(move |app, _, window, cx| {
                                             app.dispatch(
@@ -844,6 +848,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                                         .ghost()
                                         .small()
                                         .icon(IconName::X)
+                                        .accessibility_label("Remove condition")
                                         .tooltip("Remove condition")
                                         .on_click(cx.listener(move |app, _, window, cx| {
                                             app.dispatch(
@@ -923,6 +928,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                                 .ghost()
                                 .small()
                                 .label("↑")
+                                .accessibility_label(format!("Move {name} up"))
                                 .disabled(i == 0)
                                 .on_click(cx.listener(move |app, _, window, cx| {
                                     app.dispatch(Message::EditorMove(i, -1), window, cx)
@@ -933,6 +939,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                                 .ghost()
                                 .small()
                                 .label("↓")
+                                .accessibility_label(format!("Move {name} down"))
                                 .disabled(i + 1 == e.fields.len())
                                 .on_click(cx.listener(move |app, _, window, cx| {
                                     app.dispatch(Message::EditorMove(i, 1), window, cx)

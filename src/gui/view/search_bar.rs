@@ -46,6 +46,7 @@ pub fn search_popup(app: &App, cx: &mut Context<App>) -> Option<gpui_kit::gpui::
                 Button::new("search-previous")
                     .ghost()
                     .icon(IconName::ChevronUp)
+                    .accessibility_label("Previous match")
                     .tooltip("Previous match")
                     .on_click(cx.listener(|app, _, window, cx| {
                         app.dispatch(Message::SearchNext(false), window, cx)
@@ -55,6 +56,7 @@ pub fn search_popup(app: &App, cx: &mut Context<App>) -> Option<gpui_kit::gpui::
                 Button::new("search-next")
                     .ghost()
                     .icon(IconName::ChevronDown)
+                    .accessibility_label("Next match")
                     .tooltip("Next match")
                     .on_click(cx.listener(|app, _, window, cx| {
                         app.dispatch(Message::SearchNext(true), window, cx)
@@ -64,6 +66,7 @@ pub fn search_popup(app: &App, cx: &mut Context<App>) -> Option<gpui_kit::gpui::
                 Button::new("search-close")
                     .ghost()
                     .icon(IconName::X)
+                    .accessibility_label("Close search")
                     .tooltip("Close search (Escape)")
                     .on_click(cx.listener(|app, _, window, cx| {
                         app.dispatch(Message::SearchPopup(false), window, cx)
@@ -77,6 +80,7 @@ pub fn search_button(cx: &mut Context<App>) -> impl IntoElement {
     Button::new("open-search")
         .ghost()
         .icon(IconName::Search)
+        .accessibility_label("Search")
         .tooltip("Search (/)")
         .on_click(
             cx.listener(|app, _, window, cx| app.dispatch(Message::SearchPopup(true), window, cx)),
@@ -87,6 +91,7 @@ pub fn filter_button(cx: &mut Context<App>) -> impl IntoElement {
     Button::new("filter-panel-toggle")
         .ghost()
         .icon(IconName::Funnel)
+        .accessibility_label("Show or hide filters")
         .tooltip("Show or hide filters")
         .on_click(
             cx.listener(|app, _, window, cx| app.dispatch(Message::SidebarToggled, window, cx)),
@@ -170,6 +175,11 @@ pub fn live_indicator(state: &GuiState, cx: &mut Context<App>) -> impl IntoEleme
                 .ghost()
                 .icon(Icon::new(icon))
                 .disabled(!has_watch)
+                .accessibility_label(if tab.stream.paused {
+                    "Resume stream"
+                } else {
+                    "Pause stream"
+                })
                 .tooltip(if tab.stream.paused { "Resume" } else { "Pause" })
                 .on_click(
                     cx.listener(move |app: &mut App, _, window: &mut Window, cx| {

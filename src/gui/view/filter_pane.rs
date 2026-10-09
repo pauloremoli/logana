@@ -83,6 +83,7 @@ pub fn filter_pane(
                         .ghost()
                         .small()
                         .icon(IconName::Ellipsis)
+                        .accessibility_label("Filter options")
                         .tooltip("Filter options")
                         .dropdown_menu(move |menu, _, _| {
                             let fields = entity.clone();
@@ -280,6 +281,7 @@ fn filter_row(
                 .ghost()
                 .small()
                 .icon(IconName::Pencil)
+                .accessibility_label("Edit filter")
                 .tooltip("Edit filter")
                 .on_click(cx.listener(move |app, _, window, cx| {
                     app.dispatch(Message::EditFilter(id), window, cx)
@@ -290,6 +292,7 @@ fn filter_row(
                 .ghost()
                 .small()
                 .icon(IconName::X)
+                .accessibility_label("Delete filter")
                 .tooltip("Delete filter")
                 .on_click(cx.listener(move |app, _, window, cx| {
                     app.dispatch(Message::FilterRemoved(tab_idx, id), window, cx)

@@ -189,6 +189,7 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                                     IconName::ChevronDown
                                 })
                                 .disabled(!container)
+                                .accessibility_label("Expand or collapse archive")
                                 .tooltip("Expand or collapse archive")
                                 .on_click(cx.listener(move |app, _, _, cx| {
                                     app.picker_expand(id, node, cx)
@@ -241,6 +242,7 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                         Button::new("archive-picker-hide")
                             .ghost()
                             .icon(IconName::X)
+                            .accessibility_label("Hide picker")
                             .tooltip("Hide picker")
                             .on_click(cx.listener(|app, _, _, cx| {
                                 app.loading.selected_picker = None;

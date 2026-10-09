@@ -176,6 +176,7 @@ fn group_row(
                 .ghost()
                 .small()
                 .icon(IconName::Pencil)
+                .accessibility_label("Edit group")
                 .tooltip("Edit group")
                 .on_click(cx.listener(move |app, _, window, cx| {
                     app.dispatch(Message::EditGroup(edit_name.clone()), window, cx)
@@ -186,6 +187,7 @@ fn group_row(
                 .ghost()
                 .small()
                 .icon(IconName::X)
+                .accessibility_label(format!("Delete group {name}"))
                 .tooltip(format!("Delete group {name}"))
                 .on_click(
                     cx.listener(move |app: &mut App, _, window: &mut Window, cx| {

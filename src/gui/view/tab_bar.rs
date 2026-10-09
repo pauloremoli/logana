@@ -35,6 +35,7 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
         Button::new("open-file")
             .ghost()
             .icon(Icon::new(IconName::Plus))
+            .accessibility_label("Open file")
             .tooltip("Open file")
             .on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
                 app.dispatch(Message::OpenFileDialog, window, cx);
@@ -143,6 +144,7 @@ fn tab_label(
                     Button::new(("tab-close", idx))
                         .ghost()
                         .icon(Icon::new(IconName::X))
+                        .accessibility_label("Close tab")
                         .tooltip("Close tab")
                         .on_click(
                             cx.listener(move |app: &mut App, _, window: &mut Window, cx| {

@@ -53,6 +53,7 @@ pub fn notification(
                     Button::new("notification-dismiss")
                         .ghost()
                         .icon(IconName::X)
+                        .accessibility_label("Dismiss notification")
                         .tooltip("Dismiss notification")
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.dispatch(Message::DismissNotification(revision), window, cx)
