@@ -1088,8 +1088,7 @@ impl Render for App {
         }
         if self.log_search.is_none() {
             let input = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder("Search logs... (regex, field:value, or free text)")
+                InputState::new(window, cx).placeholder("Search visible logs (regular expression)")
             });
             cx.subscribe_in(
                 &input,

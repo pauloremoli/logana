@@ -15,9 +15,33 @@ pub fn search_popup(app: &App, cx: &mut Context<App>) -> Option<gpui_kit::gpui::
     if !app.state.search_open {
         return None;
     }
+    let tab = app.state.active_tab()?;
+    let total = tab.search.query.get_total_match_count();
+    let searching = tab.search.handle.is_some();
+    let query = app
+        .log_search
+        .as_ref()
+        .map(|input| input.read(cx).value().to_string())
+        .unwrap_or_default();
+    let summary = if query.is_empty() {
+        "Search visible log text · regular expressions supported".to_string()
+    } else if searching {
+        format!("Searching… {total} matches found")
+    } else if total == 0 {
+        "No matches in visible rows".to_string()
+    } else {
+        format!(
+            "{} of {total} matches · visible rows",
+            tab.search.query.get_current_occurrence_number()
+        )
+    };
     Some(
         div()
             .id("search-popup")
+            .occlude()
+            .on_mouse_down(gpui_kit::gpui::MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation()
+            })
             .absolute()
             .top(
                 gpui_kit::component::TITLE_BAR_HEIGHT
@@ -28,49 +52,86 @@ pub fn search_popup(app: &App, cx: &mut Context<App>) -> Option<gpui_kit::gpui::
             .max_w(gpui_kit::gpui::relative(0.9))
             .p_3()
             .flex()
-            .items_center()
+            .flex_col()
             .gap_2()
             .bg(cx.theme().popover)
             .border_1()
             .border_color(cx.theme().border)
             .rounded(px(8.))
             .shadow_md()
-            .children(app.log_search.as_ref().map(|input| {
-                div().flex_1().min_w(px(0.)).child(
-                    super::input(input)
-                        .id("log-search-input")
-                        .prefix(Icon::new(IconName::Search)),
-                )
-            }))
             .child(
-                Button::new("search-previous")
-                    .ghost()
-                    .icon(IconName::ChevronUp)
-                    .accessibility_label("Previous match")
-                    .tooltip("Previous match")
-                    .on_click(cx.listener(|app, _, window, cx| {
-                        app.dispatch(Message::SearchNext(false), window, cx)
-                    })),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .children(app.log_search.as_ref().map(|input| {
+                        div().flex_1().min_w(px(0.)).child(
+                            super::input(input)
+                                .id("log-search-input")
+                                .aria_label("Search visible logs")
+                                .prefix(Icon::new(IconName::Search)),
+                        )
+                    }))
+                    .child(
+                        Button::new("search-previous")
+                            .ghost()
+                            .icon(IconName::ChevronUp)
+                            .disabled(total == 0)
+                            .accessibility_label("Previous match")
+                            .tooltip("Previous match")
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.dispatch(Message::SearchNext(false), window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("search-next")
+                            .ghost()
+                            .icon(IconName::ChevronDown)
+                            .disabled(total == 0)
+                            .accessibility_label("Next match")
+                            .tooltip("Next match")
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.dispatch(Message::SearchNext(true), window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("search-close")
+                            .ghost()
+                            .icon(IconName::X)
+                            .accessibility_label("Close search")
+                            .tooltip("Close search (Escape)")
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.dispatch(Message::SearchPopup(false), window, cx)
+                            })),
+                    ),
             )
             .child(
-                Button::new("search-next")
-                    .ghost()
-                    .icon(IconName::ChevronDown)
-                    .accessibility_label("Next match")
-                    .tooltip("Next match")
-                    .on_click(cx.listener(|app, _, window, cx| {
-                        app.dispatch(Message::SearchNext(true), window, cx)
-                    })),
-            )
-            .child(
-                Button::new("search-close")
-                    .ghost()
-                    .icon(IconName::X)
-                    .accessibility_label("Close search")
-                    .tooltip("Close search (Escape)")
-                    .on_click(cx.listener(|app, _, window, cx| {
-                        app.dispatch(Message::SearchPopup(false), window, cx)
-                    })),
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(summary),
+                    )
+                    .child(
+                        Button::new("search-clear")
+                            .ghost()
+                            .small()
+                            .label("Clear")
+                            .disabled(query.is_empty())
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                if let Some(input) = &app.log_search {
+                                    input.update(cx, |input, cx| {
+                                        input.set_value(String::new(), window, cx)
+                                    });
+                                }
+                                app.dispatch(Message::SearchEdited(String::new()), window, cx);
+                            })),
+                    ),
             )
             .into_any_element(),
     )

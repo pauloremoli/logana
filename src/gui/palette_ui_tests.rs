@@ -431,6 +431,14 @@ fn slash_opens_search_popup_and_escape_clears_query(cx: &mut TestAppContext) {
         window.press("/", cx);
         window.render_frame(cx);
         assert_eq!(window.find("log-search-input").value(), Some(""));
+        window.input("plain", cx);
+        window.render_frame(cx);
+        window.click("search-clear", cx);
+        window.render_frame(cx);
+        assert!(app.read(cx).state.search_open);
+        assert_eq!(app.read(cx).state.tabs[0].search.query.get_pattern(), None);
+        assert_eq!(window.find("log-search-input").value(), Some(""));
+        window.click("log-search-input", cx);
         window.press("enter", cx);
         assert!(!app.read(cx).state.search_open);
     })
