@@ -331,6 +331,10 @@ pub fn picker(app: &App, viewport_width: f32, cx: &mut Context<App>) -> Option<A
                     .text_color(cx.theme().muted_foreground)
                     .child(op.path.display().to_string()),
             )
+            .children(app.archive_search.as_ref().map(|input| super::input(input)
+                .id("archive-search").aria_label("Search filenames").cleanable(true)))
+            .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                .child("Search expanded entries. Expand folders and archives to search their contents. Bulk selection includes files outside the search."))
             .child(
                 div()
                     .flex()
@@ -348,7 +352,7 @@ pub fn picker(app: &App, viewport_width: f32, cx: &mut Context<App>) -> Option<A
                         ),
                     ),
             )
-            .child(div().flex_1().min_h(px(0.)).child(list))
+            .child(div().flex_1().min_h(px(0.)).when(picker.rows.is_empty(), |d| d.child("No matching filenames. Try another search.")).child(list))
             .child(div().text_color(cx.theme().muted_foreground).child(format!(
                 "{selected} selected · Space selects · arrows navigate"
             )))

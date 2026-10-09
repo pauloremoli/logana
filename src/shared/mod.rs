@@ -1,3 +1,4 @@
+pub(crate) mod archive_search;
 pub mod command_helpers;
 pub mod field_layout;
 pub mod session;

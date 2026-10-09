@@ -67,6 +67,8 @@ pub struct App {
     pub menu_bar: Entity<AppMenuBar>,
     pub facet_counts: std::collections::HashMap<crate::shared::TabId, FacetCache>,
     pub facet_search: Option<Entity<InputState>>,
+    pub archive_search: Option<Entity<InputState>>,
+    archive_search_operation: Option<u64>,
     pub facet_pages: std::collections::HashMap<String, usize>,
     pub log_search: Option<Entity<InputState>>,
     pub command_input: Option<Entity<InputState>>,
@@ -246,6 +248,8 @@ impl App {
             menu_bar: AppMenuBar::new(cx),
             facet_counts: Default::default(),
             facet_search: None,
+            archive_search: None,
+            archive_search_operation: None,
             facet_pages: Default::default(),
             log_search: None,
             command_input: None,
@@ -274,6 +278,48 @@ impl App {
 
     fn on_quit_action(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
         self.request_quit(cx);
+    }
+
+    fn sync_archive_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.loading.selected_picker else {
+            return;
+        };
+        if self.archive_search_operation != Some(id) {
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search filenames…"));
+            cx.subscribe(&input, move |app, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let query = input.read(cx).value().to_string();
+                    if let Some(picker) = app
+                        .loading
+                        .operations
+                        .iter_mut()
+                        .find(|op| op.id == id)
+                        .and_then(|op| op.picker.as_mut())
+                    {
+                        picker.set_search(query);
+                    }
+                }
+                cx.notify();
+            })
+            .detach();
+            self.archive_search = Some(input);
+            self.archive_search_operation = Some(id);
+        }
+        let query = self
+            .archive_search
+            .as_ref()
+            .map(|input| input.read(cx).value().to_string())
+            .unwrap_or_default();
+        if let Some(picker) = self
+            .loading
+            .operations
+            .iter_mut()
+            .find(|op| op.id == id)
+            .and_then(|op| op.picker.as_mut())
+            && picker.query != query
+        {
+            picker.set_search(query);
+        }
     }
 
     pub fn dispatch(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
@@ -1182,6 +1228,7 @@ impl Render for App {
             .detach();
             self.facet_search = Some(input);
         }
+        self.sync_archive_search(window, cx);
         if let Some(editor) = &self.state.editor {
             let values = editor.values.clone();
             let editor_action = editor.action;
@@ -1625,8 +1672,10 @@ impl Render for App {
                 .as_ref()
                 .is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window))
         };
-        let editing =
-            focused(&self.log_search) || focused(&self.facet_search) || focused(&self.notes_search);
+        let editing = focused(&self.log_search)
+            || focused(&self.facet_search)
+            || focused(&self.notes_search)
+            || focused(&self.archive_search);
         let context = if self.state.editor.is_some() || self.state.time_range_open {
             "LoganaDialog"
         } else if self.state.palette.visible() {

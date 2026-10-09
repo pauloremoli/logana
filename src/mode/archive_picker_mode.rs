@@ -2,6 +2,7 @@ use crate::config::Keybindings;
 use crate::input::{KeyCode, KeyModifiers};
 #[cfg(feature = "tui")]
 use crate::mode::app_mode::status_entry;
+use crate::shared::archive_search::{SearchMatcher, filter_rows};
 #[cfg(feature = "tui")]
 use crate::style::{Modifier, Style};
 #[cfg(feature = "tui")]
@@ -15,7 +16,6 @@ use crate::{
 use async_trait::async_trait;
 #[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
-use std::collections::HashSet;
 
 /// What kind of row this is, for the widget to pick a glyph without needing
 /// to know anything about `NodeKind`/`ArchiveTree`.
@@ -44,45 +44,6 @@ pub struct ArchiveRow {
     /// Independent of `check_state` — whether this row is marked to be
     /// merged into one timestamp-sorted tab rather than opened on its own.
     pub merge_check_state: CheckState,
-}
-
-/// Precompiled form of the search query — built once when the query text
-/// changes rather than once per node checked. `visible_rows()` is called
-/// several times per keystroke (scroll clamping, then `render_state()`)
-/// and an archive can have thousands of entries, so recompiling a `Regex`
-/// per node per call (as a plain `regex_search_match` per node would) made
-/// every keystroke — and every idle redraw tick — visibly slow to type
-/// once a search was active on a large archive. Mirrors
-/// `regex_search_match`'s own fallback: a pattern that fails to compile as
-/// a regex still works as a plain case-insensitive substring match.
-#[derive(Debug)]
-enum SearchMatcher {
-    MatchAll,
-    Regex(regex::Regex),
-    Literal(String),
-}
-
-impl SearchMatcher {
-    fn compile(query: &str) -> Self {
-        if query.is_empty() {
-            return Self::MatchAll;
-        }
-        match regex::RegexBuilder::new(query)
-            .case_insensitive(true)
-            .build()
-        {
-            Ok(re) => Self::Regex(re),
-            Err(_) => Self::Literal(query.to_lowercase()),
-        }
-    }
-
-    fn is_match(&self, haystack: &str) -> bool {
-        match self {
-            Self::MatchAll => true,
-            Self::Regex(re) => re.is_match(haystack),
-            Self::Literal(needle) => haystack.to_lowercase().contains(needle.as_str()),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -139,24 +100,7 @@ impl ArchivePickerMode {
     /// only rows that match the query regex plus any ancestor containers
     /// needed to keep a matching file's location visible.
     pub fn visible_rows(&self) -> Vec<NodeId> {
-        if self.search.is_empty() {
-            return self.all_ids.clone();
-        }
-        let mut keep: HashSet<NodeId> = HashSet::new();
-        for &id in &self.all_ids {
-            if self.search_matcher.is_match(&self.tree.nodes[id].name) {
-                let mut cur = Some(id);
-                while let Some(nid) = cur {
-                    keep.insert(nid);
-                    cur = self.tree.nodes[nid].parent;
-                }
-            }
-        }
-        self.all_ids
-            .iter()
-            .copied()
-            .filter(|id| keep.contains(id))
-            .collect()
+        filter_rows(&self.tree, &self.all_ids, &self.search_matcher, false)
     }
 
     /// Node ids whose own name matches the current search query directly —

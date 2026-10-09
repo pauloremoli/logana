@@ -49,7 +49,7 @@ needed to assess the finished layouts visually.
 - [x] Search Notes while keeping note attachment and navigation source-based.
 - [x] Group application menu actions with native separators.
 - [x] Page high-cardinality field values while searching across every page.
-- [ ] Search archive/directory entries while preserving lazy expansion and selection.
+- [x] Search expanded archive/directory entries while preserving lazy expansion and selection.
 - [ ] Add a structured/raw row inspector with the existing copy and annotation actions.
 - [x] Offer column drag reordering alongside accessible keyboard controls.
 - [ ] Show a bounded parsed sample when selecting a schema.

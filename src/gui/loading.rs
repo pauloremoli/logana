@@ -40,6 +40,8 @@ pub(super) struct Picker {
     pub rows: Vec<NodeId>,
     pub checks: Vec<CheckState>,
     pub cursor: usize,
+    pub query: String,
+    matcher: crate::shared::archive_search::SearchMatcher,
     pub sizes: std::rc::Rc<Vec<gpui_kit::gpui::Size<gpui_kit::gpui::Pixels>>>,
 }
 impl Picker {
@@ -59,10 +61,26 @@ impl Picker {
             checks,
             sizes,
             cursor: 0,
+            query: String::new(),
+            matcher: crate::shared::archive_search::SearchMatcher::MatchAll,
         }
     }
+    pub fn set_search(&mut self, query: String) {
+        self.matcher = crate::shared::archive_search::SearchMatcher::compile(&query);
+        self.query = query;
+        self.refresh();
+    }
     fn refresh(&mut self) {
-        self.rows = self.tree.visible_rows();
+        let previous = self.rows.get(self.cursor).copied();
+        self.rows = crate::shared::archive_search::filter_rows(
+            &self.tree,
+            &self.tree.visible_rows(),
+            &self.matcher,
+            true,
+        );
+        self.cursor = previous
+            .and_then(|id| self.rows.iter().position(|row| *row == id))
+            .unwrap_or(0);
         self.checks = self.tree.check_states();
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         self.sizes = std::rc::Rc::new(vec![
@@ -1459,6 +1477,24 @@ mod ui_tests {
                     .tree
                     .nodes[1]
                     .selected
+            );
+            window.click("archive-search", cx);
+            window.input("two", cx);
+            window.render_frame(cx);
+            let picker = app.read(cx).loading.operations[0].picker.as_ref().unwrap();
+            assert_eq!(picker.rows, vec![1]);
+            assert!(picker.tree.nodes[0].selected);
+            assert!(picker.tree.nodes[1].selected);
+            window.press("ctrl-a", cx);
+            window.press("backspace", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                app.read(cx).loading.operations[0]
+                    .picker
+                    .as_ref()
+                    .unwrap()
+                    .rows,
+                vec![0, 1]
             );
             window.click("archive-cancel", cx);
             assert!(app.read(cx).loading.operations.is_empty());
