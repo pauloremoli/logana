@@ -1189,7 +1189,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             );
             body = body
                 .child(div().child(
-                    "Click a preset to preview the whole application. Apply saves your selection.",
+                    "Choose a preset to preview the application. Save theme keeps it; Cancel restores the previous theme.",
                 ))
                 .child(text(app, 1, "Search themes", cx));
             for (i, name) in crate::theme::Theme::list_available_themes()
@@ -1197,19 +1197,48 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 .filter(|n| n.to_lowercase().contains(&e.values[1].to_lowercase()))
                 .enumerate()
             {
-                let mut row = div().flex().items_center().gap_2();
+                let mut row = div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p_2()
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(cx.theme().border);
                 if let Ok(theme) = crate::theme::Theme::from_file(format!("{name}.json")) {
-                    for color in [
-                        theme.root_bg,
-                        theme.text,
-                        theme.info_fg,
-                        theme.error_fg,
-                        theme.debug_fg,
-                    ] {
-                        if let Some(color) = crate::gui::color::color_to_gpui(color) {
-                            row = row.child(div().size(px(16.)).rounded(px(3.)).bg(color));
-                        }
+                    let mut sample = div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .p_3()
+                        .rounded(px(4.))
+                        .font_family("monospace")
+                        .text_sm();
+                    if let Some(color) = crate::gui::color::color_to_gpui(theme.root_bg) {
+                        sample = sample.bg(color);
                     }
+                    if let Some(color) = crate::gui::color::color_to_gpui(theme.text) {
+                        sample = sample.text_color(color);
+                    }
+                    for (level, color, message) in [
+                        ("INFO", theme.info_fg, "Request completed in 24 ms"),
+                        ("ERROR", theme.error_fg, "Connection timed out"),
+                        ("DEBUG", theme.debug_fg, "Retry scheduled · attempt=2"),
+                    ] {
+                        let mut severity = div().w(px(52.)).flex_shrink_0().child(level);
+                        if let Some(color) = crate::gui::color::color_to_gpui(color) {
+                            severity = severity.text_color(color);
+                        }
+                        sample = sample.child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child("12:04:32")
+                                .child(severity)
+                                .child(message),
+                        );
+                    }
+                    row = row.child(sample);
                 }
                 let chosen = name.clone();
                 row = row.child(
