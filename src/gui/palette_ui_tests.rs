@@ -1883,6 +1883,24 @@ fn saved_device_search_and_otel_transport_controls_update_drafts(cx: &mut TestAp
             app.read(cx).state.editor.as_ref().unwrap().values[1],
             "grpc"
         );
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().values[0],
+            "4317"
+        );
+        window.click("otel-http", cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().values[0],
+            "4318"
+        );
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::EditorText(0, "9999".into()), window, cx);
+            app.dispatch(Message::EditorText(1, "grpc".into()), window, cx);
+        });
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().values[0],
+            "9999",
+            "a manually chosen port must not be clobbered by a transport switch"
+        );
     })
     .unwrap();
 }

@@ -156,6 +156,9 @@ impl App {
                                 filtering = true;
                             }
                         }
+                        if app.state.pending_selection_anchor.is_some() {
+                            crate::gui::update::resolve_pending_selection(&mut app.state);
+                        }
                         for tab in &mut app.state.tabs {
                             if let Some(handle) = &mut tab.search.handle {
                                 let mut done = false;

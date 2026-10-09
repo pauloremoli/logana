@@ -4,7 +4,7 @@ use gpui_kit::gpui::Context;
 #[derive(Debug)]
 pub enum Source {
     Stdin,
-    Docker { container: String },
+    Docker { container: String, name: String },
     Dlt { host: String, port: u16 },
     Otel { port: u16, grpc: bool },
     Run { program: String, args: Vec<String> },
@@ -21,8 +21,8 @@ impl Source {
                 });
                 ("stdin".into(), connect, true)
             }
-            Self::Docker { container } => (
-                format!("docker://{container}"),
+            Self::Docker { container, name } => (
+                format!("docker://{name}"),
                 crate::shared::docker_connect_fn(container),
                 false,
             ),

@@ -55,6 +55,8 @@ pub enum Action {
     Stop,
     Pause,
     Tail,
+    FilterOutBefore,
+    FilterOutAfter,
 }
 impl Action {
     pub fn category(self) -> &'static str {
@@ -105,8 +107,13 @@ impl Descriptor {
     pub fn unavailable(&self, state: &GuiState) -> Option<&'static str> {
         if self.tab && state.active_tab().is_none() {
             Some("Open a log file first")
-        } else if matches!(self.action, Action::Bookmark | Action::Annotation)
-            && crate::gui::view::annotations::selected_lines(state).is_empty()
+        } else if matches!(
+            self.action,
+            Action::Bookmark
+                | Action::Annotation
+                | Action::FilterOutBefore
+                | Action::FilterOutAfter
+        ) && crate::gui::view::annotations::selected_lines(state).is_empty()
         {
             Some("Select a log line first")
         } else {
@@ -344,6 +351,20 @@ pub const CATALOG: &[Descriptor] = &[
         label: "Add annotation",
         description: "Attach a note to selected log rows · Ctrl+Shift+A",
         aliases: "annotation annotate comment note",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::FilterOutBefore,
+        label: "Filter out before this",
+        description: "Hide log lines before this line's timestamp",
+        aliases: "filter-out-before",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::FilterOutAfter,
+        label: "Filter out after this",
+        description: "Hide log lines after this line's timestamp",
+        aliases: "filter-out-after",
         tab: true,
     },
     Descriptor {
@@ -686,6 +707,38 @@ pub fn open(
             )));
             return Effect::None;
         }
+        Action::FilterOutBefore | Action::FilterOutAfter => {
+            let Some(&line) = crate::gui::view::annotations::selected_lines(state).first() else {
+                return Effect::None;
+            };
+            let tab = state.active_tab().unwrap();
+            let Some(ts) = crate::gui::view::log_pane::line_canonical_timestamp(tab, line) else {
+                state.notify(crate::gui::state::StatusMessage::Error(
+                    "This line has no recognizable timestamp.".to_string(),
+                ));
+                return Effect::None;
+            };
+            let op = if action == Action::FilterOutBefore {
+                ">="
+            } else {
+                "<="
+            };
+            let label = if action == Action::FilterOutBefore {
+                "Filter out before this"
+            } else {
+                "Filter out after this"
+            };
+            return crate::gui::update::perform_gui(
+                state,
+                Commands::DateFilter {
+                    expr: vec![format!("{op} {ts}")],
+                    fg: None,
+                    bg: None,
+                    line_mode: false,
+                },
+                label.to_string(),
+            );
+        }
         _ => {}
     }
     if action == Action::DisableMcp {
@@ -944,8 +997,8 @@ pub fn open(
         e.merge_sources = state.tabs.iter().map(|tab| (tab.id, false)).collect();
     }
     if action == Action::Otel {
-        e.values[0] = "4318".into();
         e.values[1] = "http".into();
+        e.values[0] = otel_default_port(&e.values[1]).into();
     }
     if action == Action::Export {
         configure_export(&mut e, "markdown");
@@ -1034,6 +1087,11 @@ pub fn close(state: &mut GuiState, applied: bool) {
             );
         }
     }
+}
+/// The standard OTLP port for a transport, used to prefill the Otel editor's
+/// port field and to re-default it when the user switches transport.
+pub fn otel_default_port(protocol: &str) -> &'static str {
+    if protocol == "grpc" { "4317" } else { "4318" }
 }
 pub fn apply(state: &mut GuiState) -> Effect {
     let Some(mut e) = state.editor.clone() else {
@@ -1210,8 +1268,15 @@ pub fn apply(state: &mut GuiState) -> Effect {
                 Some("Select a container or enter its name/ID.".into());
             return Effect::None;
         }
+        let name = e
+            .conditions
+            .iter()
+            .find(|(id, _)| *id == e.values[0])
+            .map(|(_, label)| label.split(" · ").next().unwrap_or(label).to_string())
+            .unwrap_or_else(|| e.values[0].clone());
         let source = crate::gui::sources::Source::Docker {
             container: e.values[0].clone(),
+            name,
         };
         close(state, true);
         return Effect::ConnectSource(source);
@@ -1778,6 +1843,59 @@ mod tests {
         assert_eq!(options.bg.as_deref(), Some("#654321"));
     }
     #[tokio::test]
+    async fn filter_out_before_builds_an_inclusive_date_filter_from_the_selected_line() {
+        let mut state = state().await;
+        state.tabs[0].display.format =
+            Some(std::sync::Arc::new(crate::parser::SyslogParser::default()));
+        state.tabs[0].file_reader = crate::ingestion::FileReader::from_bytes(
+            b"<134>Oct 11 22:14:15 myhost sshd[1234]: Accepted password for user\n".to_vec(),
+        );
+        let current_year = time::OffsetDateTime::now_utc().year();
+
+        match open(&mut state, Action::FilterOutBefore, None, None) {
+            Effect::ExecutePalette {
+                command: Commands::DateFilter { expr, .. },
+                ..
+            } => {
+                assert_eq!(expr, vec![format!(">= {current_year}-10-11 22:14:15")]);
+            }
+            other => panic!("expected a DateFilter ExecutePalette, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn filter_out_after_builds_an_inclusive_date_filter_from_the_selected_line() {
+        let mut state = state().await;
+        state.tabs[0].display.format =
+            Some(std::sync::Arc::new(crate::parser::SyslogParser::default()));
+        state.tabs[0].file_reader = crate::ingestion::FileReader::from_bytes(
+            b"<134>Oct 11 22:14:15 myhost sshd[1234]: Accepted password for user\n".to_vec(),
+        );
+        let current_year = time::OffsetDateTime::now_utc().year();
+
+        match open(&mut state, Action::FilterOutAfter, None, None) {
+            Effect::ExecutePalette {
+                command: Commands::DateFilter { expr, .. },
+                ..
+            } => {
+                assert_eq!(expr, vec![format!("<= {current_year}-10-11 22:14:15")]);
+            }
+            other => panic!("expected a DateFilter ExecutePalette, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn filter_out_before_without_a_recognizable_timestamp_notifies_an_error() {
+        let mut state = state().await;
+        let effect = open(&mut state, Action::FilterOutBefore, None, None);
+        assert!(matches!(effect, Effect::None));
+        assert!(matches!(
+            state.status,
+            Some(crate::gui::state::StatusMessage::Error(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn closing_immediate_view_options_does_not_claim_changes_were_canceled() {
         let mut state = state().await;
         open(&mut state, Action::View, None, None);
@@ -1791,6 +1909,40 @@ mod tests {
         assert_eq!(state.tabs[0].display.wrap, wrap);
         assert!(state.editor.is_none());
         assert!(state.palette.outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn docker_action_reopens_after_connecting_a_container() {
+        let mut state = state().await;
+        assert!(matches!(
+            open(&mut state, Action::Docker, None, None),
+            Effect::ListDocker { .. }
+        ));
+        state.editor.as_mut().unwrap().values[0] = "my-container".into();
+        assert!(matches!(
+            apply(&mut state),
+            Effect::ConnectSource(crate::gui::sources::Source::Docker { .. })
+        ));
+        assert!(state.editor.is_none());
+
+        let manager = crate::db::LogManager::new(state.db.clone(), None).await;
+        update(
+            &mut state,
+            Message::SourceLoaded(Ok(Box::new(crate::shared::TabState::new(
+                crate::ingestion::FileReader::from_bytes(b"line\n".to_vec()),
+                manager,
+                "docker://my-container".into(),
+            )))),
+        );
+        assert_eq!(state.tabs.len(), 2);
+
+        assert!(
+            matches!(
+                open(&mut state, Action::Docker, None, None),
+                Effect::ListDocker { .. }
+            ),
+            "the Docker menu item must still open the picker once a source is already connected"
+        );
     }
 
     async fn state() -> GuiState {

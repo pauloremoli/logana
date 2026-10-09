@@ -6,6 +6,15 @@ use crate::theme::Theme as TuiTheme;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// `(tab_id, old log_selection rows, selection's file-line endpoints)` —
+/// see `GuiState::pending_selection_anchor`.
+type PendingSelectionAnchor = (
+    crate::shared::TabId,
+    (usize, usize),
+    Option<usize>,
+    Option<usize>,
+);
+
 pub struct GuiState {
     pub history: HashMap<crate::shared::TabId, crate::gui::history::History>,
     pub editor_history: Vec<crate::gui::actions::Editor>,
@@ -14,6 +23,16 @@ pub struct GuiState {
     pub search_open: bool,
     pub editor: Option<crate::gui::actions::Editor>,
     pub log_selection: Option<(crate::shared::TabId, usize, usize)>,
+    /// A `log_selection` taken right before a filter/group mutation whose
+    /// (possibly background) rescan hasn't finished yet, recorded as the
+    /// selection's underlying file-line indices plus the exact
+    /// `log_selection` value it was read from. Resolved back into
+    /// `log_selection`'s visible-row coordinates once that tab's scan
+    /// completes (see `gui::update::resolve_pending_selection`) — applying
+    /// it any earlier would use the *pre*-mutation `visible_indices`,
+    /// repointing the selection at the wrong row. Left untouched if
+    /// `log_selection` changed to something else in the meantime.
+    pub pending_selection_anchor: Option<PendingSelectionAnchor>,
     pub field_discovery: Option<(
         crate::shared::TabId,
         u64,
@@ -92,6 +111,7 @@ impl GuiState {
             editor: None,
             search_open: false,
             log_selection: None,
+            pending_selection_anchor: None,
             field_discovery: None,
             db,
             tabs: Vec::new(),

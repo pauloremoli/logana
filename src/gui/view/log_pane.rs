@@ -269,6 +269,8 @@ pub fn log_pane(
                                             let entity = entity.clone();
                                             let bookmark = entity.clone();
                                             let annotation = entity.clone();
+                                            let filter_before = entity.clone();
+                                            let filter_after = entity.clone();
                                             menu.item(
                                                 gpui_kit::component::menu::PopupMenuItem::new(
                                                     "Copy raw log message",
@@ -325,6 +327,18 @@ pub fn log_pane(
                                                         )
                                                     })
                                                 }),
+                                            )
+                                            .item(
+                                                gpui_kit::component::menu::PopupMenuItem::new(
+                                                    "Filter out before this",
+                                                )
+                                                .on_click(move |_, window, cx| filter_before.update(cx, |app, cx| app.dispatch(Message::LogRowAction(source, line_idx, crate::gui::actions::Action::FilterOutBefore), window, cx))),
+                                            )
+                                            .item(
+                                                gpui_kit::component::menu::PopupMenuItem::new(
+                                                    "Filter out after this",
+                                                )
+                                                .on_click(move |_, window, cx| filter_after.update(cx, |app, cx| app.dispatch(Message::LogRowAction(source, line_idx, crate::gui::actions::Action::FilterOutAfter), window, cx))),
                                             )
                                         })
                                         .into_any_element()
@@ -600,6 +614,22 @@ fn row_time_text(tab: &TabState, bytes: &[u8]) -> Option<String> {
     let parser = tab.display.format.as_deref()?;
     let timestamp = parser.parse_line(bytes).and_then(|parts| parts.timestamp)?;
     Some(timestamp.to_string())
+}
+
+/// `YYYY-MM-DD HH:MM:SS` timestamp for `line_idx`, resolving a year-less
+/// (e.g. BSD syslog) timestamp against the tab's year map — the exact bound
+/// format `:date-filter`'s own parser accepts (it has no fractional-second
+/// syntax, unlike `canonical_timestamp`'s `.fff` suffix), used to build a
+/// "filter out before/after this line" expression from a right-clicked row.
+pub(crate) fn line_canonical_timestamp(tab: &TabState, line_idx: usize) -> Option<String> {
+    let bytes = tab.file_reader.get_line(line_idx);
+    let timestamp = row_time_text(tab, &bytes)?;
+    let year_override = tab.year_map.as_deref().map(|ym| ym.year_for_line(line_idx));
+    let canonical = crate::filters::canonical_timestamp(&timestamp, year_override)?;
+    // `canonical_timestamp` always returns the fixed `YYYY-MM-DD
+    // HH:MM:SS.fff` shape (23 ASCII bytes); keep only the first 19 —
+    // `:date-filter`'s parser has no syntax for the `.fff` suffix.
+    Some(canonical[..19].to_string())
 }
 
 /// The Message column's bytes: a detected format's parsed `message` field,
@@ -1579,6 +1609,28 @@ mod tests {
         let t = tab().await;
         assert!(t.display.format.is_none());
         assert_eq!(row_time_text(&t, b"a"), None);
+    }
+
+    #[tokio::test]
+    async fn line_canonical_timestamp_resolves_bsd_year_from_the_current_year() {
+        let mut t = tab().await;
+        t.display.format = Some(Arc::new(crate::parser::SyslogParser::default()));
+        t.file_reader = FileReader::from_bytes(
+            b"<134>Oct 11 22:14:15 myhost sshd[1234]: Accepted password for user\n".to_vec(),
+        );
+        let current_year = time::OffsetDateTime::now_utc().year();
+        let ts = line_canonical_timestamp(&t, 0);
+        assert_eq!(ts, Some(format!("{current_year}-10-11 22:14:15")));
+        // The whole point of this shape is that `:date-filter`'s own
+        // parser accepts it as a bound — `canonical_timestamp`'s `.fff`
+        // suffix, which this strips, is not valid date-filter syntax.
+        crate::filters::parse_date_filter(&format!(">= {}", ts.unwrap())).unwrap();
+    }
+
+    #[tokio::test]
+    async fn line_canonical_timestamp_is_none_without_a_detected_format() {
+        let t = tab().await;
+        assert_eq!(line_canonical_timestamp(&t, 0), None);
     }
 
     #[tokio::test]

@@ -252,6 +252,11 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
                     e.values[0] = value;
                 } else if e.action == crate::gui::actions::Action::Export && index == 0 {
                     crate::gui::actions::configure_export(e, &value);
+                } else if e.action == crate::gui::actions::Action::Otel && index == 1 {
+                    if e.values[0] == crate::gui::actions::otel_default_port(&e.values[1]) {
+                        e.values[0] = crate::gui::actions::otel_default_port(&value).into();
+                    }
+                    e.values[1] = value;
                 } else if let Some(slot) = e.values.get_mut(index) {
                     *slot = value;
                 }
@@ -1547,11 +1552,73 @@ pub(super) fn prepare_tab_with_merge(
     Ok((tab, widths))
 }
 
+/// Applies a new `log_manager` (from a filter/group mutation) and re-runs
+/// the tab's filters. Arranges for `log_selection` to be remapped across
+/// the resulting `visible_indices` change the same way
+/// `TabState::restore_scroll_to_line` re-anchors the scroll cursor —
+/// otherwise a selection taken before the mutation (e.g. the row a "Filter
+/// out before/after this" context-menu action was invoked on) keeps its
+/// old visible *position*, which a filter-driven reshuffle of
+/// `visible_indices` can repoint at a different line.
+///
+/// The rescan `force_recompute` starts is itself background work (see
+/// `TabState::begin_filter_refresh`), so `visible_indices` is not yet
+/// final when this function returns — remapping now would just read the
+/// *pre*-mutation mapping. The selection's underlying file lines are
+/// stashed in `pending_selection_anchor` and resolved once the scan
+/// completes (immediately below, if it already has; otherwise by
+/// `resolve_pending_selection` on a later poll).
 fn apply_log_manager(state: &mut GuiState, tab_idx: usize, log_manager: LogManager) {
-    if let Some(tab) = state.tabs.get_mut(tab_idx) {
-        tab.log_manager = log_manager;
-        force_recompute(tab);
+    let Some(tab) = state.tabs.get_mut(tab_idx) else {
+        return;
+    };
+    let tab_id = tab.id;
+    let anchor = state
+        .log_selection
+        .filter(|(id, _, _)| *id == tab_id)
+        .map(|(_, row_a, row_b)| {
+            (
+                (row_a, row_b),
+                tab.filter.visible_indices.get_opt(row_a),
+                tab.filter.visible_indices.get_opt(row_b),
+            )
+        });
+    tab.log_manager = log_manager;
+    force_recompute(tab);
+    if let Some((old_rows, line_a, line_b)) = anchor {
+        state.pending_selection_anchor = Some((tab_id, old_rows, line_a, line_b));
+        resolve_pending_selection(state);
     }
+}
+
+/// Remaps a pending selection anchor (see `apply_log_manager`) back into
+/// `log_selection` once its tab's filter scan has finished. A no-op while
+/// the scan is still running, or once resolved. Leaves `log_selection`
+/// alone if it no longer matches the exact value the anchor was captured
+/// from — the user selected something else in the meantime, so the stale
+/// anchor must not clobber it.
+pub fn resolve_pending_selection(state: &mut GuiState) {
+    let Some((tab_id, old_rows, line_a, line_b)) = state.pending_selection_anchor else {
+        return;
+    };
+    let Some(tab) = state.tabs.iter().find(|t| t.id == tab_id) else {
+        state.pending_selection_anchor = None;
+        return;
+    };
+    if tab.filter.handle.is_some() {
+        return;
+    }
+    state.pending_selection_anchor = None;
+    if state.log_selection != Some((tab_id, old_rows.0, old_rows.1)) {
+        return;
+    }
+    state.log_selection = line_a.zip(line_b).and_then(|(a, b)| {
+        tab.filter
+            .visible_indices
+            .nearest_position_of(a)
+            .zip(tab.filter.visible_indices.nearest_position_of(b))
+            .map(|(pa, pb)| (tab_id, pa, pb))
+    });
 }
 
 /// Start a cancellable scan; the GUI polls streamed results on its frame timer.
@@ -2543,6 +2610,79 @@ mod tests {
         force_recompute(&mut tab);
         state.tabs.push(tab);
         (state, file)
+    }
+
+    #[tokio::test]
+    async fn apply_log_manager_remaps_log_selection_to_the_same_line_after_filtering() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut state = GuiState::new(db.clone());
+        let log_manager = LogManager::new(Arc::clone(&db), None).await;
+        let reader = FileReader::from_bytes(b"alpha\nbeta\ngamma\ndelta\n".to_vec());
+        let mut tab = TabState::new(reader, log_manager, "test.log".to_string());
+        force_recompute(&mut tab);
+        drain_gui_scan(&mut tab).await;
+        let tab_id = tab.id;
+        state.tabs.push(tab);
+
+        // "gamma" is selected at its current visible row (file line 2).
+        state.log_selection = Some((tab_id, 2, 2));
+
+        // A new filter hides "alpha"/"beta", shifting "gamma" to row 0 —
+        // the selection must follow the line, not stay pinned to row 2
+        // (which is now "delta" after the reshuffle).
+        let mut manager = state.tabs[0].log_manager.clone();
+        manager
+            .add_filter_with_color(
+                "gamma|delta".to_string(),
+                FilterType::Include,
+                FilterOptions {
+                    use_regex: true,
+                    ..Default::default()
+                },
+            )
+            .await;
+        apply_log_manager(&mut state, 0, manager);
+        drain_gui_scan(&mut state.tabs[0]).await;
+        resolve_pending_selection(&mut state);
+
+        assert_eq!(state.tabs[0].filter.visible_indices.get_opt(0), Some(2));
+        assert_eq!(state.log_selection, Some((tab_id, 0, 0)));
+    }
+
+    #[tokio::test]
+    async fn pending_selection_anchor_does_not_clobber_a_newer_selection() {
+        let db = Arc::new(Database::in_memory().await.unwrap());
+        let mut state = GuiState::new(db.clone());
+        let log_manager = LogManager::new(Arc::clone(&db), None).await;
+        let reader = FileReader::from_bytes(b"alpha\nbeta\ngamma\ndelta\n".to_vec());
+        let mut tab = TabState::new(reader, log_manager, "test.log".to_string());
+        force_recompute(&mut tab);
+        drain_gui_scan(&mut tab).await;
+        let tab_id = tab.id;
+        state.tabs.push(tab);
+        state.log_selection = Some((tab_id, 2, 2));
+
+        let mut manager = state.tabs[0].log_manager.clone();
+        manager
+            .add_filter_with_color(
+                "gamma|delta".to_string(),
+                FilterType::Include,
+                FilterOptions {
+                    use_regex: true,
+                    ..Default::default()
+                },
+            )
+            .await;
+        apply_log_manager(&mut state, 0, manager);
+        assert!(state.pending_selection_anchor.is_some());
+
+        // The user clicks a different row before the scan finishes.
+        state.log_selection = Some((tab_id, 1, 1));
+        drain_gui_scan(&mut state.tabs[0]).await;
+        resolve_pending_selection(&mut state);
+
+        assert_eq!(state.log_selection, Some((tab_id, 1, 1)));
+        assert!(state.pending_selection_anchor.is_none());
     }
 
     #[tokio::test]
