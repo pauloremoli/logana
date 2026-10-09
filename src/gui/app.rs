@@ -1197,14 +1197,22 @@ impl Render for App {
                     .detach();
                     self.editor_members = Some(combo);
                 }
-                if editor_action == crate::gui::actions::Action::Schema {
-                    let mut names = vec!["none".to_string()];
-                    names.extend(crate::parser::builtin_format_names());
-                    names.extend(
-                        crate::config::custom_schemas()
-                            .iter()
-                            .map(|s| s.name.clone()),
-                    );
+                if matches!(
+                    editor_action,
+                    crate::gui::actions::Action::Schema | crate::gui::actions::Action::Export
+                ) {
+                    let mut names = if editor_action == crate::gui::actions::Action::Export {
+                        crate::commands::list_templates()
+                    } else {
+                        let mut names = vec!["none".to_string()];
+                        names.extend(crate::parser::builtin_format_names());
+                        names.extend(
+                            crate::config::custom_schemas()
+                                .iter()
+                                .map(|s| s.name.clone()),
+                        );
+                        names
+                    };
                     names.sort();
                     names.dedup();
                     let selected = values[0].clone();

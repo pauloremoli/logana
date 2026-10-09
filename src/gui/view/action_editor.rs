@@ -750,20 +750,42 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 ));
         }
         Action::Export => {
-            body = body.child("Choose a template and fill its optional fields.");
-            for (index, name) in crate::commands::list_templates().into_iter().enumerate() {
+            body = body
+                .child("Export an analysis document from this source’s notes and bookmarks.")
+                .child(div().flex().flex_col().gap_1().child("Template").children(
+                    app.editor_choice_select.as_ref().map(|state| {
+                        Select::new(state)
+                            .id("export-template-select")
+                            .w_full()
+                            .placeholder("Choose a template")
+                            .search_placeholder("Search templates…")
+                            .accessibility_label("Export template")
+                    }),
+                ));
+            if let Some(tab) = e
+                .source
+                .and_then(|id| app.state.tabs.iter().find(|tab| tab.id == id))
+            {
                 body = body.child(
-                    Button::new(("export-template", index))
-                        .label(name.clone())
-                        .selected(e.values[0] == name)
-                        .on_click(cx.listener(move |app, _, window, cx| {
-                            app.dispatch(Message::EditorText(0, name.clone()), window, cx)
-                        })),
+                    DescriptionList::new()
+                        .columns(1)
+                        .bordered(false)
+                        .item("Source", tab.title.clone(), 1)
+                        .item("Notes", tab.comment_manager.get().len().to_string(), 1)
+                        .item(
+                            "Bookmarked rows",
+                            tab.mark_manager.get_indices().len().to_string(),
+                            1,
+                        ),
                 );
             }
-            for (index, (key, _)) in e.fields.iter().enumerate() {
-                body = body.child(text(app, index + 6, key, cx));
+            if !e.fields.is_empty() {
+                body = body.child(div().pt_2().child("Optional document fields"));
             }
+            for (index, (key, _)) in e.fields.iter().enumerate() {
+                body = body.child(text(app, index + 6, &humanize(key), cx));
+            }
+            body = body.child("Choose the destination file after clicking Export.");
         }
         Action::Annotation => {
             body = body

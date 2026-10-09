@@ -1886,3 +1886,31 @@ fn saved_device_search_and_otel_transport_controls_update_drafts(cx: &mut TestAp
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn schema_and_export_render_searchable_choice_controls(cx: &mut TestAppContext) {
+    use super::actions::Action;
+    use super::message::Message;
+    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        for (action, id) in [
+            (Action::Schema, "schema-select"),
+            (Action::Export, "export-template-select"),
+        ] {
+            app.update(cx, |app, cx| {
+                app.dispatch(Message::GuiAction(action), window, cx);
+            });
+            window.render_frame(cx);
+            assert!(app.read(cx).editor_choice_select.is_some());
+            window.within(id).click("input", cx);
+            window.render_frame(cx);
+            window.press("escape", cx);
+            assert!(app.read(cx).state.editor.is_some());
+            app.update(cx, |app, cx| {
+                app.dispatch(Message::EditorCancel, window, cx)
+            });
+        }
+    })
+    .unwrap();
+}
