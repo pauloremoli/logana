@@ -16,10 +16,12 @@ const TAB_HEIGHT: f32 = 36.0;
 
 pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
     let mut tabs = div()
+        .id("source-tabs")
+        .flex_1()
+        .overflow_x_scroll()
         .flex()
         .items_center()
         .gap_1()
-        .flex_wrap()
         .min_w(px(0.));
     for (idx, tab) in state.tabs.iter().enumerate() {
         tabs = tabs.child(tab_label(
@@ -48,7 +50,8 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
         .justify_between()
         .gap_2()
         .px(px(4.))
-        .min_h(px(TAB_BAR_HEIGHT))
+        .h(px(TAB_BAR_HEIGHT))
+        .flex_shrink_0()
         .bg(cx.theme().tab)
         .overflow_hidden()
         .border_b_1()
@@ -88,6 +91,7 @@ fn tab_label(
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let entity = cx.entity();
+    let accessible_path = path.clone();
     div()
         .id(("file-tab", idx))
         .test_support()
@@ -128,9 +132,11 @@ fn tab_label(
         })
         .flex_shrink_0()
         .h(px(TAB_HEIGHT))
-        .min_w(px(150.))
+        .w(px(180.))
         .child(
             Tab::new()
+                .max_w(px(180.))
+                .aria_label(accessible_path)
                 .underline()
                 .selected(active)
                 .prefix(Icon::new(IconName::FileText))
