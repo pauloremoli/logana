@@ -1187,6 +1187,26 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             if e.action == Action::Columns {
                 body = body.child(text(app, 0, "Search columns", cx));
             }
+            let samples: Vec<_> = if e.action == Action::ValueColors {
+                app.state
+                    .theme
+                    .value_colors
+                    .grouped_categories(app.state.theme.process_colors.first().copied())
+                    .into_iter()
+                    .flat_map(|group| {
+                        group
+                            .children
+                            .into_iter()
+                            .map(move |(key, label, color)| (key, label, color, group.label))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let mut last_group = "";
+            if !columns {
+                body = body.child("Checked entries use the theme’s color. Unchecked entries use ordinary log text color.");
+            }
             for (i, (name, on)) in e.fields.iter().enumerate() {
                 if e.action == Action::Columns
                     && !name.to_lowercase().contains(&e.values[0].to_lowercase())
@@ -1196,7 +1216,11 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 let mut row = div().flex().gap_2().items_center().child(
                     Checkbox::new(("editor-field", i))
                         .checked(*on)
-                        .label(name.clone())
+                        .label(if columns {
+                            name.clone()
+                        } else {
+                            humanize(name)
+                        })
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.dispatch(Message::EditorField(i), window, cx)
                         })),
@@ -1225,6 +1249,54 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                                     app.dispatch(Message::EditorMove(i, 1), window, cx)
                                 })),
                         );
+                }
+                if !columns {
+                    let sample = samples.iter().find(|(key, _, _, _)| *key == name);
+                    let (label, color, category) = if let Some((_, label, color, category)) = sample
+                    {
+                        (*label, *color, *category)
+                    } else {
+                        let theme = &app.state.theme;
+                        let color = match name.as_str() {
+                            "trace" => theme.trace_fg,
+                            "debug" => theme.debug_fg,
+                            "info" => theme.info_fg,
+                            "notice" => theme.notice_fg,
+                            "warning" => theme.warning_fg,
+                            "error" => theme.error_fg,
+                            "fatal" => theme.fatal_fg,
+                            _ => theme.text,
+                        };
+                        (name.as_str(), color, "Severity")
+                    };
+                    if category != last_group {
+                        body = body.child(
+                            div()
+                                .pt_2()
+                                .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
+                                .child(category.to_string()),
+                        );
+                        last_group = category;
+                    }
+                    row = row.justify_between().child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .font_family("monospace")
+                            .when_some(
+                                crate::gui::color::color_to_gpui(app.state.theme.root_bg),
+                                |d, color| d.bg(color),
+                            )
+                            .when_some(
+                                crate::gui::color::color_to_gpui(if *on {
+                                    color
+                                } else {
+                                    app.state.theme.text
+                                }),
+                                |d, color| d.text_color(color),
+                            )
+                            .child(label.to_string()),
+                    );
                 }
                 body = body.child(row);
             }
