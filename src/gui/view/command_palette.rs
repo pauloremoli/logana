@@ -74,44 +74,62 @@ pub fn command_palette(
     let suggestions = crate::gui::actions::matching(&palette.input);
     for (index, descriptor) in suggestions.iter().enumerate() {
         let missing = descriptor.unavailable(&app.state).is_some();
+        // One scroll child per action keeps keyboard selection and scrolling aligned.
+        let category = descriptor.action.category();
+        let show_heading = palette.input.trim().is_empty()
+            && (index == 0 || suggestions[index - 1].action.category() != category);
+        let mut row = div().flex().flex_col();
+        if show_heading {
+            row = row.child(
+                div()
+                    .px_2()
+                    .pt_3()
+                    .pb_1()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(category),
+            );
+        }
         list = list.child(
-            ListItem::new(("command-suggestion", index))
-                .disabled(missing)
-                .selected(index == palette.selected)
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .w_full()
-                        .child(
-                            div()
-                                .flex()
-                                .justify_between()
-                                .child(descriptor.label)
-                                .child(
-                                    div()
-                                        .text_size(gpui_kit::gpui::rems(12. / 13.))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(crate::gui::keyboard::shortcut_for_action(
-                                            &crate::gui::keyboard::bindings(&app.state),
-                                            descriptor.action,
-                                        )),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_size(gpui_kit::gpui::rems(12. / 13.))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(if missing {
-                                    descriptor.unavailable(&app.state).unwrap()
-                                } else {
-                                    descriptor.description
-                                }),
-                        ),
-                )
-                .on_click(cx.listener(move |app, _, window, cx| {
-                    app.dispatch(Message::PaletteInsert(index), window, cx)
-                })),
+            row.child(
+                ListItem::new(("command-suggestion", index))
+                    .disabled(missing)
+                    .selected(index == palette.selected)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .w_full()
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_between()
+                                    .child(descriptor.label)
+                                    .child(
+                                        div()
+                                            .text_size(gpui_kit::gpui::rems(12. / 13.))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(crate::gui::keyboard::shortcut_for_action(
+                                                &crate::gui::keyboard::bindings(&app.state),
+                                                descriptor.action,
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(gpui_kit::gpui::rems(12. / 13.))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(if missing {
+                                        descriptor.unavailable(&app.state).unwrap()
+                                    } else {
+                                        descriptor.description
+                                    }),
+                            ),
+                    )
+                    .on_click(cx.listener(move |app, _, window, cx| {
+                        app.dispatch(Message::PaletteInsert(index), window, cx)
+                    })),
+            ),
         );
     }
     if suggestions.is_empty() {

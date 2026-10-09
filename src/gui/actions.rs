@@ -56,6 +56,43 @@ pub enum Action {
     Pause,
     Tail,
 }
+impl Action {
+    pub fn category(self) -> &'static str {
+        match self {
+            Self::Open
+            | Self::OpenDirectory
+            | Self::Docker
+            | Self::Dlt
+            | Self::Otel
+            | Self::Run
+            | Self::Merge
+            | Self::Stop
+            | Self::Pause
+            | Self::Tail => "Sources",
+            Self::Appearance
+            | Self::Settings
+            | Self::Keybindings
+            | Self::DefaultFilters
+            | Self::EnableMcp
+            | Self::DisableMcp
+            | Self::Help => "Settings",
+            Self::CloseFile
+            | Self::CloseAllFiles
+            | Self::CloseOtherFiles
+            | Self::CopyPath
+            | Self::SwitchFile
+            | Self::FileInfo
+            | Self::Export
+            | Self::SaveLogs
+            | Self::SaveMarked
+            | Self::SaveFilters
+            | Self::LoadFilters
+            | Self::AppendFilters
+            | Self::ImportFilters => "Workspace",
+            _ => "Investigate",
+        }
+    }
+}
 #[derive(Clone, Copy)]
 pub struct Descriptor {
     pub action: Action,
@@ -455,6 +492,8 @@ pub fn matching(query: &str) -> Vec<&'static Descriptor> {
         .collect();
     if !query.is_empty() {
         matches.sort_by_key(|(score, _)| *score);
+    } else {
+        matches.sort_by_key(|(_, descriptor)| descriptor.action.category());
     }
     matches
         .into_iter()
