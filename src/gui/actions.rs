@@ -985,7 +985,10 @@ pub fn close(state: &mut GuiState, applied: bool) {
         }
         state.palette.open = false;
         state.palette.focus_epoch = state.palette.focus_epoch.wrapping_add(1);
-        if !applied && state.palette.outcome.is_none() {
+        if !applied
+            && state.palette.outcome.is_none()
+            && !matches!(e.action, Action::View | Action::Help | Action::FileInfo)
+        {
             crate::gui::update::gui_outcome(
                 state,
                 "Canceled".into(),
@@ -1720,6 +1723,22 @@ mod tests {
         assert_eq!(options.fg.as_deref(), Some("#123456"));
         assert_eq!(options.bg.as_deref(), Some("#654321"));
     }
+    #[tokio::test]
+    async fn closing_immediate_view_options_does_not_claim_changes_were_canceled() {
+        let mut state = state().await;
+        open(&mut state, Action::View, None, None);
+        update(
+            &mut state,
+            Message::GuiCommand(crate::commands::Commands::Wrap, "Wrap lines".into()),
+        );
+        let wrap = state.tabs[0].display.wrap;
+        state.palette.outcome = None;
+        close(&mut state, false);
+        assert_eq!(state.tabs[0].display.wrap, wrap);
+        assert!(state.editor.is_none());
+        assert!(state.palette.outcome.is_none());
+    }
+
     async fn state() -> GuiState {
         let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
         let manager = crate::db::LogManager::new(db.clone(), None).await;

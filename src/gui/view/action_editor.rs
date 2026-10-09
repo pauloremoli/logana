@@ -1064,6 +1064,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             );
         }
         Action::View => {
+            body = body.child("Changes apply immediately to this file.");
             let mut navigation = div().flex().flex_wrap().gap_2();
             for (id, label, action) in [
                 ("view-columns", "Columns", Action::Columns),
@@ -1204,12 +1205,17 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 d.pt_3().border_t_1().border_color(cx.theme().border)
             })
             .gap_2()
-            .child(button(
-                "editor-cancel",
-                "Cancel",
-                || Message::EditorCancel,
-                cx,
-            ))
+            .when(
+                !matches!(e.action, Action::View | Action::Help | Action::FileInfo),
+                |d| {
+                    d.child(button(
+                        "editor-cancel",
+                        "Cancel",
+                        || Message::EditorCancel,
+                        cx,
+                    ))
+                },
+            )
             .child(
                 Button::new("editor-apply")
                     .primary()
@@ -1273,13 +1279,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     .flex()
                     .items_center()
                     .justify_center()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|app, _, window, cx| {
-                            cx.stop_propagation();
-                            app.dispatch(Message::EditorCancel, window, cx);
-                        }),
-                    )
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         panel
                             .test_support()
