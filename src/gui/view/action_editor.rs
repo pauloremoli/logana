@@ -642,27 +642,63 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             }
         }
         Action::Docker => {
-            body = body.child(text(app, 0, "Container name or ID", cx));
+            body = body
+                .child("Follow container logs, or enter a container name or ID directly.")
+                .child(text(app, 0, "Find a container by name or ID", cx));
+            let query = e.values[0].trim().to_lowercase();
+            let mut count = 0;
             for (index, (id, label)) in e.conditions.iter().enumerate() {
+                if !id.to_lowercase().contains(&query) && !label.to_lowercase().contains(&query) {
+                    continue;
+                }
+                count += 1;
                 let id = id.clone();
                 body = body.child(
-                    Button::new(("docker-container", index))
-                        .label(label.clone())
+                    ListItem::new(("docker-container", index))
                         .selected(e.values[0] == id)
+                        .child(
+                            div().flex().flex_col().child(label.clone()).child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(id.clone()),
+                            ),
+                        )
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.dispatch(Message::EditorText(0, id.clone()), window, cx)
                         })),
                 );
             }
+            if count == 0 {
+                body = body.child("No matching container suggestions. You can still connect using the name or ID above.");
+            }
         }
         Action::Dlt => {
+            body = body.child(text(app, 2, "Search saved devices", cx));
+            let query = e.values[2].trim().to_lowercase();
+            let mut count = 0;
             for (index, label, _) in &e.members {
                 if let Some((host, port)) = e.conditions.get(*index) {
+                    if !format!("{label} {host} {port}")
+                        .to_lowercase()
+                        .contains(&query)
+                    {
+                        continue;
+                    }
+                    count += 1;
                     let host = host.clone();
                     let port = port.clone();
                     body = body.child(
-                        Button::new(("dlt-device", *index))
-                            .label(label.clone())
+                        ListItem::new(("dlt-device", *index))
+                            .selected(e.values[0] == host && e.values[1] == port)
+                            .child(
+                                div().flex().flex_col().child(label.clone()).child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("{host}:{port}")),
+                                ),
+                            )
                             .on_click(cx.listener(move |app, _, window, cx| {
                                 app.dispatch(Message::EditorText(0, host.clone()), window, cx);
                                 app.dispatch(Message::EditorText(1, port.clone()), window, cx);
@@ -670,30 +706,48 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     );
                 }
             }
+            if count == 0 {
+                body = body
+                    .child("No matching saved devices. Enter a host and port to connect directly.");
+            }
             body = body
                 .child(text(app, 0, "Device host", cx))
                 .child(text(app, 1, "TCP port", cx));
         }
         Action::Otel => {
-            body = body.child(text(app, 0, "Listen port", cx));
-            for protocol in ["http", "grpc"] {
-                body = body.child(
+            body = body
+                .child("Receive OpenTelemetry logs. Choose the transport used by your sender.")
+                .child(text(app, 0, "Listen port", cx));
+            let mut protocols = ButtonGroup::new("otel-protocol").outline();
+            for (protocol, label) in [("http", "HTTP"), ("grpc", "gRPC")] {
+                protocols = protocols.child(
                     Button::new(format!("otel-{protocol}"))
-                        .label(protocol)
+                        .label(label)
                         .selected(e.values[1] == protocol)
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.dispatch(Message::EditorText(1, protocol.into()), window, cx)
                         })),
                 );
             }
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child("Transport")
+                    .child(protocols),
+            );
         }
         Action::Run => {
-            body = body.child(text(app, 0, "Executable", cx)).child(text(
-                app,
-                1,
-                "Arguments (one argument per line; spaces stay inside an argument)",
-                cx,
-            ));
+            body = body
+                .child("Capture the process output as a new log source.")
+                .child(text(app, 0, "Executable", cx))
+                .child(text(
+                    app,
+                    1,
+                    "Arguments (one argument per line; spaces stay inside an argument)",
+                    cx,
+                ));
         }
         Action::Export => {
             body = body.child("Choose a template and fill its optional fields.");

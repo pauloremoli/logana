@@ -1846,3 +1846,43 @@ fn file_switcher_searches_source_paths_and_selects_stable_tab(cx: &mut TestAppCo
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn saved_device_search_and_otel_transport_controls_update_drafts(cx: &mut TestAppContext) {
+    use super::actions::Action;
+    use super::message::Message;
+    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Dlt), window, cx);
+            let editor = app.state.editor.as_mut().unwrap();
+            editor.members = vec![(0, "Gateway".into(), false), (1, "Worker".into(), false)];
+            editor.conditions = vec![
+                ("gateway.local".into(), "3490".into()),
+                ("worker.local".into(), "3491".into()),
+            ];
+            app.dispatch(Message::EditorText(2, "worker".into()), window, cx);
+        });
+        window.render_frame(cx);
+        window.click(("dlt-device", 1usize), cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().values[0],
+            "worker.local"
+        );
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().values[1],
+            "3491"
+        );
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::EditorCancel, window, cx);
+            app.dispatch(Message::GuiAction(Action::Otel), window, cx);
+        });
+        window.render_frame(cx);
+        window.click("otel-grpc", cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().values[1],
+            "grpc"
+        );
+    })
+    .unwrap();
+}
