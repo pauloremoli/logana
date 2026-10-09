@@ -3,7 +3,7 @@ use crate::gui::message::Message;
 use crate::gui::state::{GuiState, NavPage};
 use crate::gui::update::is_tab_live;
 use gpui_kit::assets::IconName;
-use gpui_kit::base::Disableable;
+use gpui_kit::base::{Disableable, Selectable};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable};
@@ -169,23 +169,51 @@ pub fn live_indicator(state: &GuiState, cx: &mut Context<App>) -> impl IntoEleme
         .h(px(32.))
         .px(px(6.))
         .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(dot_color))
-        .child(if live { "Live" } else { "Paused" })
-        .child(
-            Button::new("stream-toggle")
-                .ghost()
-                .icon(Icon::new(icon))
-                .disabled(!has_watch)
-                .accessibility_label(if tab.stream.paused {
-                    "Resume stream"
-                } else {
-                    "Pause stream"
-                })
-                .tooltip(if tab.stream.paused { "Resume" } else { "Pause" })
-                .on_click(
-                    cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
-                        app.dispatch(Message::StreamToggled(tab_idx), window, cx);
-                    }),
-                ),
-        )
+        .child(if live {
+            "Live"
+        } else if has_watch {
+            "Paused"
+        } else if tab.stream.no_retry || tab.merged.as_ref().is_some_and(|m| m.stopped) {
+            "Stopped"
+        } else {
+            "File"
+        })
+        .when(has_watch, |d| {
+            d.child(
+                Button::new("stream-toggle")
+                    .ghost()
+                    .icon(Icon::new(icon))
+                    .disabled(!has_watch)
+                    .accessibility_label(if tab.stream.paused {
+                        "Resume stream"
+                    } else {
+                        "Pause stream"
+                    })
+                    .tooltip(if tab.stream.paused { "Resume" } else { "Pause" })
+                    .on_click(
+                        cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
+                            app.dispatch(Message::StreamToggled(tab_idx), window, cx);
+                        }),
+                    ),
+            )
+        })
+        .when(has_watch, |d| {
+            d.child(
+                Button::new("follow-latest")
+                    .ghost()
+                    .small()
+                    .label("Follow")
+                    .selected(tab.stream.tail_mode)
+                    .accessibility_label("Follow latest rows")
+                    .tooltip("Keep the latest rows in view")
+                    .on_click(cx.listener(|app, _, window, cx| {
+                        app.dispatch(
+                            Message::GuiAction(crate::gui::actions::Action::Tail),
+                            window,
+                            cx,
+                        );
+                    })),
+            )
+        })
         .into_any_element()
 }
