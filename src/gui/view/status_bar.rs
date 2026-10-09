@@ -4,7 +4,7 @@ use crate::gui::status::{
     status_bar_info, status_bar_left_text, status_bar_right_text, status_bar_schema_text,
 };
 use crate::shared::TabState;
-use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::{ActiveTheme, progress::Progress};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, div, px};
 
@@ -40,12 +40,9 @@ pub fn status_bar(
                 .bg(cx.theme().status_bar)
                 .child(format!("Applying filters… {:.0}%", progress * 100.0))
                 .child(
-                    div().h(px(3.)).w_full().bg(cx.theme().secondary).child(
-                        div()
-                            .h_full()
-                            .w(gpui_kit::gpui::relative(progress as f32))
-                            .bg(cx.theme().primary),
-                    ),
+                    Progress::new("filter-status-progress")
+                        .accessibility_label("Applying filters")
+                        .value(progress as f32 * 100.),
                 ),
         );
     }
@@ -69,10 +66,20 @@ pub fn status_bar(
                     .items_center()
                     .gap_3()
                     .min_w(px(0.))
-                    .child(super::search_bar::view_mode_control(nav_page, cx))
-                    .child(left.replace("   ", "   |   ")),
+                    .flex_1()
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .child(super::search_bar::view_mode_control(nav_page, cx)),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .truncate()
+                            .child(left.replace("   ", "   |   ")),
+                    ),
             )
-            .child(schema)
-            .child(right),
+            .child(div().max_w(px(140.)).truncate().child(schema))
+            .child(div().flex_shrink_0().child(right)),
     )
 }
