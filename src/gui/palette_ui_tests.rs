@@ -954,6 +954,7 @@ fn filter_editor_timestamp_components_prefill_and_save(cx: &mut TestAppContext) 
             cx.notify();
         });
         window.render_frame(cx);
+        assert!(window.try_find("timestamp-comparison").is_some());
         assert!(window.try_find(("timestamp-date", 0usize)).is_some());
         assert!(window.try_find(("timestamp-date", 1usize)).is_some());
         assert!(window.try_find("filter-field-select").is_none());

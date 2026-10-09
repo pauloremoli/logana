@@ -191,7 +191,10 @@ fn timestamp_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
     let pattern = &app.state.editor.as_ref().unwrap().values[0];
     let (operator, start, end) = crate::gui::time_range::timestamp_parts(pattern);
     let time_only = start.contains(':') && !start.contains('-') && !start.contains(' ');
-    let mut operations = div().flex().flex_wrap().gap_1();
+    let mut operations = ButtonGroup::new("timestamp-operators")
+        .outline()
+        .small()
+        .flex_wrap();
     for (index, (value, label)) in [
         (">", "After"),
         (">=", "On or after"),
@@ -246,7 +249,17 @@ fn timestamp_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
         .flex()
         .flex_col()
         .gap_3()
-        .child(operations)
+        .child(if time_only {
+            "Clock-time condition"
+        } else {
+            "Date and time condition"
+        })
+        .child(
+            div()
+                .id("timestamp-comparison")
+                .test_support()
+                .child(operations),
+        )
         .child(bounds)
         .child(
             div()
