@@ -2156,3 +2156,41 @@ fn columns_drag_reorders_draft_and_cancel_restores_order(cx: &mut TestAppContext
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn row_inspector_copies_raw_and_attaches_notes_to_the_source_row(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1300., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        window.render_frame(cx);
+        window.click("inspect-selected-row", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("row-inspector").is_some());
+        assert!(window.try_find("inspector-fields").is_some());
+        window.click("inspector-copy-raw", cx);
+        assert!(
+            cx.read_from_clipboard()
+                .unwrap()
+                .text()
+                .unwrap()
+                .contains("hello")
+        );
+        window.click("inspector-raw", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("inspector-raw-text").is_some());
+        window.click("inspector-annotate", cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().action,
+            crate::gui::actions::Action::Annotation
+        );
+        assert_eq!(
+            crate::gui::view::annotations::selected_lines(&app.read(cx).state),
+            vec![0]
+        );
+        window.click("editor-cancel", cx);
+        window.click("inspector-close", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("row-inspector").is_none());
+    })
+    .unwrap();
+}

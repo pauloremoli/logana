@@ -50,7 +50,7 @@ needed to assess the finished layouts visually.
 - [x] Group application menu actions with native separators.
 - [x] Page high-cardinality field values while searching across every page.
 - [x] Search expanded archive/directory entries while preserving lazy expansion and selection.
-- [ ] Add a structured/raw row inspector with the existing copy and annotation actions.
+- [x] Add a structured/raw row inspector with the existing copy and annotation actions.
 - [x] Offer column drag reordering alongside accessible keyboard controls.
 - [ ] Show a bounded parsed sample when selecting a schema.
 - [ ] Show a bounded export preview using the existing export renderer.

@@ -271,6 +271,7 @@ pub fn log_pane(
                                             let annotation = entity.clone();
                                             let filter_before = entity.clone();
                                             let filter_after = entity.clone();
+                                            let inspector = entity.clone();
                                             menu.item(
                                                 gpui_kit::component::menu::PopupMenuItem::new(
                                                     "Copy raw log message",
@@ -340,6 +341,12 @@ pub fn log_pane(
                                                 )
                                                 .on_click(move |_, window, cx| filter_after.update(cx, |app, cx| app.dispatch(Message::LogRowAction(source, line_idx, crate::gui::actions::Action::FilterOutAfter), window, cx))),
                                             )
+                                            .item(gpui_kit::component::menu::PopupMenuItem::new("Inspect row")
+                                                .on_click(move |_, _, cx| inspector.update(cx, |app, cx| {
+                                                    app.inspected_row = Some((source, line_idx));
+                                                    app.inspector_raw = false;
+                                                    cx.notify();
+                                                })))
                                         })
                                         .into_any_element()
                         }),

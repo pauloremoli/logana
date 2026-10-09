@@ -170,12 +170,7 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             let Some(index) = state.tabs.iter().position(|tab| tab.id == source) else {
                 return Effect::None;
             };
-            let Some(row) = state.tabs[index]
-                .filter
-                .visible_indices
-                .iter()
-                .position(|i| i == line)
-            else {
+            let Some(row) = state.tabs[index].filter.visible_indices.position_of(line) else {
                 return Effect::None;
             };
             state.active_tab = index;

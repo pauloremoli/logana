@@ -8,6 +8,7 @@ pub mod group_pane;
 pub mod loading;
 pub mod log_pane;
 pub mod notification;
+pub mod row_inspector;
 pub mod search_bar;
 pub mod sidebar;
 pub mod status_bar;
@@ -63,11 +64,13 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
                     .child(tab_bar::tab_bar(&app.state, cx))
                     .child(
                         div()
+                            .relative()
                             .flex()
                             .flex_1()
                             .min_h(px(0.))
                             .child(body(app, window, cx))
-                            .children(loading::picker(app, f32::from(viewport.width), cx)),
+                            .children(loading::picker(app, f32::from(viewport.width), cx))
+                            .children(row_inspector::panel(app, f32::from(viewport.width), cx)),
                     ),
             ),
         );
@@ -144,6 +147,7 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                 } else {
                     0.
                 }
+                - if viewport_width >= 1100. && app.inspected_row.is_some() { 420. } else { 0. }
                 - 24.; // Table container's horizontal padding.
             let message_width = log_pane::message_width(tab, &fields, &widths, available_width);
             log_pane::prepare_scaled_list(
@@ -194,6 +198,15 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                         .pb(px(8.))
                         .child(log_content),
                 )
+                .child(Button::new("inspect-selected-row").ghost().label("Inspect selected row")
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        if let Some(line) = annotations::selected_lines(&app.state).first().copied()
+                            && let Some(tab) = app.state.active_tab() {
+                            app.inspected_row = Some((tab.id, line));
+                            app.inspector_raw = false;
+                            cx.notify();
+                        }
+                    })))
                 .child(status_bar::status_bar(Some(tab), app.state.nav_page, cx))
                 .into_any_element();
             let sidebar = {

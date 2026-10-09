@@ -17,6 +17,7 @@ pub mod update;
 pub mod view;
 
 pub mod palette;
+pub mod preview;
 
 #[cfg(all(test, feature = "gui-test"))]
 mod palette_ui_tests;
