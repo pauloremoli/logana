@@ -421,10 +421,11 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
     state.log_selection = Some((id, anchor, row));
     Effect::None
 }
-pub fn shortcuts(state: &GuiState) -> Vec<(String, String)> {
+pub fn shortcuts(state: &GuiState) -> Vec<(&'static str, String, String)> {
     let kb = bindings(state);
     vec![
         (
+            "Navigate logs",
             "Move through logs".into(),
             format!(
                 "{} / {}",
@@ -433,6 +434,7 @@ pub fn shortcuts(state: &GuiState) -> Vec<(String, String)> {
             ),
         ),
         (
+            "Navigate logs",
             "Page through logs".into(),
             format!(
                 "{} / {}",
@@ -440,12 +442,18 @@ pub fn shortcuts(state: &GuiState) -> Vec<(String, String)> {
                 kb.navigation.page_down.display()
             ),
         ),
-        ("First / last row".into(), "Home / End, gg / G".into()),
         (
+            "Navigate logs",
+            "First / last row".into(),
+            "Home / End, gg / G".into(),
+        ),
+        (
+            "Navigate logs",
             "Extend row selection".into(),
             "Shift+Up / Shift+Down".into(),
         ),
         (
+            "Files",
             "Next / previous tab".into(),
             format!(
                 "{} / {}, Ctrl+Tab / Ctrl+Shift+Tab",
@@ -453,17 +461,28 @@ pub fn shortcuts(state: &GuiState) -> Vec<(String, String)> {
                 kb.global.prev_tab.display()
             ),
         ),
-        ("Switch open file".into(), kb.global.file_switcher.display()),
         (
+            "Files",
+            "Switch open file".into(),
+            kb.global.file_switcher.display(),
+        ),
+        (
+            "Files",
             "Open / close file".into(),
             format!("Ctrl+O / {}", kb.global.close_tab.display()),
         ),
         (
+            "Investigate",
             "Bookmark selected rows".into(),
             format!("Ctrl+B / {}", kb.normal.mark_line.display()),
         ),
-        ("Add annotation".into(), "Ctrl+Shift+A".into()),
         (
+            "Investigate",
+            "Add annotation".into(),
+            "Ctrl+Shift+A".into(),
+        ),
+        (
+            "Investigate",
             "Next / previous search match".into(),
             format!(
                 "{} / {}",
@@ -471,9 +490,17 @@ pub fn shortcuts(state: &GuiState) -> Vec<(String, String)> {
                 kb.normal.prev_match.display()
             ),
         ),
-        ("Available actions".into(), "Ctrl+Shift+P / :".into()),
-        ("Copy selected text".into(), "Ctrl+C / Cmd+C".into()),
-        ("Close a dialog".into(), "Escape".into()),
+        (
+            "General",
+            "Available actions".into(),
+            "Ctrl+Shift+P / :".into(),
+        ),
+        (
+            "General",
+            "Copy selected text".into(),
+            "Ctrl+C / Cmd+C".into(),
+        ),
+        ("General", "Close a dialog".into(), "Escape".into()),
     ]
 }
 

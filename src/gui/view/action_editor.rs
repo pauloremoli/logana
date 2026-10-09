@@ -446,9 +446,44 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 );
         }
         Action::Help => {
-            for (label, keys) in crate::gui::keyboard::shortcuts(&app.state) {
-                body = body.child(format!("{keys} — {label}"));
+            body = body.child(text(app, 0, "Search shortcuts", cx));
+            let query = e.values[0].trim().to_lowercase();
+            let shortcuts = crate::gui::keyboard::shortcuts(&app.state);
+            let mut found = false;
+            for category in ["Navigate logs", "Files", "Investigate", "General"] {
+                let mut rows = DescriptionList::new().columns(1).bordered(false);
+                let mut has_rows = false;
+                for (group, label, keys) in &shortcuts {
+                    if *group == category
+                        && (label.to_lowercase().contains(&query)
+                            || keys.to_lowercase().contains(&query)
+                            || category.to_lowercase().contains(&query))
+                    {
+                        rows = rows.item(label.clone(), keys.clone(), 1);
+                        has_rows = true;
+                    }
+                }
+                if has_rows {
+                    found = true;
+                    body = body
+                        .child(
+                            div()
+                                .pt_3()
+                                .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
+                                .child(category),
+                        )
+                        .child(rows);
+                }
             }
+            if !found {
+                body = body.child("No shortcuts match this search.");
+            }
+            body = body.child(button(
+                "help-customize",
+                "Customize shortcuts…",
+                || Message::EditorNavigate(Action::Keybindings),
+                cx,
+            ));
         }
         Action::Merge => {
             body = body.child("Select at least two files. Lines without timestamps are omitted; closed sources keep their last content.")
