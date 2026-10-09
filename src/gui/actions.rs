@@ -546,7 +546,7 @@ impl Editor {
         }
     }
     /// Turns on auto style, freezing a fresh color snapshot from the
-    /// current pattern — only this (the "Auto style" button, or the
+    /// current pattern — only this (the "Generate another" button, or the
     /// auto-filter keybinding) changes the generated color; typing
     /// afterward does not.
     pub fn regenerate_auto_style(&mut self) {
@@ -1848,8 +1848,11 @@ mod tests {
             first
         );
 
-        // Only clicking "Auto style" again re-freezes from the current pattern.
+        // Re-selecting automatic mode preserves the frozen color.
         update(&mut state, Message::EditorStyle(true));
+        assert_eq!(state.editor.as_ref().unwrap().style_key, "error");
+        // Explicit regeneration re-freezes from the current pattern.
+        update(&mut state, Message::EditorRegenerateStyle);
         let e = state.editor.as_ref().unwrap();
         assert_eq!(e.style_key, "error-extended");
         let regenerated = automatic_filter_colors(&e.style_key, &state.theme, e.style_seed);

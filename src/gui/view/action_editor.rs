@@ -878,17 +878,22 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                             Button::new("filter-auto-style")
                                 .small()
                                 .selected(e.auto_style)
-                                .label(if e.auto_style {
-                                    "Auto style · regenerate"
-                                } else {
-                                    "Auto style"
-                                })
+                                .label("Auto style")
                                 .on_click(cx.listener(|app, _, window, cx| {
                                     app.dispatch(Message::EditorStyle(true), window, cx)
                                 })),
                         )
                         .when(e.auto_style, |d| {
                             d.child(
+                                Button::new("filter-regenerate-style")
+                                    .ghost()
+                                    .small()
+                                    .label("Generate another")
+                                    .on_click(cx.listener(|app, _, window, cx| {
+                                        app.dispatch(Message::EditorRegenerateStyle, window, cx)
+                                    })),
+                            )
+                            .child(
                                 div()
                                     .text_sm()
                                     .px_2()
@@ -901,7 +906,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                                         crate::gui::color::color_to_gpui(color),
                                         |d, color| d.text_color(color),
                                     )
-                                    .child("Aa"),
+                                    .child("Matched log text"),
                             )
                         })
                         .child(

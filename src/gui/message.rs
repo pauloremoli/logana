@@ -26,6 +26,7 @@ pub enum Message {
     EditorTimestampPart(usize, String),
     EditorAdvanced,
     EditorStyle(bool),
+    EditorRegenerateStyle,
     EditorMatchField(Option<String>),
     EditorKind(crate::filters::FilterType),
     EditorField(usize),
