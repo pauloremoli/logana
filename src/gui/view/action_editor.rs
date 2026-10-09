@@ -1128,18 +1128,61 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             }));
         }
         Action::Columns | Action::ValueColors | Action::LevelColors => {
+            let columns = e.action == Action::Columns;
+            if columns {
+                let visible: Vec<_> = e.fields.iter().filter(|(_, on)| *on).collect();
+                let mut preview = div().flex().flex_wrap().gap_1();
+                for (name, _) in &visible {
+                    preview = preview.child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .rounded(px(3.))
+                            .child(name.clone()),
+                    );
+                }
+                body = body.child(format!("{} of {} columns visible", visible.len(), e.fields.len()))
+                    .child("Column order preview")
+                    .child(preview)
+                    .child("Move columns with the arrow controls. Bulk actions affect all columns, including those outside the search results.");
+            }
             body = body.child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap_2()
-                    .child(button("editor-all", "All", || Message::EditorAll(true), cx))
+                    .child(button(
+                        "editor-all",
+                        if columns {
+                            "Show all columns"
+                        } else {
+                            "Enable all"
+                        },
+                        || Message::EditorAll(true),
+                        cx,
+                    ))
                     .child(button(
                         "editor-none",
-                        "None",
+                        if columns {
+                            "Hide all columns"
+                        } else {
+                            "Disable all"
+                        },
                         || Message::EditorAll(false),
                         cx,
                     ))
-                    .child(button("editor-reset", "Reset", || Message::EditorReset, cx)),
+                    .child(button(
+                        "editor-reset",
+                        if columns {
+                            "Reset columns"
+                        } else {
+                            "Restore initial choices"
+                        },
+                        || Message::EditorReset,
+                        cx,
+                    )),
             );
             if e.action == Action::Columns {
                 body = body.child(text(app, 0, "Search columns", cx));
