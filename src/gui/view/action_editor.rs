@@ -12,6 +12,7 @@ use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::color_picker::ColorPicker;
 use gpui_kit::component::date_picker::DatePicker;
+use gpui_kit::component::description_list::DescriptionList;
 use gpui_kit::component::group_box::{GroupBox, GroupBoxVariant, GroupBoxVariants};
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::select::Select;
@@ -1055,13 +1056,50 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 .and_then(|t| t.display_source_path())
                 .unwrap_or("No source path")
                 .to_string();
-            body = body.child(path.clone()).child(
-                Button::new("copy-path")
-                    .label("Copy path")
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(path.clone()))
-                    }),
-            );
+            let mut details =
+                DescriptionList::new()
+                    .columns(1)
+                    .bordered(false)
+                    .item("Source", path.clone(), 1);
+            if let Some(tab) = e
+                .source
+                .and_then(|id| app.state.tabs.iter().find(|tab| tab.id == id))
+            {
+                details = details
+                    .item(
+                        "Schema",
+                        tab.display
+                            .format
+                            .as_ref()
+                            .map(|format| format.name())
+                            .unwrap_or("Unstructured"),
+                        1,
+                    )
+                    .item("Source rows", tab.file_reader.line_count().to_string(), 1)
+                    .item(
+                        "Visible rows",
+                        tab.filter.visible_indices.len().to_string(),
+                        1,
+                    )
+                    .item("Size", format!("{} bytes", tab.file_reader.total_len()), 1)
+                    .item(
+                        "Bookmarks",
+                        tab.mark_manager.get_indices().len().to_string(),
+                        1,
+                    )
+                    .item("Notes", tab.comment_manager.get().len().to_string(), 1);
+                if let Some(merged) = &tab.merged {
+                    details =
+                        details.item("Merged sources", merged.source_tab_ids.len().to_string(), 1);
+                }
+            }
+            body =
+                body.child(details)
+                    .child(Button::new("copy-path").label("Copy path").on_click(
+                        move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(path.clone()))
+                        },
+                    ));
         }
         Action::View => {
             body = body.child("Changes apply immediately to this file.");
