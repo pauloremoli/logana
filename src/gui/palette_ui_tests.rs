@@ -54,8 +54,8 @@ fn application_menus_dispatch_filter_view_export_and_close_actions(cx: &mut Test
         (0, 2usize, 0usize),
         (1, 2, 0),
         (2, 3, 2),
-        (3, 0, 6),
-        (4, 0, 9),
+        (3, 0, 7),
+        (4, 0, 12),
     ] {
         if step == 4 {
             cx.update_window(handle.into(), |_, window, cx| {

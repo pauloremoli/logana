@@ -47,7 +47,7 @@ needed to assess the finished layouts visually.
 ## Remaining review improvements
 
 - [x] Search Notes while keeping note attachment and navigation source-based.
-- [ ] Group application menu actions with native separators where helpful.
+- [x] Group application menu actions with native separators.
 - [ ] Make high-cardinality field facets bounded without losing hierarchical selection.
 - [ ] Search archive/directory entries while preserving lazy expansion and selection.
 - [ ] Add a structured/raw row inspector with the existing copy and annotation actions.
