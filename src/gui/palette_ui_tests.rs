@@ -2194,3 +2194,42 @@ fn row_inspector_copies_raw_and_attaches_notes_to_the_source_row(cx: &mut TestAp
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn schema_preview_shows_a_bounded_sample_for_the_latest_choice(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1100., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                crate::gui::message::Message::GuiAction(crate::gui::actions::Action::Schema),
+                window,
+                cx,
+            )
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("schema-preview").is_some());
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("schema-preview-fields").is_some());
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                crate::gui::message::Message::EditorText(0, "none".into()),
+                window,
+                cx,
+            )
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("schema-preview-raw").is_some());
+        assert!(window.try_find("schema-preview-fields").is_none());
+    })
+    .unwrap();
+}

@@ -1297,18 +1297,7 @@ fn apply_schema_command(state: &mut GuiState, name: Option<&str>) -> Result<Stri
             force_recompute(tab);
         }
         Some(schema_name) => {
-            let custom = crate::config::custom_schemas()
-                .iter()
-                .find(|s| s.name == schema_name)
-                .cloned();
-            let parser: Result<Arc<dyn crate::parser::LogFormatParser>, String> = match custom {
-                Some(cfg) => crate::parser::CustomParser::from_config(&cfg)
-                    .map(|p| Arc::new(p) as Arc<dyn crate::parser::LogFormatParser>)
-                    .map_err(|e| format!("invalid schema '{schema_name}': {e}")),
-                None => crate::parser::find_builtin_parser(schema_name)
-                    .map(Arc::from)
-                    .ok_or_else(|| format!("no schema named '{schema_name}'")),
-            };
+            let parser = crate::parser::resolve_parser(schema_name);
             {
                 let p = parser?;
                 tab.apply_format(Some(p));

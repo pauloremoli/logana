@@ -37,6 +37,11 @@ mod tests {
     #[test]
     fn row_samples_bound_unicode_text_and_parsing() {
         assert_eq!(text("value1"), "value1");
+        let reader = crate::ingestion::FileReader::from_bytes(b"value1\nvalue2".to_vec());
+        let (prefix, truncated) = reader.get_raw_line_prefix(0, 3);
+        assert_eq!(&*prefix, b"val");
+        assert!(truncated);
+        assert!(!reader.get_raw_line_prefix(1, 100).1);
         let long = "東京".repeat(MAX_TEXT_CHARS);
         assert_eq!(text(&long).chars().count(), MAX_TEXT_CHARS + 1);
         let line = br#"{"key1":"value1","message":"value2"}"#;

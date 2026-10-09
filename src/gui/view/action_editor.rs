@@ -1536,7 +1536,9 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             } else {
                 "Built-in schema"
             };
-            body = body.child(kind);
+            body = body
+                .child(kind)
+                .child(super::schema_preview::panel(app, cx));
             if let Some(tab) = app.state.active_tab() {
                 body = body.child(format!(
                     "Current schema: {}",

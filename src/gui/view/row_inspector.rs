@@ -15,7 +15,9 @@ pub fn panel(app: &App, viewport: f32, cx: &mut Context<App>) -> Option<AnyEleme
     if line >= tab.file_reader.line_count() {
         return None;
     }
-    let bytes = tab.file_reader.get_raw_line(line);
+    let (bytes, _) = tab
+        .file_reader
+        .get_raw_line_prefix(line, preview::MAX_LINE_BYTES + 1);
     let visible = tab.filter.visible_indices.position_of(line).is_some();
     let fields = tab
         .display

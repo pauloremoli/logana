@@ -9,6 +9,7 @@ pub mod loading;
 pub mod log_pane;
 pub mod notification;
 pub mod row_inspector;
+mod schema_preview;
 pub mod search_bar;
 pub mod sidebar;
 pub mod status_bar;

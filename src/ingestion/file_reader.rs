@@ -1437,6 +1437,30 @@ impl FileReader {
         self.line_byte_range(idx).is_empty()
     }
 
+    #[cfg(feature = "gui")]
+    pub fn get_raw_line_prefix(&self, index: usize, limit: usize) -> (LineBytes<'_>, bool) {
+        if let Storage::Merged { entries, sources } = &self.storage {
+            let entry = &entries[index];
+            return sources[entry.source_idx].get_raw_line_prefix(entry.line_idx, limit);
+        }
+        if matches!(self.storage, Storage::Paged { .. }) {
+            let range = self.line_byte_range(index);
+            let truncated = range.len() > limit;
+            let end = range.start.saturating_add(limit).min(range.end);
+            return (
+                LineBytes::Owned(self.materialize_range(range.start..end)),
+                truncated,
+            );
+        }
+        let LineBytes::Borrowed(bytes) = self.get_raw_line(index) else {
+            unreachable!()
+        };
+        (
+            LineBytes::Borrowed(&bytes[..bytes.len().min(limit)]),
+            bytes.len() > limit,
+        )
+    }
+
     /// Original text for GUI copying, without its terminating LF or CRLF.
     /// Parsing and filtering continue to use the normalized `get_line` view.
     #[cfg(feature = "gui")]
