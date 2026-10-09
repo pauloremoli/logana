@@ -15,7 +15,11 @@ pub mod tab_bar;
 
 use crate::gui::app::App;
 use crate::gui::state::NavPage;
+use crate::gui::{actions::Action, message::Message};
 use gpui_kit::component::TitleBar;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::empty::{Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div, px};
 
@@ -149,6 +153,25 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
             let tab = &app.state.tabs[active_tab];
             let sidebar_on_left = tab.display.sidebar_side.is_left();
             let show_sidebar = tab.display.show_sidebar;
+            let no_rows = tab.filter.visible_indices.is_empty() && tab.filter.handle.is_none();
+            let log_content = if no_rows {
+                let bookmarks = app.state.nav_page == NavPage::Bookmarks;
+                let no_data = tab.file_reader.line_count() == 0;
+                Empty::new()
+                    .header(EmptyHeader::new()
+                        .title(EmptyTitle::new().child(if bookmarks { "No bookmarks yet" } else if no_data { "No log rows yet" } else { "No rows match" }))
+                        .description(EmptyDescription::new().child(if bookmarks { "Select a row in Logs and bookmark it to keep useful evidence here." } else if no_data { "This source has no rows. Live sources will appear as data arrives." } else { "The current filters hide every row. Turn filtering off to see the source." })))
+                    .content(EmptyContent::new().child(
+                        Button::new("empty-logs-recover").label(if bookmarks { "Return to Logs" } else if no_data { "Open another file" } else { "Turn filtering off" })
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                if bookmarks { app.dispatch(Message::NavPageSelected(NavPage::Logs), window, cx); }
+                                else { app.dispatch(Message::GuiAction(if no_data { Action::Open } else { Action::ToggleFiltering }), window, cx); }
+                            }))))
+                    .into_any_element()
+            } else {
+                log_pane::log_pane(active_tab, tab, &widths, &app.log_scroll, &app.horizontal_scroll, &fields, message_width,
+                    f32::from(window.rem_size()) / 13., app.text_handle.clone(), app.text_document.clone(), cx).into_any_element()
+            };
             let table = div()
                 .flex()
                 .flex_col()
@@ -162,19 +185,7 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                         .min_h(px(0.))
                         .px(px(12.))
                         .pb(px(8.))
-                        .child(log_pane::log_pane(
-                            active_tab,
-                            tab,
-                            &widths,
-                            &app.log_scroll,
-                            &app.horizontal_scroll,
-                            &fields,
-                            message_width,
-                            f32::from(window.rem_size()) / 13.,
-                            app.text_handle.clone(),
-                            app.text_document.clone(),
-                            cx,
-                        )),
+                        .child(log_content),
                 )
                 .child(status_bar::status_bar(Some(tab), app.state.nav_page, cx))
                 .into_any_element();
@@ -210,12 +221,28 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
             };
             row.into_any_element()
         }
-        None => div()
-            .flex_1()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child("Open a file to get started")
+        None => Empty::new()
+            .header(EmptyHeader::new()
+                .title(EmptyTitle::new().child("Start investigating logs"))
+                .description(EmptyDescription::new().child("Open a log file, directory, or archive. Or connect a live source to watch new events.")))
+            .content(EmptyContent::new().child(div().flex().flex_wrap().gap_2()
+                .child(Button::new("start-open-file").primary().label("Open files…")
+                    .on_click(cx.listener(|app, _, window, cx| app.dispatch(Message::OpenFileDialog, window, cx))))
+                .child(Button::new("start-open-directory").label("Open directory…")
+                    .on_click(cx.listener(|app, _, window, cx| app.dispatch(Message::GuiAction(Action::OpenDirectory), window, cx))))
+                .child({
+                    let entity = cx.entity();
+                    Button::new("start-connect-source").label("Connect source…")
+                        .dropdown_menu(move |mut menu, _, _| {
+                            for (label, action) in [("Docker container", Action::Docker), ("DLT device", Action::Dlt), ("OpenTelemetry receiver", Action::Otel), ("Process output", Action::Run)] {
+                                let entity = entity.clone();
+                                menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                                    entity.update(cx, |app, cx| app.dispatch(Message::GuiAction(action), window, cx));
+                                }));
+                            }
+                            menu
+                        })
+                })))
             .into_any_element(),
     }
 }
