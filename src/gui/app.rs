@@ -44,6 +44,7 @@ pub struct App {
     pub editor_times: Vec<Entity<TimeFieldState>>,
     pub editor_group_select: Option<Entity<SelectState<SearchableVec<String>>>>,
     pub editor_members: Option<Entity<ComboboxState<SearchableVec<String>>>>,
+    pub editor_choice_select: Option<Entity<SelectState<SearchableVec<String>>>>,
     pub editor_field_select: Option<Entity<SelectState<SearchableVec<String>>>>,
     editor_epoch: u64,
     editor_synced: Vec<String>,
@@ -220,6 +221,7 @@ impl App {
             editor_times: Vec::new(),
             editor_group_select: None,
             editor_members: None,
+            editor_choice_select: None,
             editor_field_select: None,
             editor_epoch: 0,
             editor_synced: Vec::new(),
@@ -1147,6 +1149,7 @@ impl Render for App {
                 self.editor_inputs.clear();
                 self.editor_textareas.clear();
                 self.editor_field_select = None;
+                self.editor_choice_select = None;
                 self.editor_group_select = None;
                 self.editor_members = None;
                 self.editor_dates.clear();
@@ -1193,6 +1196,39 @@ impl Render for App {
                     )
                     .detach();
                     self.editor_members = Some(combo);
+                }
+                if editor_action == crate::gui::actions::Action::Schema {
+                    let mut names = vec!["none".to_string()];
+                    names.extend(crate::parser::builtin_format_names());
+                    names.extend(
+                        crate::config::custom_schemas()
+                            .iter()
+                            .map(|s| s.name.clone()),
+                    );
+                    names.sort();
+                    names.dedup();
+                    let selected = values[0].clone();
+                    let select = cx.new(|cx| {
+                        let mut state =
+                            SelectState::new(SearchableVec::new(names), None, window, cx)
+                                .searchable(true);
+                        state.set_selected_value(&selected, window, cx);
+                        state
+                    });
+                    cx.subscribe_in(
+                        &select,
+                        window,
+                        move |app, _, event: &SelectEvent<SearchableVec<String>>, window, cx| {
+                            if app.state.editor.as_ref().is_some_and(|e| e.epoch == epoch) {
+                                let SelectEvent::Confirm(Some(value)) = event else {
+                                    return;
+                                };
+                                app.dispatch(Message::EditorText(0, value.clone()), window, cx);
+                            }
+                        },
+                    )
+                    .detach();
+                    self.editor_choice_select = Some(select);
                 }
                 if editor_action == crate::gui::actions::Action::Filter {
                     let editor = self.state.editor.as_ref().unwrap();
@@ -1500,6 +1536,7 @@ impl Render for App {
             }
         } else {
             self.editor_field_select = None;
+            self.editor_choice_select = None;
             self.editor_group_select = None;
             self.editor_members = None;
             self.editor_dates.clear();

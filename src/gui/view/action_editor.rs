@@ -1187,25 +1187,29 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             }
         }
         Action::Schema => {
-            body = body.child(text(app, 0, "Selected schema", cx));
-            let mut names = vec![("none".to_string(), "Unstructured")];
-            for name in crate::parser::builtin_format_names() {
-                names.push((name, "Built-in"));
-            }
-            for schema in crate::config::custom_schemas() {
-                names.push((schema.name.clone(), "Custom"));
-            }
-            for (i, (name, kind)) in names.into_iter().enumerate() {
-                body = body.child(
-                    Button::new(("schema-choice", i))
-                        .ghost()
-                        .label(format!("{name} · {kind}"))
-                        .selected(e.values[0] == name)
-                        .on_click(cx.listener(move |app, _, window, cx| {
-                            app.dispatch(Message::EditorText(0, name.clone()), window, cx)
-                        })),
-                );
-            }
+            body = body
+                .child("Choose how log fields are parsed. Use ‘none’ for unstructured text.")
+                .child(div().flex().flex_col().gap_1().child("Schema").children(
+                    app.editor_choice_select.as_ref().map(|state| {
+                        Select::new(state)
+                            .id("schema-select")
+                            .w_full()
+                            .placeholder("Choose a schema")
+                            .search_placeholder("Search built-in and custom schemas…")
+                            .accessibility_label("Schema")
+                    }),
+                ));
+            let kind = if e.values[0] == "none" {
+                "Unstructured text"
+            } else if crate::config::custom_schemas()
+                .iter()
+                .any(|s| s.name == e.values[0])
+            {
+                "Custom schema"
+            } else {
+                "Built-in schema"
+            };
+            body = body.child(kind);
             if let Some(tab) = app.state.active_tab() {
                 body = body.child(format!(
                     "Current schema: {}",
