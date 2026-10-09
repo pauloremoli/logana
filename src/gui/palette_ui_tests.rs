@@ -1769,3 +1769,18 @@ fn font_size_is_saved_and_restored_in_a_new_window(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn narrow_workspace_retains_log_canvas_with_sidebar_open(cx: &mut TestAppContext) {
+    for width in [600., 800., 1200.] {
+        let (handle, app) = palette_window(cx, (width, 700.), "dracula");
+        cx.update_window(handle.into(), |_, window, cx| {
+            add_log_tab(&app, cx, false);
+            app.update(cx, |app, _| app.state.tabs[0].display.show_sidebar = true);
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert!(window.find("log-workspace").bounds().size.width >= px(280.));
+        })
+        .unwrap();
+    }
+}

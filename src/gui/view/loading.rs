@@ -111,7 +111,7 @@ pub fn operations(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
     )
 }
 
-pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
+pub fn picker(app: &App, viewport_width: f32, cx: &mut Context<App>) -> Option<AnyElement> {
     let id = app.loading.selected_picker?;
     let op = app.loading.operations.iter().find(|op| op.id == id)?;
     let picker = op.picker.as_ref()?;
@@ -223,7 +223,19 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
             .test_support()
             .track_focus(&app.loading.focus)
             .w(px(420.))
-            .max_w(gpui_kit::gpui::relative(0.5))
+            .max_w(gpui_kit::gpui::relative(if viewport_width < 1100. {
+                0.9
+            } else {
+                0.5
+            }))
+            .when(viewport_width < 1100., |d| {
+                d.absolute()
+                    .right_0()
+                    .top_0()
+                    .bottom_0()
+                    .occlude()
+                    .shadow_lg()
+            })
             .min_w(px(0.))
             .h_full()
             .border_l_1()

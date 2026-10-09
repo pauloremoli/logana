@@ -15,7 +15,7 @@ use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Entity, Window, div, px};
 use std::collections::HashMap;
 
-pub(super) const SIDEBAR_WIDTH: f32 = 360.0;
+pub(crate) const SIDEBAR_WIDTH: f32 = 360.0;
 const SIDEBAR_HEADER_HEIGHT: f32 = 40.0;
 
 /// Wraps `content` in its own independently-scrollable region — the header
@@ -55,7 +55,7 @@ pub fn sidebar(
         .flex_col()
         .flex_shrink_0()
         .min_h(px(0.))
-        .w(px(SIDEBAR_WIDTH))
+        .w_full()
         .bg(cx.theme().sidebar)
         .when(tab.display.sidebar_side.is_left(), |d| d.border_r_1())
         .when(!tab.display.sidebar_side.is_left(), |d| d.border_l_1())

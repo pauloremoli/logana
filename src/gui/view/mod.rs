@@ -16,10 +16,12 @@ pub mod tab_bar;
 use crate::gui::app::App;
 use crate::gui::state::NavPage;
 use crate::gui::{actions::Action, message::Message};
+use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::TitleBar;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::empty::{Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::{h_resizable, resizable_panel};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div, px};
 
@@ -65,7 +67,7 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
                             .flex_1()
                             .min_h(px(0.))
                             .child(body(app, window, cx))
-                            .children(loading::picker(app, cx)),
+                            .children(loading::picker(app, f32::from(viewport.width), cx)),
                     ),
             ),
         );
@@ -123,13 +125,16 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
             {
                 widths.restore(saved);
             }
-            let available_width = f32::from(window.viewport_size().width)
-                - if tab.display.show_sidebar {
-                    sidebar::SIDEBAR_WIDTH
+            let viewport_width = f32::from(window.viewport_size().width);
+            let compact = viewport_width < 720.;
+            let sidebar_width = app.sidebar_width.min((viewport_width * 0.45).max(240.));
+            let available_width = viewport_width
+                - if tab.display.show_sidebar && !compact {
+                    sidebar_width
                 } else {
                     0.
                 }
-                - if app
+                - if viewport_width >= 1100. && app
                     .loading
                     .selected_picker
                     .and_then(|id| app.loading.operations.iter().find(|op| op.id == id))
@@ -173,6 +178,8 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                     f32::from(window.rem_size()) / 13., app.text_handle.clone(), app.text_document.clone(), cx).into_any_element()
             };
             let table = div()
+                .id("log-workspace")
+                .test_support()
                 .flex()
                 .flex_col()
                 .flex_1()
@@ -211,14 +218,31 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                 )
                 .into_any_element()
             };
-            let mut row = div().flex().flex_1().min_w(px(0.)).min_h(px(0.));
-            row = if !show_sidebar {
-                row.child(table)
-            } else if sidebar_on_left {
-                row.child(sidebar).child(table)
-            } else {
-                row.child(table).child(sidebar)
-            };
+            let mut row = div().relative().flex().flex_1().min_w(px(0.)).min_h(px(0.));
+            if !show_sidebar {
+                return row.child(table).into_any_element();
+            }
+            if compact {
+                return row.child(table).child(div().absolute().top_0().bottom_0()
+                    .when(sidebar_on_left, |d| d.left_0())
+                    .when(!sidebar_on_left, |d| d.right_0())
+                    .w(px(sidebar_width)).max_w(gpui_kit::gpui::relative(0.9))
+                    .occlude().shadow_lg()
+                    .on_mouse_down(gpui_kit::gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(sidebar)).into_any_element();
+            }
+            let entity = cx.entity();
+            let sidebar_index = usize::from(!sidebar_on_left);
+            let panels = h_resizable(if sidebar_on_left { "workspace-left-panels" } else { "workspace-right-panels" })
+                .on_resize(move |state, _, cx| {
+                    if let Some(size) = state.read(cx).sizes().get(sidebar_index) {
+                        let width = f32::from(*size);
+                        entity.update(cx, |app, cx| { app.sidebar_width = width; cx.notify(); });
+                    }
+                });
+            let sidebar = resizable_panel().size(px(sidebar_width)).size_range(px(240.)..px(560.)).child(sidebar);
+            let table = resizable_panel().size(px((available_width + 24.).max(280.))).size_range(px(280.)..px(10000.)).child(table);
+            row = row.child(if sidebar_on_left { panels.child(sidebar).child(table) } else { panels.child(table).child(sidebar) });
             row.into_any_element()
         }
         None => Empty::new()
