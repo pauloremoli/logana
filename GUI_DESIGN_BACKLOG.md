@@ -51,7 +51,7 @@ needed to assess the finished layouts visually.
 - [x] Page high-cardinality field values while searching across every page.
 - [ ] Search archive/directory entries while preserving lazy expansion and selection.
 - [ ] Add a structured/raw row inspector with the existing copy and annotation actions.
-- [ ] Offer column drag reordering alongside accessible keyboard controls.
+- [x] Offer column drag reordering alongside accessible keyboard controls.
 - [ ] Show a bounded parsed sample when selecting a schema.
 - [ ] Show a bounded export preview using the existing export renderer.
 - [ ] Review final layouts in the running desktop application at narrow and wide sizes.

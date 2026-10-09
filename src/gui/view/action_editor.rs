@@ -22,9 +22,47 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::time_field::TimeField;
 use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::gpui::{
-    AnyElement, ClipboardItem, Context, Entity, MouseButton, Pixels, Size, anchored, deferred, div,
-    point, prelude::*, px,
+    AnyElement, ClipboardItem, Context, Empty, Entity, MouseButton, Pixels, Size, Window, anchored,
+    deferred, div, point, prelude::*, px,
 };
+
+#[derive(Clone)]
+struct ColumnDrag {
+    epoch: u64,
+    name: String,
+}
+
+fn drop_column(
+    app: &mut App,
+    drag: &ColumnDrag,
+    target: &str,
+    window: &mut Window,
+    cx: &mut Context<App>,
+) {
+    let Some(editor) = app
+        .state
+        .editor
+        .as_ref()
+        .filter(|editor| editor.action == Action::Columns && editor.epoch == drag.epoch)
+    else {
+        return;
+    };
+    let Some(mut from) = editor
+        .fields
+        .iter()
+        .position(|(name, _)| name == &drag.name)
+    else {
+        return;
+    };
+    let Some(to) = editor.fields.iter().position(|(name, _)| name == target) else {
+        return;
+    };
+    while from != to {
+        let delta = if from < to { 1 } else { -1 };
+        app.dispatch(Message::EditorMove(from, delta), window, cx);
+        from = (from as isize + delta) as usize;
+    }
+}
 
 /// Chunks `keyboard::editable_bindings`'s "group.field" flat list into
 /// contiguous per-group runs of indices, for display as [`SettingGroup`]s —
@@ -1262,20 +1300,48 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 {
                     continue;
                 }
-                let mut row = div().flex().gap_2().items_center().child(
-                    Checkbox::new(("editor-field", i))
-                        .checked(*on)
-                        .label(if columns {
-                            name.clone()
-                        } else {
-                            humanize(name)
-                        })
-                        .on_click(cx.listener(move |app, _, window, cx| {
-                            app.dispatch(Message::EditorField(i), window, cx)
-                        })),
-                );
+                let mut row = div()
+                    .id(("column-row", i))
+                    .test_support()
+                    .flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        Checkbox::new(("editor-field", i))
+                            .checked(*on)
+                            .label(if columns {
+                                name.clone()
+                            } else {
+                                humanize(name)
+                            })
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.dispatch(Message::EditorField(i), window, cx)
+                            })),
+                    );
                 if e.action == Action::Columns {
+                    let target = name.clone();
                     row = row
+                        .on_drop(cx.listener(move |app, drag: &ColumnDrag, window, cx| {
+                            drop_column(app, drag, &target, window, cx);
+                        }))
+                        .drag_over::<ColumnDrag>(|style, _, _, cx| style.bg(cx.theme().secondary))
+                        .child(
+                            div()
+                                .id(("column-drag", i))
+                                .test_support()
+                                .cursor_pointer()
+                                .child(
+                                    gpui_kit::component::Icon::new(IconName::GripVertical)
+                                        .size(px(14.)),
+                                )
+                                .on_drag(
+                                    ColumnDrag {
+                                        epoch: e.epoch,
+                                        name: name.clone(),
+                                    },
+                                    |_, _, _, cx| cx.new(|_| Empty),
+                                ),
+                        )
                         .child(
                             Button::new(("column-up", i))
                                 .ghost()

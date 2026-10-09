@@ -2114,3 +2114,45 @@ fn field_facets_page_values_and_search_every_page(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn columns_drag_reorders_draft_and_cancel_restores_order(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                crate::gui::message::Message::GuiAction(crate::gui::actions::Action::Columns),
+                window,
+                cx,
+            );
+        });
+        window.render_frame(cx);
+        let initial = app.read(cx).state.editor.as_ref().unwrap().fields.clone();
+        assert!(initial.len() >= 3);
+        window.drag_to(("column-drag", 0usize), ("column-row", 2usize), cx);
+        let mut reordered = initial.clone();
+        let first = reordered.remove(0);
+        reordered.insert(2, first);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().fields,
+            reordered
+        );
+        window.render_frame(cx);
+        window.drag_to(("column-drag", 2usize), ("column-row", 0usize), cx);
+        assert_eq!(app.read(cx).state.editor.as_ref().unwrap().fields, initial);
+        window.render_frame(cx);
+        window.drag_to(("column-drag", 0usize), ("column-row", 2usize), cx);
+
+        window.click("editor-cancel", cx);
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                crate::gui::message::Message::GuiAction(crate::gui::actions::Action::Columns),
+                window,
+                cx,
+            );
+        });
+        assert_eq!(app.read(cx).state.editor.as_ref().unwrap().fields, initial);
+    })
+    .unwrap();
+}
