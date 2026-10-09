@@ -7,9 +7,8 @@ use gpui_kit::{
     assets::IconName,
     base::{Disableable, Selectable, TestSupportExt},
     component::{
-        ActiveTheme, Sizable,
+        ActiveTheme, Icon, Sizable,
         button::{Button, ButtonVariants},
-        checkbox::Checkbox,
         collapsible::Collapsible,
         progress::Progress,
     },
@@ -227,25 +226,51 @@ pub fn picker(app: &App, viewport_width: f32, cx: &mut Context<App>) -> Option<A
                                     IconName::ChevronDown
                                 })
                                 .disabled(!container)
-                                .accessibility_label("Expand or collapse archive")
+                                .accessibility_label(format!("Expand or collapse {}", item.name))
                                 .tooltip("Expand or collapse archive")
                                 .on_click(cx.listener(move |app, _, _, cx| {
                                     app.picker_expand(id, node, cx)
                                 })),
                         )
                         .child(
-                            Checkbox::new(("archive-check", node))
+                            gpui_kit::base::Checkbox::new(("archive-check", node))
                                 .checked(check == CheckState::Checked)
+                                .indeterminate(check == CheckState::Partial)
                                 .disabled(lazy || error.is_some())
-                                .tooltip(if check == CheckState::Partial {
-                                    "Some files selected"
-                                } else {
-                                    "Select files"
-                                })
-                                .label(item.name.clone())
-                                .on_click(cx.listener(move |app, _, _, cx| {
-                                    app.picker_toggle(id, node, cx)
-                                })),
+                                .accessibility_label(item.name.clone())
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .styles(|styles| styles.disabled(|style| style.opacity(0.5)))
+                                .child(
+                                    div()
+                                        .size(px(16.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .rounded(px(3.))
+                                        .when(check != CheckState::Unchecked, |box_| {
+                                            box_.bg(cx.theme().primary)
+                                                .text_color(cx.theme().primary_foreground)
+                                                .child(
+                                                    Icon::new(if check == CheckState::Partial {
+                                                        IconName::Minus
+                                                    } else {
+                                                        IconName::Check
+                                                    })
+                                                    .size(px(12.)),
+                                                )
+                                        }),
+                                )
+                                .child(item.name.clone())
+                                .on_change({
+                                    let entity = cx.entity();
+                                    move |_, _, _, cx| {
+                                        entity.update(cx, |app, cx| app.picker_toggle(id, node, cx))
+                                    }
+                                }),
                         )
                         .when_some(error, |el, error| {
                             el.child(div().truncate().text_color(cx.theme().danger).child(error))
@@ -287,7 +312,7 @@ pub fn picker(app: &App, viewport_width: f32, cx: &mut Context<App>) -> Option<A
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(div().flex_1().child("Choose archive files"))
+                    .child(div().flex_1().child("Choose files to open"))
                     .child(
                         Button::new("archive-picker-hide")
                             .ghost()
@@ -330,16 +355,18 @@ pub fn picker(app: &App, viewport_width: f32, cx: &mut Context<App>) -> Option<A
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap_2()
                     .child(
                         Button::new("archive-extract-open")
-                            .label("Extract and open")
+                            .primary()
+                            .label("Open selected")
                             .disabled(selected == 0)
                             .on_click(cx.listener(move |app, _, _, cx| app.picker_open(id, cx))),
                     )
                     .child(
                         Button::new("archive-extract-merge")
-                            .label("Extract and merge")
+                            .label("Merge selected")
                             .disabled(selected < 2)
                             .on_click(cx.listener(move |app, _, _, cx| app.merge_archive(id, cx))),
                     )
