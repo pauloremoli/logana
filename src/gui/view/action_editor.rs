@@ -1186,16 +1186,17 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         );
     }
     if let Some(error) = &e.error {
-        body = body.child(if e.action == Action::Filter {
-            Alert::error("filter-validation", error.clone())
-                .small()
-                .into_any_element()
-        } else {
-            div()
-                .text_color(cx.theme().danger)
-                .child(error.clone())
-                .into_any_element()
-        });
+        body = body.child(
+            Alert::error(
+                if e.action == Action::Filter {
+                    "filter-validation"
+                } else {
+                    "editor-validation"
+                },
+                error.clone(),
+            )
+            .small(),
+        );
     }
     let footer =
         div()
@@ -1230,7 +1231,31 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                             "Add filter"
                         }
                     } else {
-                        "Apply"
+                        match e.action {
+                            Action::Help | Action::SwitchFile => "Done",
+                            Action::Settings => "Save preferences",
+                            Action::Keybindings => "Save shortcuts",
+                            Action::Appearance => "Save theme",
+                            Action::Schema => "Use schema",
+                            Action::Columns => "Save columns",
+                            Action::ValueColors | Action::LevelColors => "Save colors",
+                            Action::Group => "Save group",
+                            Action::DefaultFilters => "Save mapping",
+                            Action::EnableMcp => "Start server",
+                            Action::Docker => "Connect container logs",
+                            Action::Dlt => "Connect device",
+                            Action::Otel => "Start receiver",
+                            Action::Run => "Start process",
+                            Action::Export => "Export",
+                            Action::Annotation => {
+                                if e.edit_id.is_some() {
+                                    "Save note"
+                                } else {
+                                    "Add note"
+                                }
+                            }
+                            _ => "Apply",
+                        }
                     })
                     .disabled(
                         app.state.palette.pending()
