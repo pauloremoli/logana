@@ -74,7 +74,7 @@ pub fn group_pane(
                 .py_3()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
-                .child("No groups"),
+                .child("Group related filters to enable and style them together. Add a group to get started."),
         );
     }
     for (index, name) in names.iter().enumerate() {
@@ -159,6 +159,7 @@ fn group_row(
         .child(
             Checkbox::new(format!("group-toggle-{name}"))
                 .checked(enabled)
+                .accessibility_label(format!("Enable group {name}"))
                 .tooltip("Enable or disable group")
                 .on_click(
                     cx.listener(move |app: &mut App, _, window: &mut Window, cx| {

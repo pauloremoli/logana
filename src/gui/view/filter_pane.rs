@@ -222,6 +222,7 @@ fn filter_row(
         .child(
             Checkbox::new(("filter-toggle", id))
                 .checked(def.enabled)
+                .accessibility_label(format!("Enable filter: {condition}"))
                 .tooltip("Enable or disable filter")
                 .on_click(cx.listener(move |app, _, window, cx| {
                     app.dispatch(Message::FilterToggled(tab_idx, id), window, cx)

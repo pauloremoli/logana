@@ -8,7 +8,7 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::gpui::prelude::*;
-use gpui_kit::gpui::{Context, Entity, Rgba, Window, div, px};
+use gpui_kit::gpui::{Context, Entity, Window, div, px};
 use std::collections::HashMap;
 
 /// "Available Filters": one collapsible category per field `counts`
@@ -41,7 +41,9 @@ pub fn field_facets(
             div()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child("Choose values to add include filters."),
+                .child(
+                    "Checked values add Include rules. Multiple Include rules match any of them.",
+                ),
         );
     let query = search
         .map(|input| input.read(cx).value().to_lowercase())
@@ -50,6 +52,7 @@ pub fn field_facets(
         col = col.child(
             super::input(input)
                 .id("facet-search-input")
+                .aria_label("Search fields and values")
                 .bg(cx.theme().secondary)
                 .text_color(cx.theme().foreground)
                 .prefix(Icon::new(IconName::Search)),
@@ -199,12 +202,13 @@ fn facet_value_row(
                         "warn" | "warning" => cx.theme().warning,
                         "info" | "notice" => cx.theme().success,
                         "debug" | "trace" => cx.theme().primary,
-                        _ => facet_dot_color(value).into(),
+                        _ => cx.theme().muted_foreground,
                     },
                 ))
                 .child(
                     Checkbox::new(format!("facet-value:{field}:{value}"))
                         .checked(checked)
+                        .accessibility_label(format!("Filter {field} by {value}"))
                         .on_click(
                             cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
                                 app.dispatch(
@@ -233,35 +237,4 @@ fn facet_value_row(
                 ),
         )
         .child(div().flex_shrink_0().text_xs().child(count.to_string()))
-}
-
-/// A deterministic color for a facet value's dot — these values have no
-/// `FilterDef`/`GroupDef` color to borrow from (unlike every other color
-/// helper in `gui::color`), so this derives a stable, readable RGB triplet
-/// from a hash of the value's own text instead.
-fn facet_dot_color(value: &str) -> Rgba {
-    let hash = value.bytes().fold(5381u32, |acc, b| {
-        acc.wrapping_mul(33).wrapping_add(b as u32)
-    });
-    // Keep each channel in a mid-to-bright range (80-255) so the dot is
-    // never near-black or washed-out white regardless of the hash.
-    let r = 80 + (hash & 0xFF) % 176;
-    let g = 80 + ((hash >> 8) & 0xFF) % 176;
-    let b = 80 + ((hash >> 16) & 0xFF) % 176;
-    gpui_kit::gpui::rgb((r << 16) | (g << 8) | b)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn facet_dot_color_is_deterministic() {
-        assert_eq!(facet_dot_color("error"), facet_dot_color("error"));
-    }
-
-    #[test]
-    fn facet_dot_color_differs_for_different_values() {
-        assert_ne!(facet_dot_color("error"), facet_dot_color("info"));
-    }
 }

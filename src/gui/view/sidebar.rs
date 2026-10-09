@@ -16,7 +16,6 @@ use gpui_kit::gpui::{Context, Entity, Window, div, px};
 use std::collections::HashMap;
 
 pub(crate) const SIDEBAR_WIDTH: f32 = 360.0;
-const SIDEBAR_HEADER_HEIGHT: f32 = 40.0;
 
 /// Wraps `content` in its own independently-scrollable region — the header
 /// stays put while only this list scrolls. `id` must be unique among
@@ -60,7 +59,7 @@ pub fn sidebar(
         .when(tab.display.sidebar_side.is_left(), |d| d.border_r_1())
         .when(!tab.display.sidebar_side.is_left(), |d| d.border_l_1())
         .border_color(cx.theme().border)
-        .child(sidebar_header(sidebar_tab, tab, cx));
+        .child(sidebar_header(sidebar_tab, facet_browser_open, tab, cx));
     let body = div().flex().flex_col().flex_1().min_h(px(0.));
     let body = match sidebar_tab {
         SidebarTab::Filters => {
@@ -100,11 +99,7 @@ pub fn sidebar(
                         })),
                 )
                 .child(facets);
-            // Both halves get `flex_1`, splitting the available height evenly
-            // between them, each scrolling independently so the other stays visible.
-            body.child(filters_pane)
-                .child(div().border_t_1().border_color(cx.theme().border))
-                .child(scroll_region("sidebar-facets-scroll", facets_pane))
+            body.child(scroll_region("sidebar-facets-scroll", facets_pane))
         }
         SidebarTab::Groups => body.child(group_pane::group_pane(
             tab_idx,
@@ -121,65 +116,97 @@ pub fn sidebar(
     outer.child(body)
 }
 
-fn sidebar_header(active: SidebarTab, tab: &TabState, cx: &mut Context<App>) -> impl IntoElement {
+fn sidebar_header(
+    active: SidebarTab,
+    fields_open: bool,
+    tab: &TabState,
+    cx: &mut Context<App>,
+) -> impl IntoElement {
     div()
         .flex()
-        .items_center()
-        .justify_between()
-        .h(px(SIDEBAR_HEADER_HEIGHT))
-        .flex_shrink_0()
-        .px_4()
+        .flex_col()
+        .gap_1()
+        .px_3()
+        .py_2()
         .border_b_1()
         .border_color(cx.theme().border)
-        .overflow_hidden()
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap_2()
-                .child(sidebar_tab_button(
-                    SidebarTabButtonArgs {
-                        icon: IconName::Funnel,
-                        label: "Filters",
-                        tab: SidebarTab::Filters,
-                        active: active == SidebarTab::Filters,
-                    },
-                    cx,
-                ))
-                .child(sidebar_tab_button(
-                    SidebarTabButtonArgs {
-                        icon: IconName::Group,
-                        label: "Groups",
-                        tab: SidebarTab::Groups,
-                        active: active == SidebarTab::Groups,
-                    },
-                    cx,
-                ))
+                .justify_between()
+                .gap_1()
                 .child(
-                    Button::new("sidebar-filtering-toggle")
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .child(sidebar_tab_button(
+                            SidebarTabButtonArgs {
+                                icon: IconName::Funnel,
+                                label: "Rules",
+                                tab: SidebarTab::Filters,
+                                active: active == SidebarTab::Filters && !fields_open,
+                            },
+                            cx,
+                        ))
+                        .child(
+                            Button::new("sidebar-fields")
+                                .ghost()
+                                .small()
+                                .label("Fields")
+                                .selected(active == SidebarTab::Filters && fields_open)
+                                .on_click(cx.listener(|app, _, window, cx| {
+                                    app.dispatch(
+                                        Message::SidebarTabSelected(SidebarTab::Filters),
+                                        window,
+                                        cx,
+                                    );
+                                    if !app.state.facet_browser_open {
+                                        app.dispatch(Message::FacetBrowserToggled, window, cx);
+                                    }
+                                })),
+                        )
+                        .child(sidebar_tab_button(
+                            SidebarTabButtonArgs {
+                                icon: IconName::Group,
+                                label: "Groups",
+                                tab: SidebarTab::Groups,
+                                active: active == SidebarTab::Groups,
+                            },
+                            cx,
+                        )),
+                )
+                .child(
+                    Button::new("sidebar-close")
                         .ghost()
-                        .small()
-                        .icon(IconName::ListFilter)
-                        .selected(tab.filter.enabled)
-                        .accessibility_label("Toggle filtering")
-                        .tooltip("Toggle filtering (F)")
-                        .on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
-                            app.dispatch(
-                                Message::GuiAction(crate::gui::actions::Action::ToggleFiltering),
-                                window,
-                                cx,
-                            );
+                        .icon(Icon::new(IconName::X))
+                        .accessibility_label("Hide sidebar")
+                        .tooltip("Hide sidebar")
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            app.dispatch(Message::SidebarToggled, window, cx)
                         })),
                 ),
         )
         .child(
-            Button::new("sidebar-close")
+            Button::new("sidebar-filtering-toggle")
                 .ghost()
-                .icon(Icon::new(IconName::X))
-                .accessibility_label("Hide sidebar")
-                .tooltip("Hide sidebar")
-                .on_click(cx.listener(|app: &mut App, _, window: &mut Window, cx| {
-                    app.dispatch(Message::SidebarToggled, window, cx);
+                .small()
+                .icon(IconName::ListFilter)
+                .label(if tab.filter.enabled {
+                    "Filtering on"
+                } else {
+                    "Filtering off"
+                })
+                .selected(tab.filter.enabled)
+                .accessibility_label("Toggle filtering")
+                .tooltip("Toggle filtering (F)")
+                .on_click(cx.listener(|app, _, window, cx| {
+                    app.dispatch(
+                        Message::GuiAction(crate::gui::actions::Action::ToggleFiltering),
+                        window,
+                        cx,
+                    )
                 })),
         )
 }
@@ -208,6 +235,9 @@ fn sidebar_tab_button(args: SidebarTabButtonArgs, cx: &mut Context<App>) -> impl
     .label(label)
     .on_click(
         cx.listener(move |app: &mut App, _, window: &mut Window, cx| {
+            if app.state.facet_browser_open && tab == SidebarTab::Filters {
+                app.dispatch(Message::FacetBrowserToggled, window, cx);
+            }
             app.dispatch(Message::SidebarTabSelected(tab), window, cx);
         }),
     );
