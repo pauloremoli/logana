@@ -445,6 +445,46 @@ fn slash_opens_search_popup_and_escape_clears_query(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+#[gpui_kit::test]
+fn escape_clears_completed_search_after_enter(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| app.root_focus.focus(window, cx));
+        window.render_frame(cx);
+        window.press("/", cx);
+        window.render_frame(cx);
+        window.input("plain", cx);
+        window.press("enter", cx);
+        app.update(cx, |app, _| {
+            let tab = &mut app.state.tabs[0];
+            tab.cancel_search();
+            tab.search
+                .query
+                .search("plain", [0].into_iter(), |_| Some("plain".into()))
+                .unwrap();
+        });
+        assert!(!app.read(cx).state.search_open);
+        assert_eq!(
+            app.read(cx).state.tabs[0]
+                .search
+                .query
+                .get_total_match_count(),
+            1
+        );
+        window.press("escape", cx);
+        window.render_frame(cx);
+        let search = &app.read(cx).state.tabs[0].search;
+        assert!(search.handle.is_none());
+        assert!(search.query.get_results().is_empty());
+        assert!(search.query.get_pattern().is_none());
+        window.press("/", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("log-search-input").value(), Some(""));
+    })
+    .unwrap();
+}
+
 fn add_log_tab(app: &Entity<App>, cx: &mut gpui::App, structured: bool) {
     let manager = runtime::handle().block_on(crate::db::LogManager::new(
         app.read(cx).state.db.clone(),

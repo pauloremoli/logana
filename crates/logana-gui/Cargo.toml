@@ -23,3 +23,24 @@ eula = false
 logana = { path = "../..", default-features = false, features = ["gui"] }
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
 gpui-kit = "0.7"
+
+[build-dependencies]
+embed-resource = "3.0"
+
+[dependencies.image]
+version = "0.25"
+default-features = false
+features = ["png"]
+
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+license-file = ["../../LICENSE", "0"]
+depends = "$auto, libvulkan1, libwayland-client0, libwayland-cursor0, libwayland-egl1, libxkbcommon0, libxkbcommon-x11-0"
+conflicts = "logana-full"
+assets = [
+    ["target/release/logana-gui", "usr/bin/", "755"],
+    ["../../README.md", "usr/share/doc/logana-gui/README.md", "644"],
+    ["../../assets/logana.desktop", "usr/share/applications/logana.desktop", "644"],
+    ["../../assets/logana.png", "usr/share/icons/hicolor/256x256/apps/logana.png", "644"],
+]

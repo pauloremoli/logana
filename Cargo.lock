@@ -4358,7 +4358,9 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "embed-resource",
  "gpui-kit",
+ "image",
  "jsonschema",
  "logana",
  "ratatui",
@@ -4373,7 +4375,9 @@ name = "logana-gui"
 version = "0.7.7"
 dependencies = [
  "clap",
+ "embed-resource",
  "gpui-kit",
+ "image",
  "logana",
 ]
 

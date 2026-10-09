@@ -45,3 +45,25 @@ path = "../logana-gui/src/main.rs"
 [[bin]]
 name = "schema"
 path = "../../src/bin/schema.rs"
+
+[build-dependencies]
+embed-resource = "3.0"
+
+[dependencies.image]
+version = "0.25"
+default-features = false
+features = ["png"]
+
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+license-file = ["../../LICENSE", "0"]
+depends = "$auto, libvulkan1, libwayland-client0, libwayland-cursor0, libwayland-egl1, libxkbcommon0, libxkbcommon-x11-0"
+conflicts = "logana, logana-gui"
+assets = [
+    ["target/release/logana", "usr/bin/", "755"],
+    ["target/release/logana-gui", "usr/bin/", "755"],
+    ["../../README.md", "usr/share/doc/logana-full/README.md", "644"],
+    ["../../assets/logana.desktop", "usr/share/applications/logana.desktop", "644"],
+    ["../../assets/logana.png", "usr/share/icons/hicolor/256x256/apps/logana.png", "644"],
+]

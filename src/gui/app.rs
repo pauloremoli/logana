@@ -1772,6 +1772,13 @@ impl Render for App {
                     } else if app.state.time_range_open {
                         app.state.time_range_open = false;
                         cx.notify();
+                    } else if !editing && context == "LoganaLogs" {
+                        cx.stop_propagation();
+                        if let Some(input) = &app.log_search {
+                            input
+                                .update(cx, |input, cx| input.set_value(String::new(), window, cx));
+                        }
+                        app.dispatch(Message::SearchEdited(String::new()), window, cx);
                     }
                     return;
                 }

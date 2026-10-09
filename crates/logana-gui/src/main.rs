@@ -59,6 +59,7 @@ fn main() {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
+            cx.set_app_identity("logana", "Logana");
             gpui_kit::init(cx);
             gui_theme::install(&theme, cx);
             cx.bind_keys([KeyBinding::new(
@@ -77,6 +78,12 @@ fn main() {
             // Opens maximized; the given bounds are only the size the
             // window restores to when the user un-maximizes it.
             let window_options = gpui_kit::gpui::WindowOptions {
+                app_id: Some("logana".into()),
+                icon: Some(Arc::new(
+                    image::load_from_memory(include_bytes!("../../../assets/logana.png"))
+                        .expect("bundled application icon")
+                        .into_rgba8(),
+                )),
                 window_bounds: Some(gpui_kit::gpui::WindowBounds::Maximized(
                     gpui_kit::gpui::Bounds::centered(
                         None,

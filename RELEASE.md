@@ -108,3 +108,36 @@ If a release needs to be pulled:
 1. Delete the GitHub Release and tag via the UI (or `gh release delete vX.Y.Z && git push --delete origin vX.Y.Z`).
 2. Yank the crates.io version: `cargo yank --version X.Y.Z`
 3. Revert the Homebrew formula in `pauloremoli/homebrew-logana` to the previous version.
+
+GUI and full installers create icon-bearing desktop launchers: Windows Desktop
+and Start Menu shortcuts (MSI and PowerShell), Linux application menu entries
+and a shortcut when a Desktop directory exists, and `~/Applications/Logana.app`
+with a Desktop link on macOS. The TUI-only installer remains terminal-only.
+After generating global installers locally, run
+`python3 scripts/prepare-desktop-installers.py` before distributing them.
+The release workflow runs this automatically.
+
+## Debian / Ubuntu packages
+
+Release CI builds `logana` (TUI), `logana-gui` (GUI), and `logana-full`
+(both frontends) as `.deb` packages for amd64 and arm64 on Ubuntu 24.04.
+Pull requests also build and install-test the packages, available as workflow
+artifacts. Tagged releases attach the packages and SHA-256 checksums to GitHub
+Releases; package build failures block publication.
+
+Download the package matching your architecture (`dpkg --print-architecture`)
+and install it with APT so runtime dependencies are installed too:
+
+```sh
+sudo apt install ./logana_0.7.7-1_amd64.deb
+```
+
+The GUI editions install an application menu launcher and icon. The full
+package conflicts with the separate editions because it owns the same files.
+These are downloadable installers, not an APT repository or PPA. Compatibility
+with Debian/Ubuntu releases depends on their available runtime library versions;
+CI verifies installation on Ubuntu 24.04.
+
+To build locally, install `cargo-deb` 3.8.0 and the system dependencies listed in
+the release workflow, then run `cargo deb -p logana --locked --strip` (or select
+`logana-gui` / `logana-full`). Output is written to `target/debian/`.

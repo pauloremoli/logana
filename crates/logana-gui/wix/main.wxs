@@ -86,6 +86,8 @@
         <Property Id='DiskPrompt' Value='logana-gui Installation'/>
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='DesktopFolder'/>
+            <Directory Id='ProgramMenuFolder'/>
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
                 <Directory Id='APPLICATIONFOLDER' Name='logana-gui'>
                     
@@ -126,7 +128,10 @@
                                 Name='logana-gui.exe'
                                 DiskId='1'
                                 Source='$(var.CargoTargetBinDir)\logana-gui.exe'
-                                KeyPath='yes'/>
+                                KeyPath='yes'>
+                                <Shortcut Id='DesktopShortcut' Directory='DesktopFolder' Name='Logana' Advertise='yes' Icon='logana.exe' WorkingDirectory='Bin'/>
+                                <Shortcut Id='StartMenuShortcut' Directory='ProgramMenuFolder' Name='Logana' Advertise='yes' Icon='logana.exe' WorkingDirectory='Bin'/>
+                            </File>
                         </Component>
                     </Directory>
                 </Directory>
@@ -170,8 +175,8 @@
           The product icon is the graphic that appears in the Add/Remove
           Programs control panel for the application.
         -->
-        <!--<Icon Id='ProductICO' SourceFile='wix\Product.ico'/>-->
-        <!--<Property Id='ARPPRODUCTICON' Value='ProductICO' />-->
+        <Icon Id='logana.exe' SourceFile='../../assets/logana.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='logana.exe'/>
 
         <Property Id='ARPHELPLINK' Value='https://github.com/pauloremoli/logana'/>
         

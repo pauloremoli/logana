@@ -5,6 +5,8 @@ members = ["cargo:."]
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.31.0"
+# The release workflow adds desktop integration to generated GUI installers.
+allow-dirty = ["ci", "msi"]
 # CI backends to support
 ci = "github"
 # The installers to generate for each app

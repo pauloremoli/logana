@@ -108,3 +108,13 @@ gui-test = ["gui", "gpui-kit/test-support"]
 name = "logana"
 path = "src/main.rs"
 required-features = ["tui"]
+
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+license-file = ["LICENSE", "0"]
+conflicts = "logana-full"
+assets = [
+    ["target/release/logana", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/logana/README.md", "644"],
+]

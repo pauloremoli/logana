@@ -44,6 +44,19 @@ These install the TUI (`logana`). For the GUI only, swap in
 `logana-gui-installer.sh` / `.ps1`; for both frontends, use
 `logana-full-installer.sh` / `.ps1`.
 
+### Debian / Ubuntu
+
+Download the `.deb` for your architecture from the [Releases page](https://github.com/pauloremoli/logana/releases), then install it with APT:
+
+```sh
+sudo apt install ./logana_0.7.7-1_amd64.deb
+```
+
+Packages are available for amd64 and arm64: `logana` (TUI), `logana-gui`
+(GUI), or `logana-full` (both). GUI packages include an application menu
+launcher. Packages are built and tested on Ubuntu 24.04; other Debian/Ubuntu
+releases need compatible runtime libraries.
+
 ### Homebrew (macOS / Linux)
 
 ```sh
