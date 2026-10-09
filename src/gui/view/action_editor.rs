@@ -610,7 +610,8 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                                 })),
                         ),
                 )
-                .child("Mappings in config.json take precedence over saved settings.");
+                .child("Mappings in config.json take precedence over saved settings.")
+                .child(text(app, 2, "Search schemas or filter paths", cx));
             let custom = crate::config::custom_schemas()
                 .iter()
                 .map(|s| s.name.clone())
@@ -623,6 +624,8 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             names.extend(e.conditions.iter().map(|(name, _)| name.clone()));
             names.sort();
             names.dedup();
+            let query = e.values[2].trim().to_lowercase();
+            let mut count = 0;
             for (index, name) in names.into_iter().enumerate() {
                 let path = e
                     .conditions
@@ -630,15 +633,28 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     .find(|(schema, _)| schema == &name)
                     .map(|(_, path)| path.as_str())
                     .unwrap_or("Not configured");
+                if !name.to_lowercase().contains(&query) && !path.to_lowercase().contains(&query) {
+                    continue;
+                }
+                count += 1;
                 body = body.child(
-                    Button::new(("default-schema", index))
-                        .label(format!("{name} — {path}"))
-                        .tooltip(path.to_string())
+                    ListItem::new(("default-schema", index))
+                        .child(
+                            div().flex().flex_col().child(name.clone()).child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(path.to_string()),
+                            ),
+                        )
                         .selected(e.values[0] == name)
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.dispatch(Message::EditorText(0, name.clone()), window, cx)
                         })),
                 );
+            }
+            if count == 0 {
+                body = body.child("No schemas or filter paths match this search.");
             }
         }
         Action::Docker => {
