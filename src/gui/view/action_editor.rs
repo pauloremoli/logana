@@ -487,7 +487,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         }
         Action::Merge => {
             body = body.child("Select at least two files. Lines without timestamps are omitted; closed sources keep their last content.")
-                .child(text(app, 0, "Search open files", cx))
+                .child(text(app, 0, "Search open files by name or path", cx))
                 .child(div().flex().gap_2()
                     .child(button("merge-all", "Select all", || Message::EditorAll(true), cx))
                     .child(button("merge-none", "Select none", || Message::EditorAll(false), cx)));
@@ -495,26 +495,51 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 let Some(tab) = app.state.tabs.iter().find(|tab| tab.id == *id) else {
                     continue;
                 };
-                if !tab
-                    .title
-                    .to_lowercase()
-                    .contains(&e.values[0].to_lowercase())
+                let query = e.values[0].trim().to_lowercase();
+                if !tab.title.to_lowercase().contains(&query)
+                    && !tab
+                        .display_source_path()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&query)
                 {
                     continue;
                 }
                 let id = *id;
-                let label = if crate::gui::merge::source_parser(tab).is_none() {
-                    format!("{} — no timestamp format", tab.title)
-                } else {
-                    tab.title.clone()
-                };
+                let schema = crate::gui::merge::source_parser(tab)
+                    .map(|parser| parser.name().to_string())
+                    .unwrap_or_else(|| "No timestamp format — rows will be omitted".into());
                 body = body.child(
-                    Checkbox::new(("merge-source", index))
-                        .label(label)
-                        .checked(*on)
-                        .on_click(cx.listener(move |app, _, window, cx| {
-                            app.dispatch(Message::MergeSource(id), window, cx)
-                        })),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .p_2()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .rounded(px(4.))
+                        .child(
+                            Checkbox::new(("merge-source", index))
+                                .label(tab.title.clone())
+                                .checked(*on)
+                                .on_click(cx.listener(move |app, _, window, cx| {
+                                    app.dispatch(Message::MergeSource(id), window, cx)
+                                })),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(
+                                    tab.display_source_path()
+                                        .unwrap_or("Temporary source")
+                                        .to_string(),
+                                ),
+                        )
+                        .child(div().text_sm().child(format!(
+                            "{} source rows · {schema}",
+                            tab.file_reader.line_count()
+                        ))),
                 );
             }
             body = body.child(format!(
