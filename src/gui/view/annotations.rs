@@ -1,6 +1,8 @@
 //! Notes are attached to source rows so filters and column edits cannot move them.
 use crate::gui::{actions::Action, app::App, message::Message, state::GuiState};
-use gpui_kit::component::button::Button;
+use gpui_kit::base::Disableable;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::{ActiveTheme, list::ListItem};
 use gpui_kit::gpui::{Context, div, prelude::*, px};
 
 pub fn selected_lines(state: &GuiState) -> Vec<usize> {
@@ -20,7 +22,7 @@ pub fn selected_lines(state: &GuiState) -> Vec<usize> {
         .collect()
 }
 
-pub fn page(app: &App, cx: &mut Context<App>) -> impl IntoElement {
+pub fn page(app: &App, cx: &mut Context<App>) -> gpui_kit::gpui::AnyElement {
     let mut content = div()
         .id("annotations-page")
         .flex_1()
@@ -31,13 +33,14 @@ pub fn page(app: &App, cx: &mut Context<App>) -> impl IntoElement {
         .gap_2()
         .child(
             Button::new("annotation-add")
-                .label("Add annotation to selected rows")
+                .label("Add note to selected rows")
+                .disabled(selected_lines(&app.state).is_empty())
                 .on_click(cx.listener(|app, _, window, cx| {
                     app.dispatch(Message::GuiAction(Action::Annotation), window, cx);
                 })),
         );
     let Some(tab) = app.state.active_tab() else {
-        return content.child("Open a file to add annotations");
+        return content.child("Open a file to add notes").into_any_element();
     };
     if tab.comment_manager.get().is_empty() {
         content = content.child("No annotations. Select rows in Logs, then add a note.");
@@ -45,42 +48,86 @@ pub fn page(app: &App, cx: &mut Context<App>) -> impl IntoElement {
     for (index, comment) in tab.comment_manager.get().iter().enumerate() {
         let line = comment.line_indices.first().copied();
         content = content.child(
-            div()
-                .flex()
-                .gap_2()
-                .items_center()
-                .py(px(8.))
-                .child(div().flex_1().child(comment.text.clone()))
-                .child(
-                    Button::new(("annotation-jump", index))
-                        .label("Go to row")
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if let Some(line) = line {
-                                super::bookmarks::jump(app, line);
-                            }
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new(("annotation-edit", index))
-                        .label("Edit")
-                        .on_click(cx.listener(move |app, _, window, cx| {
-                            app.dispatch(Message::EditAnnotation(index), window, cx);
-                        })),
-                )
-                .child(
-                    Button::new(("annotation-delete", index))
-                        .label("Delete")
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if let Some(tab) = app.state.active_tab_mut() {
-                                tab.comment_manager.remove(index);
-                            }
-                            cx.notify();
-                        })),
-                ),
+            ListItem::new(("annotation-row", index)).child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .py(px(8.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .child(div().flex_1().child(comment.text.clone()))
+                            .child(
+                                Button::new(("annotation-jump", index))
+                                    .primary()
+                                    .label("Go to row")
+                                    .on_click(cx.listener(move |app, _, _, cx| {
+                                        if let Some(line) = line {
+                                            super::bookmarks::jump(app, line);
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new(("annotation-edit", index))
+                                    .ghost()
+                                    .label("Edit")
+                                    .on_click(cx.listener(move |app, _, window, cx| {
+                                        app.dispatch(Message::EditAnnotation(index), window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new(("annotation-delete", index))
+                                    .ghost()
+                                    .label("Delete")
+                                    .on_click(cx.listener(move |app, _, window, cx| {
+                                        app.dispatch(Message::AnnotationRemoved(index), window, cx);
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{} · {} source rows · row {}",
+                                tab.title,
+                                comment.line_indices.len(),
+                                line.map(|n| n + 1).unwrap_or(0)
+                            )),
+                    )
+                    .when_some(line, |d, line| {
+                        d.child(
+                            div()
+                                .truncate()
+                                .text_sm()
+                                .font_family("monospace")
+                                .text_color(cx.theme().muted_foreground)
+                                .child(
+                                    String::from_utf8_lossy(&tab.file_reader.get_line(line))
+                                        .into_owned(),
+                                ),
+                        )
+                    }),
+            ),
         );
     }
-    content
+    div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h(px(0.))
+        .child(content.min_h(px(0.)))
+        .child(super::status_bar::status_bar(
+            Some(tab),
+            crate::gui::state::NavPage::Annotations,
+            cx,
+        ))
+        .into_any_element()
 }
 
 #[cfg(test)]
@@ -118,5 +165,9 @@ mod tests {
         assert_eq!(selected_lines(&state), vec![3]);
         state.tabs[0].scroll.scroll_offset = 9;
         assert!(selected_lines(&state).is_empty());
+        crate::gui::update::update(&mut state, Message::AnnotationRemoved(0));
+        assert!(state.tabs[0].comment_manager.get().is_empty());
+        crate::gui::update::update(&mut state, Message::GuiAction(Action::Undo));
+        assert_eq!(state.tabs[0].comment_manager.get()[0].text, "Edited");
     }
 }

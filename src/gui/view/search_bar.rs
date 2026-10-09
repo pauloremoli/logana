@@ -175,14 +175,17 @@ pub fn view_mode_control(nav_page: NavPage, cx: &mut Context<App>) -> impl IntoE
                 .label(match nav_page {
                     NavPage::Logs => "Logs",
                     NavPage::Bookmarks => "Bookmarks",
+                    NavPage::Annotations => "Notes",
                     _ => "View",
                 })
                 .icon(IconName::ChevronDown)
                 .tooltip("View mode")
                 .dropdown_menu(move |mut menu, _, _| {
-                    for (label, page) in
-                        [("Logs", NavPage::Logs), ("Bookmarks", NavPage::Bookmarks)]
-                    {
+                    for (label, page) in [
+                        ("Logs", NavPage::Logs),
+                        ("Bookmarks", NavPage::Bookmarks),
+                        ("Notes", NavPage::Annotations),
+                    ] {
                         let entity = entity.clone();
                         menu =
                             menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {

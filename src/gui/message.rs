@@ -19,6 +19,7 @@ pub enum Message {
     GuiAction(crate::gui::actions::Action),
     EditFilter(usize),
     EditAnnotation(usize),
+    AnnotationRemoved(usize),
     EditGroup(String),
     EditorText(usize, String),
     EditorToggle(usize),

@@ -57,6 +57,7 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
         {
             state.active_tab().map(|t| t.id)
         }
+        Message::AnnotationRemoved(_) => state.active_tab().map(|t| t.id),
         Message::LogRowAction(id, _, _) => Some(*id),
         Message::FilterRemoved(index, _)
         | Message::ClearAllFilters(index)
@@ -82,6 +83,17 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
 }
 fn update_inner(state: &mut GuiState, message: Message) -> Effect {
     match message {
+        Message::AnnotationRemoved(index) => {
+            if let Some(tab) = state.active_tab_mut() {
+                if index < tab.comment_manager.get().len() {
+                    tab.comment_manager.remove(index);
+                    state.notify(StatusMessage::Info(
+                        "Note deleted. Use Undo to restore it.".into(),
+                    ));
+                }
+            }
+            Effect::None
+        }
         Message::BrowseDefaultMapping => match &state.editor {
             Some(e) if e.action == crate::gui::actions::Action::DefaultFilters => {
                 Effect::DefaultMappingDialog {
