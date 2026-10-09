@@ -38,6 +38,7 @@ pub struct App {
     text_context: Option<(crate::shared::TabId, u64, u64, Vec<String>, bool, bool)>,
     pub pending_source_jump: Option<(crate::shared::TabId, usize)>,
     pub loading_details_open: bool,
+    pub notes_search: Option<Entity<InputState>>,
     pub editor_inputs: Vec<Entity<InputState>>,
     pub editor_textareas:
         std::collections::HashMap<usize, Entity<gpui_kit::component::input::TextareaState>>,
@@ -221,6 +222,7 @@ impl App {
             stream_pending: Default::default(),
             pending_source_jump: None,
             loading_details_open: false,
+            notes_search: None,
             editor_inputs: Vec::new(),
             editor_textareas: Default::default(),
             editor_colors: Vec::new(),
@@ -1073,6 +1075,18 @@ impl Render for App {
             }
         }
 
+        if self.notes_search.is_none()
+            && self.state.nav_page == crate::gui::state::NavPage::Annotations
+        {
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search notes…"));
+            cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            })
+            .detach();
+            self.notes_search = Some(input);
+        }
         self.sync_notification_timer(cx);
         self.refresh_facet_counts(cx);
         if self.command_input.is_none() {
@@ -1611,7 +1625,8 @@ impl Render for App {
                 .as_ref()
                 .is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window))
         };
-        let editing = focused(&self.log_search) || focused(&self.facet_search);
+        let editing =
+            focused(&self.log_search) || focused(&self.facet_search) || focused(&self.notes_search);
         let context = if self.state.editor.is_some() || self.state.time_range_open {
             "LoganaDialog"
         } else if self.state.palette.visible() {

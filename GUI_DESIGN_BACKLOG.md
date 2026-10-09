@@ -46,7 +46,7 @@ needed to assess the finished layouts visually.
 
 ## Remaining review improvements
 
-- [ ] Add search to Notes while keeping note attachment and navigation source-based.
+- [x] Search Notes while keeping note attachment and navigation source-based.
 - [ ] Group application menu actions with native separators where helpful.
 - [ ] Make high-cardinality field facets bounded without losing hierarchical selection.
 - [ ] Search archive/directory entries while preserving lazy expansion and selection.

@@ -39,13 +39,29 @@ pub fn page(app: &App, cx: &mut Context<App>) -> gpui_kit::gpui::AnyElement {
                     app.dispatch(Message::GuiAction(Action::Annotation), window, cx);
                 })),
         );
+    content = content.children(app.notes_search.as_ref().map(|input| {
+        super::input(input)
+            .id("notes-search")
+            .aria_label("Search notes")
+            .cleanable(true)
+    }));
+    let query = app
+        .notes_search
+        .as_ref()
+        .map(|input| input.read(cx).value().trim().to_lowercase())
+        .unwrap_or_default();
     let Some(tab) = app.state.active_tab() else {
         return content.child("Open a file to add notes").into_any_element();
     };
     if tab.comment_manager.get().is_empty() {
         content = content.child("No annotations. Select rows in Logs, then add a note.");
     }
+    let mut matches = 0;
     for (index, comment) in tab.comment_manager.get().iter().enumerate() {
+        if !comment.text.to_lowercase().contains(&query) {
+            continue;
+        }
+        matches += 1;
         let line = comment.line_indices.first().copied();
         let hidden = line.is_some_and(|line| !tab.filter.visible_indices.contains(line));
         content = content.child(
@@ -142,6 +158,16 @@ pub fn page(app: &App, cx: &mut Context<App>) -> gpui_kit::gpui::AnyElement {
                     }),
             ),
         );
+    }
+    if !tab.comment_manager.get().is_empty() {
+        content = content.child(format!(
+            "{matches} of {} notes",
+            tab.comment_manager.get().len()
+        ));
+        if matches == 0 {
+            content =
+                content.child("No notes match this search. Clear the search to show all notes.");
+        }
     }
     div()
         .flex()

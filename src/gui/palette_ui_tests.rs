@@ -1990,6 +1990,7 @@ fn perf_probe_click_select_row(cx: &mut TestAppContext) {
         let reader = crate::ingestion::FileReader::from_bytes(bytes);
         app.update(cx, |app, cx| {
             let mut tab = crate::shared::TabState::new(reader, manager, "perf.log".into());
+            let _runtime = runtime::handle().enter();
             tab.begin_filter_refresh();
             app.state.tabs.push(tab);
             app.root_focus.focus(window, cx);
@@ -2030,6 +2031,41 @@ fn perf_probe_click_select_row(cx: &mut TestAppContext) {
             "PERF_PROBE total={:?} per_click={:?}",
             elapsed,
             elapsed / n as u32
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn notes_search_preserves_source_row_actions(cx: &mut TestAppContext) {
+    use super::state::NavPage;
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            app.state.tabs[0]
+                .comment_manager
+                .add("First note".into(), vec![0]);
+            app.state.tabs[0]
+                .comment_manager
+                .add("Second note".into(), vec![0]);
+            app.state.nav_page = NavPage::Annotations;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        window.click("notes-search", cx);
+        window.input("Second", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("annotation-row", 0usize)).is_none());
+        assert!(window.try_find(("annotation-row", 1usize)).is_some());
+        window.click(("annotation-edit", 1usize), cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().values[0],
+            "Second note"
         );
     })
     .unwrap();
