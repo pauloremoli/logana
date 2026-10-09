@@ -7,6 +7,7 @@ use std::path::PathBuf;
 /// depending on any gpui type. Mirrors what iced's `Task<Message>` did for
 /// the discarded prototype, but as a plain, directly-testable enum.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Effect {
     ScrollHorizontal(usize),
     SavePreferences(crate::gui::persistence::Preferences),

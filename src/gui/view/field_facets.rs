@@ -42,7 +42,7 @@ pub fn field_facets(
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
                 .child(
-                    "Checked values add Include rules. Multiple Include rules match any of them.",
+                    "Checked values add Include filters. Multiple Include filters match any of them.",
                 ),
         );
     let query = search

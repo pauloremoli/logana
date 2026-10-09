@@ -37,21 +37,22 @@ const RESIZE_HANDLE_WIDTH_PX: f32 = 6.0;
 /// `widths` is `GuiState::column_widths` — auto-fit to content whenever a
 /// file loads, overridden per-column by dragging a header handle; see
 /// `gui::column_widths` for both.
+type LayoutCacheKey = (
+    crate::shared::TabId,
+    u64,
+    u64,
+    usize,
+    usize,
+    TableWidths,
+    (u32, u32),
+    Vec<String>,
+    bool,
+    bool,
+    bool,
+    Vec<Vec<usize>>,
+);
 pub struct LayoutCache {
-    key: (
-        crate::shared::TabId,
-        u64,
-        u64,
-        usize,
-        usize,
-        TableWidths,
-        (u32, u32),
-        Vec<String>,
-        bool,
-        bool,
-        bool,
-        Vec<Vec<usize>>,
-    ),
+    key: LayoutCacheKey,
 }
 #[cfg(test)]
 pub fn prepare_list(

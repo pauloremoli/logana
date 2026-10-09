@@ -398,6 +398,27 @@ impl Element for SelectionText {
     }
 }
 
+#[cfg(all(test, feature = "gui-test"))]
+impl Document {
+    pub(crate) fn test_point(&self, line: usize, column: usize, offset: usize) -> Point<Pixels> {
+        self.runs
+            .iter()
+            .find_map(|run| {
+                if run.endpoint.line != line || run.endpoint.column != column {
+                    return None;
+                }
+                let start = run.endpoint.offset;
+                if offset < start || offset > start + run.text.len() {
+                    return None;
+                }
+                run.layout
+                    .position_for_index(offset - start)
+                    .map(|p| p + gpui::point(gpui::px(0.5), gpui::px(8.)))
+            })
+            .expect("text coordinate must be mounted")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -543,26 +564,5 @@ mod tests {
         assert_eq!(raw_log_text("a\ninside\n"), "a\ninside");
         assert_eq!(raw_log_text("a\r"), "a\r");
         assert_eq!(boundary("東京", 2), 0);
-    }
-}
-
-#[cfg(all(test, feature = "gui-test"))]
-impl Document {
-    pub(crate) fn test_point(&self, line: usize, column: usize, offset: usize) -> Point<Pixels> {
-        self.runs
-            .iter()
-            .find_map(|run| {
-                if run.endpoint.line != line || run.endpoint.column != column {
-                    return None;
-                }
-                let start = run.endpoint.offset;
-                if offset < start || offset > start + run.text.len() {
-                    return None;
-                }
-                run.layout
-                    .position_for_index(offset - start)
-                    .map(|p| p + gpui::point(gpui::px(0.5), gpui::px(8.)))
-            })
-            .expect("text coordinate must be mounted")
     }
 }

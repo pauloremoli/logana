@@ -6,6 +6,7 @@ use crate::ingestion::FileReader;
 use crate::input::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
 
+#[allow(clippy::large_enum_variant)]
 pub enum Message {
     MergeSource(crate::shared::TabId),
     DefaultMappingsLoaded(u64, std::collections::HashMap<String, String>),

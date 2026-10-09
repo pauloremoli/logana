@@ -802,51 +802,49 @@ pub fn open(
                 })
                 .collect();
         }
-        if action == Action::Filter {
-            if let Some(f) =
+        if action == Action::Filter
+            && let Some(f) =
                 edit_id.and_then(|id| tab.log_manager.get_filters().iter().find(|f| f.id == id))
+        {
+            e.values[0] = f.pattern.clone();
+            e.values[3] = f.group.clone().unwrap_or_default();
+            e.kind = f.filter_type.clone();
+            e.regex = f.use_regex;
+            e.ignore_case = f.ignore_case;
+            if let Some(expr) = f
+                .pattern
+                .strip_prefix(FIELD_PREFIX)
+                .and_then(|x| crate::filters::parse_field_filter_expr(x).ok())
             {
-                e.values[0] = f.pattern.clone();
-                e.values[3] = f.group.clone().unwrap_or_default();
-                e.kind = f.filter_type.clone();
-                e.regex = f.use_regex;
-                e.ignore_case = f.ignore_case;
-                if let Some(expr) = f
-                    .pattern
-                    .strip_prefix(FIELD_PREFIX)
-                    .and_then(|x| crate::filters::parse_field_filter_expr(x).ok())
-                {
-                    e.conditions = expr.0;
-                    e.values[0] = expr.1.unwrap_or_default();
-                }
-                if let Some((field, value)) = e.conditions.first() {
-                    e.values[1] = field.clone();
-                    e.values[2] = value.clone();
-                    e.condition_edit = Some(0);
-                }
-                if let Some(c) = &f.color_config {
-                    e.values[4] = c.fg.map(|c| c.to_string()).unwrap_or_default();
-                    e.values[5] = c.bg.map(|c| c.to_string()).unwrap_or_default();
-                    e.whole_line = !c.match_only;
-                }
+                e.conditions = expr.0;
+                e.values[0] = expr.1.unwrap_or_default();
+            }
+            if let Some((field, value)) = e.conditions.first() {
+                e.values[1] = field.clone();
+                e.values[2] = value.clone();
+                e.condition_edit = Some(0);
+            }
+            if let Some(c) = &f.color_config {
+                e.values[4] = c.fg.map(|c| c.to_string()).unwrap_or_default();
+                e.values[5] = c.bg.map(|c| c.to_string()).unwrap_or_default();
+                e.whole_line = !c.match_only;
             }
         }
-        if action == Action::Group {
-            if let Some(name) = group {
-                e.group_name_locked = true;
-                e.values[0] = name.clone();
-                if let Some(g) = tab
-                    .log_manager
-                    .get_group_styles()
-                    .iter()
-                    .find(|g| g.name == name)
-                {
-                    if let Some(c) = &g.color_config {
-                        e.values[4] = c.fg.map(|c| c.to_string()).unwrap_or_default();
-                        e.values[5] = c.bg.map(|c| c.to_string()).unwrap_or_default();
-                        e.whole_line = !c.match_only;
-                    }
-                }
+        if action == Action::Group
+            && let Some(name) = group
+        {
+            e.group_name_locked = true;
+            e.values[0] = name.clone();
+            if let Some(g) = tab
+                .log_manager
+                .get_group_styles()
+                .iter()
+                .find(|g| g.name == name)
+                && let Some(c) = &g.color_config
+            {
+                e.values[4] = c.fg.map(|c| c.to_string()).unwrap_or_default();
+                e.values[5] = c.bg.map(|c| c.to_string()).unwrap_or_default();
+                e.whole_line = !c.match_only;
             }
         }
         if action == Action::Group {
@@ -1608,6 +1606,23 @@ pub async fn clear_dates(
     Ok(manager)
 }
 
+pub fn configure_export(editor: &mut Editor, name: &str) {
+    match crate::commands::load_template(name) {
+        Ok(template) => {
+            editor.values[0] = name.into();
+            editor.fields = crate::commands::extract_user_fields(&template)
+                .into_iter()
+                .map(|key| (key, true))
+                .collect();
+            editor.values.resize(6 + editor.fields.len(), String::new());
+            editor.values[6..].fill(String::new());
+            editor.epoch = editor.epoch.wrapping_add(1);
+            editor.error = None;
+        }
+        Err(error) => editor.error = Some(error.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2167,22 +2182,5 @@ mod tests {
         assert_eq!(manager.get_filters()[0].id, id);
         assert_eq!(manager.get_filters()[0].pattern, "world");
         assert_eq!(manager.get_filters()[0].filter_type, FilterType::Exclude);
-    }
-}
-
-pub fn configure_export(editor: &mut Editor, name: &str) {
-    match crate::commands::load_template(name) {
-        Ok(template) => {
-            editor.values[0] = name.into();
-            editor.fields = crate::commands::extract_user_fields(&template)
-                .into_iter()
-                .map(|key| (key, true))
-                .collect();
-            editor.values.resize(6 + editor.fields.len(), String::new());
-            editor.values[6..].fill(String::new());
-            editor.epoch = editor.epoch.wrapping_add(1);
-            editor.error = None;
-        }
-        Err(error) => editor.error = Some(error.to_string()),
     }
 }

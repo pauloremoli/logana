@@ -47,6 +47,7 @@ pub fn page(app: &App, cx: &mut Context<App>) -> gpui_kit::gpui::AnyElement {
     }
     for (index, comment) in tab.comment_manager.get().iter().enumerate() {
         let line = comment.line_indices.first().copied();
+        let hidden = line.is_some_and(|line| !tab.filter.visible_indices.contains(line));
         content = content.child(
             ListItem::new(("annotation-row", index)).child(
                 div()
@@ -64,10 +65,36 @@ pub fn page(app: &App, cx: &mut Context<App>) -> gpui_kit::gpui::AnyElement {
                             .child(
                                 Button::new(("annotation-jump", index))
                                     .primary()
-                                    .label("Go to row")
-                                    .on_click(cx.listener(move |app, _, _, cx| {
+                                    .label(if hidden {
+                                        "Show row without filters"
+                                    } else {
+                                        "Go to row"
+                                    })
+                                    .on_click(cx.listener(move |app, _, window, cx| {
                                         if let Some(line) = line {
-                                            super::bookmarks::jump(app, line);
+                                            if hidden {
+                                                let source =
+                                                    app.state.active_tab().map(|tab| tab.id);
+                                                super::bookmarks::set_view(
+                                                    &mut app.state,
+                                                    crate::gui::state::NavPage::Logs,
+                                                );
+                                                if app
+                                                    .state
+                                                    .active_tab()
+                                                    .is_some_and(|tab| tab.filter.enabled)
+                                                {
+                                                    app.dispatch(
+                                                        Message::GuiAction(Action::ToggleFiltering),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
+                                                app.pending_source_jump =
+                                                    source.map(|source| (source, line));
+                                            } else {
+                                                super::bookmarks::jump(app, line);
+                                            }
                                         }
                                         cx.notify();
                                     })),

@@ -138,10 +138,9 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
         use clap::Parser;
         if let Ok(parsed) = crate::commands::CommandLine::try_parse_from(
             crate::commands::auto_complete::shell_split(&custom.command),
-        ) {
-            if let Some(command) = parsed.command {
-                return crate::gui::update::perform_gui(state, command, custom.command.clone());
-            }
+        ) && let Some(command) = parsed.command
+        {
+            return crate::gui::update::perform_gui(state, command, custom.command.clone());
         }
         return Effect::None;
     }
@@ -247,19 +246,17 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
     if kb.normal.expand_continuation.matches(key, modifiers)
         || kb.normal.collapse_continuation.matches(key, modifiers)
     {
-        if let Some(tab) = state.active_tab_mut() {
-            if let Some(line) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset) {
-                if let Some(parent) = tab
-                    .active_continuation_map()
-                    .and_then(|map| map.get(line))
-                    .copied()
-                {
-                    tab.set_continuation_collapsed(
-                        parent,
-                        kb.normal.collapse_continuation.matches(key, modifiers),
-                    );
-                }
-            }
+        if let Some(tab) = state.active_tab_mut()
+            && let Some(line) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset)
+            && let Some(parent) = tab
+                .active_continuation_map()
+                .and_then(|map| map.get(line))
+                .copied()
+        {
+            tab.set_continuation_collapsed(
+                parent,
+                kb.normal.collapse_continuation.matches(key, modifiers),
+            );
         }
         return Effect::None;
     }
@@ -270,40 +267,40 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
         }
         return Effect::None;
     }
-    if kb.normal.yank_line.matches(key, modifiers) || kb.normal.yank_marked.matches(key, modifiers)
+    if (kb.normal.yank_line.matches(key, modifiers)
+        || kb.normal.yank_marked.matches(key, modifiers))
+        && let Some(tab) = state.active_tab()
     {
-        if let Some(tab) = state.active_tab() {
-            let lines = if kb.normal.yank_marked.matches(key, modifiers) {
-                tab.mark_manager.get_indices()
-            } else {
-                crate::gui::view::annotations::selected_lines(state)
-            };
-            let text = lines
-                .iter()
-                .map(|line| crate::gui::view::log_pane::raw_log_message(&tab.file_reader, *line))
-                .collect::<Vec<_>>()
-                .join("\n");
-            return Effect::CopyText(text);
-        }
+        let lines = if kb.normal.yank_marked.matches(key, modifiers) {
+            tab.mark_manager.get_indices()
+        } else {
+            crate::gui::view::annotations::selected_lines(state)
+        };
+        let text = lines
+            .iter()
+            .map(|line| crate::gui::view::log_pane::raw_log_message(&tab.file_reader, *line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Effect::CopyText(text);
     }
     if let Some((_, action)) = action_bindings(&kb)
         .iter()
         .find(|(binding, _)| binding.matches(key, modifiers))
     {
         let effect = crate::gui::actions::open(state, *action, None, None);
-        if *action == Action::Filter {
-            if let Some(editor) = &mut state.editor {
-                editor.kind = if kb.normal.filter_exclude.matches(key, modifiers) {
-                    crate::filters::FilterType::Exclude
-                } else {
-                    crate::filters::FilterType::Include
-                };
-                // `App::dispatch` fills `values[0]` from a manual text
-                // selection (if any) once this returns; it never comes
-                // from the cursor line alone.
-                if kb.normal.filter_include_auto.matches(key, modifiers) {
-                    editor.regenerate_auto_style();
-                }
+        if *action == Action::Filter
+            && let Some(editor) = &mut state.editor
+        {
+            editor.kind = if kb.normal.filter_exclude.matches(key, modifiers) {
+                crate::filters::FilterType::Exclude
+            } else {
+                crate::filters::FilterType::Include
+            };
+            // `App::dispatch` fills `values[0]` from a manual text
+            // selection (if any) once this returns; it never comes
+            // from the cursor line alone.
+            if kb.normal.filter_include_auto.matches(key, modifiers) {
+                editor.regenerate_auto_style();
             }
         }
         return effect;

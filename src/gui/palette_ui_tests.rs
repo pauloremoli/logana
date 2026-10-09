@@ -1914,3 +1914,104 @@ fn schema_and_export_render_searchable_choice_controls(cx: &mut TestAppContext) 
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn hidden_note_row_can_be_revealed_without_filters(cx: &mut TestAppContext) {
+    use super::{actions::Action, message::Message, state::NavPage};
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Annotation), window, cx);
+            app.dispatch(
+                Message::EditorText(0, "Investigate this row".into()),
+                window,
+                cx,
+            );
+            app.dispatch(Message::EditorApply, window, cx);
+            app.state.tabs[0].filter.visible_indices = crate::shared::VisibleLines::All(0);
+            app.state.nav_page = NavPage::Annotations;
+        });
+        window.render_frame(cx);
+        window.click(("annotation-jump", 0usize), cx);
+        window.render_frame(cx);
+        assert!(!app.read(cx).state.tabs[0].filter.enabled);
+        assert_eq!(app.read(cx).state.nav_page, NavPage::Logs);
+        assert!(app.read(cx).state.log_selection.is_some());
+        assert!(app.read(cx).pending_source_jump.is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn perf_probe_click_select_row(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1200., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        let total_lines = 2000;
+        let num_filters = 30;
+        let mut manager = runtime::handle().block_on(crate::db::LogManager::new(
+            app.read(cx).state.db.clone(),
+            None,
+        ));
+        runtime::handle().block_on(async {
+            for i in 0..num_filters {
+                manager
+                    .add_filter_with_color(
+                        format!("line {}", i * 7),
+                        crate::filters::FilterType::Include,
+                        crate::filters::FilterOptions::default(),
+                    )
+                    .await;
+            }
+        });
+        let mut bytes = Vec::new();
+        for i in 0..total_lines {
+            bytes.extend_from_slice(format!("2024-01-01 INFO line {i}\n").as_bytes());
+        }
+        let reader = crate::ingestion::FileReader::from_bytes(bytes);
+        app.update(cx, |app, cx| {
+            let mut tab = crate::shared::TabState::new(reader, manager, "perf.log".into());
+            tab.begin_filter_refresh();
+            app.state.tabs.push(tab);
+            app.root_focus.focus(window, cx);
+        });
+        window.render_frame(cx);
+        // Drain the async filter computation the same way the 16ms poll loop would.
+        for _ in 0..500 {
+            let done = app.update(cx, |app, _| {
+                let tab = &mut app.state.tabs[0];
+                if tab.filter.handle.is_some() {
+                    tab.advance_filter_computation();
+                }
+                tab.filter.handle.is_none()
+            });
+            window.render_frame(cx);
+            if done {
+                break;
+            }
+        }
+        eprintln!(
+            "PERF_PROBE visible_after_filters={}",
+            app.read(cx).state.tabs[0].filter.visible_indices.len()
+        );
+        let n = 50;
+        let start = std::time::Instant::now();
+        for i in 0..n {
+            app.update(cx, |app, cx| {
+                app.dispatch(
+                    super::message::Message::SelectLog(i % 50, false),
+                    window,
+                    cx,
+                );
+            });
+            window.render_frame(cx);
+        }
+        let elapsed = start.elapsed();
+        eprintln!(
+            "PERF_PROBE total={:?} per_click={:?}",
+            elapsed,
+            elapsed / n as u32
+        );
+    })
+    .unwrap();
+}

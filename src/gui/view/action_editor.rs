@@ -174,6 +174,14 @@ fn text(app: &App, index: usize, label: &str, _cx: &mut Context<App>) -> AnyElem
         }))
         .into_any_element()
 }
+/// Splits a `list_docker` label (`"name · image · status"`) back into its
+/// container name and status, for display as separate elements.
+fn docker_name_and_status(label: &str) -> (&str, &str) {
+    let mut parts = label.splitn(3, " · ");
+    let name = parts.next().unwrap_or(label);
+    let status = parts.nth(1).unwrap_or("");
+    (name, status)
+}
 fn button(id: &str, label: &str, message: fn() -> Message, cx: &mut Context<App>) -> Button {
     Button::new(id.to_string())
         .label(label.to_string())
@@ -694,16 +702,44 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 }
                 count += 1;
                 let id = id.clone();
+                let (name, status) = docker_name_and_status(label);
                 body = body.child(
                     ListItem::new(("docker-container", index))
                         .selected(e.values[0] == id)
                         .child(
-                            div().flex().flex_col().child(label.clone()).child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(id.clone()),
-                            ),
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    div().flex().flex_col().child(name.to_string()).child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(id.clone()),
+                                    ),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .flex_shrink_0()
+                                        .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(
+                                            if status.starts_with("Up") {
+                                                cx.theme().success
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            },
+                                        ))
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(status.to_string()),
+                                        ),
+                                ),
                         )
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.dispatch(Message::EditorText(0, id.clone()), window, cx)

@@ -144,7 +144,7 @@ fn sidebar_header(
                         .child(sidebar_tab_button(
                             SidebarTabButtonArgs {
                                 icon: IconName::Funnel,
-                                label: "Rules",
+                                label: "Filters",
                                 tab: SidebarTab::Filters,
                                 active: active == SidebarTab::Filters && !fields_open,
                             },

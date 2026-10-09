@@ -113,6 +113,7 @@ pub fn resolve_row_style(
 }
 
 /// Project raw-line match spans into a displayed field. Whole-line styling covers every cell.
+#[allow(clippy::single_range_in_vec_init)]
 pub fn cell_style_spans(raw: &[u8], text: &str, style: &LineStyle) -> Vec<std::ops::Range<usize>> {
     if style.whole_line {
         return if text.is_empty() {
@@ -158,10 +159,10 @@ pub fn cached_row_styles(tab: &crate::shared::TabState, line: usize, raw: &[u8])
         std::sync::Arc::as_ptr(&tab.filter.manager) as usize,
         raw.len(),
     );
-    if let Some((generation, styles)) = tab.cache.gui_filter_styles.lock().unwrap().get(&line) {
-        if *generation == key {
-            return styles.clone();
-        }
+    if let Some((generation, styles)) = tab.cache.gui_filter_styles.lock().unwrap().get(&line)
+        && *generation == key
+    {
+        return styles.clone();
     }
     let styles = row_styles(tab, raw);
     let mut cache = tab.cache.gui_filter_styles.lock().unwrap();

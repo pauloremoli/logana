@@ -69,28 +69,27 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
         .and_then(|id| state.tabs.iter().find(|tab| tab.id == id))
         .map(crate::gui::history::Snapshot::new);
     let effect = update_inner(state, message);
-    if let Some(before) = before {
-        if state
+    if let Some(before) = before
+        && state
             .tabs
             .iter()
             .find(|tab| tab.id == before.id)
             .is_some_and(|tab| before.changed(tab))
-        {
-            state.history.entry(before.id).or_default().record(before);
-        }
+    {
+        state.history.entry(before.id).or_default().record(before);
     }
     effect
 }
 fn update_inner(state: &mut GuiState, message: Message) -> Effect {
     match message {
         Message::AnnotationRemoved(index) => {
-            if let Some(tab) = state.active_tab_mut() {
-                if index < tab.comment_manager.get().len() {
-                    tab.comment_manager.remove(index);
-                    state.notify(StatusMessage::Info(
-                        "Note deleted. Use Undo to restore it.".into(),
-                    ));
-                }
+            if let Some(tab) = state.active_tab_mut()
+                && index < tab.comment_manager.get().len()
+            {
+                tab.comment_manager.remove(index);
+                state.notify(StatusMessage::Info(
+                    "Note deleted. Use Undo to restore it.".into(),
+                ));
             }
             Effect::None
         }
@@ -121,33 +120,32 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             Effect::None
         }
         Message::MergeSource(id) => {
-            if let Some(e) = &mut state.editor {
-                if let Some((_, on)) = e.merge_sources.iter_mut().find(|(source, _)| *source == id)
-                {
-                    *on = !*on;
-                    e.error = None;
-                }
+            if let Some(e) = &mut state.editor
+                && let Some((_, on)) = e.merge_sources.iter_mut().find(|(source, _)| *source == id)
+            {
+                *on = !*on;
+                e.error = None;
             }
             Effect::None
         }
         Message::DefaultMappingsLoaded(epoch, mappings) => {
-            if let Some(editor) = &mut state.editor {
-                if editor.action == crate::gui::actions::Action::DefaultFilters
-                    && editor.epoch == epoch
-                {
-                    editor.values[1] = mappings.get(&editor.values[0]).cloned().unwrap_or_default();
-                    editor.conditions = mappings.into_iter().collect();
-                }
+            if let Some(editor) = &mut state.editor
+                && editor.action == crate::gui::actions::Action::DefaultFilters
+                && editor.epoch == epoch
+            {
+                editor.values[1] = mappings.get(&editor.values[0]).cloned().unwrap_or_default();
+                editor.conditions = mappings.into_iter().collect();
             }
             Effect::None
         }
         Message::DockerListed(epoch, result) => {
-            if let Some(editor) = &mut state.editor {
-                if editor.action == crate::gui::actions::Action::Docker && editor.epoch == epoch {
-                    match result {
-                        Ok(containers) => editor.conditions = containers,
-                        Err(error) => editor.error = Some(error),
-                    }
+            if let Some(editor) = &mut state.editor
+                && editor.action == crate::gui::actions::Action::Docker
+                && editor.epoch == epoch
+            {
+                match result {
+                    Ok(containers) => editor.conditions = containers,
+                    Err(error) => editor.error = Some(error),
                 }
             }
             Effect::None
@@ -208,10 +206,10 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             {
                 match result {
                     Ok(output) => {
-                        if let Some(e) = &mut state.editor {
-                            if e.action == crate::gui::actions::Action::Appearance {
-                                e.original_theme = state.theme.clone();
-                            }
+                        if let Some(e) = &mut state.editor
+                            && e.action == crate::gui::actions::Action::Appearance
+                        {
+                            e.original_theme = state.theme.clone();
                         }
                         finish_palette(
                             state,
@@ -345,18 +343,18 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             Effect::None
         }
         Message::EditorMember(index) => {
-            if let Some(e) = &mut state.editor {
-                if let Some((_, _, on)) = e.members.get_mut(index) {
-                    *on = !*on;
-                }
+            if let Some(e) = &mut state.editor
+                && let Some((_, _, on)) = e.members.get_mut(index)
+            {
+                *on = !*on;
             }
             Effect::None
         }
         Message::EditorField(index) => {
-            if let Some(e) = &mut state.editor {
-                if let Some((_, on)) = e.fields.get_mut(index) {
-                    *on = !*on;
-                }
+            if let Some(e) = &mut state.editor
+                && let Some((_, on)) = e.fields.get_mut(index)
+            {
+                *on = !*on;
             }
             Effect::None
         }
@@ -410,29 +408,29 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             Effect::None
         }
         Message::EditorConditionEdit(index) => {
-            if let Some(e) = &mut state.editor {
-                if let Some((field, value)) = e.conditions.get(index) {
-                    e.values[1] = field.clone();
-                    e.values[2] = value.clone();
-                    e.condition_edit = Some(index);
-                    e.error = None;
-                }
+            if let Some(e) = &mut state.editor
+                && let Some((field, value)) = e.conditions.get(index)
+            {
+                e.values[1] = field.clone();
+                e.values[2] = value.clone();
+                e.condition_edit = Some(index);
+                e.error = None;
             }
             Effect::None
         }
         Message::EditorConditionRemove(index) => {
-            if let Some(e) = &mut state.editor {
-                if index < e.conditions.len() {
-                    e.conditions.remove(index);
-                    if e.condition_edit == Some(index) {
-                        e.condition_edit = None;
-                        e.values[1].clear();
-                        e.values[2].clear();
-                    } else if let Some(edit) = e.condition_edit.as_mut() {
-                        if *edit > index {
-                            *edit -= 1;
-                        }
-                    }
+            if let Some(e) = &mut state.editor
+                && index < e.conditions.len()
+            {
+                e.conditions.remove(index);
+                if e.condition_edit == Some(index) {
+                    e.condition_edit = None;
+                    e.values[1].clear();
+                    e.values[2].clear();
+                } else if let Some(edit) = e.condition_edit.as_mut()
+                    && *edit > index
+                {
+                    *edit -= 1;
                 }
             }
             Effect::None
@@ -694,13 +692,14 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             Effect::None
         }
         Message::SearchEdited(query) => {
-            if state.editor.is_none() && !state.palette.visible() {
-                if let Some(tab) = state.active_tab_mut() {
-                    if query.is_empty() {
-                        tab.cancel_search();
-                    } else {
-                        tab.begin_search(&query, tab.search.query.is_forward(), false);
-                    }
+            if state.editor.is_none()
+                && !state.palette.visible()
+                && let Some(tab) = state.active_tab_mut()
+            {
+                if query.is_empty() {
+                    tab.cancel_search();
+                } else {
+                    tab.begin_search(&query, tab.search.query.is_forward(), false);
                 }
             }
             Effect::None

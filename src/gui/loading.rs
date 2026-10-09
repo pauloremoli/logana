@@ -120,6 +120,7 @@ pub(super) async fn permit(
 fn current(app: &App, id: Option<u64>, control: &Control) -> bool {
     !control.cancelled() && id.is_none_or(|id| app.loading.operations.iter().any(|op| op.id == id))
 }
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn install_loaded(
     this: &WeakEntity<App>,
     cx: &mut AsyncApp,
@@ -252,21 +253,20 @@ pub(super) async fn install_loaded(
                 app.save_session_state();
                 cx.notify();
             } else {
-                if is_preview {
-                    if let Some(op) =
+                if is_preview
+                    && let Some(op) =
                         id.and_then(|id| app.loading.operations.iter_mut().find(|op| op.id == id))
-                    {
-                        op.preview = Some(Preview {
-                            tab: result.0.id,
-                            initial: result.0.to_file_context(),
-                            restored,
-                        });
-                        op.control.phase(
-                            "Loading",
-                            op.path.display().to_string(),
-                            std::fs::metadata(&op.path).ok().map(|m| m.len()),
-                        );
-                    }
+                {
+                    op.preview = Some(Preview {
+                        tab: result.0.id,
+                        initial: result.0.to_file_context(),
+                        restored,
+                    });
+                    op.control.phase(
+                        "Loading",
+                        op.path.display().to_string(),
+                        std::fs::metadata(&op.path).ok().map(|m| m.len()),
+                    );
                 }
                 app.dispatch(
                     Message::TabPrepared(
@@ -1262,7 +1262,7 @@ mod ui_tests {
             })
             .unwrap()
         });
-        cx.update_window(handle.into(), |_, window, cx| {
+        cx.update_window(handle, |_, window, cx| {
             app.update(cx, |app, cx| {
                 for title in ["first", "second"] {
                     app.state.tabs.push(crate::shared::TabState::new(
@@ -1346,7 +1346,7 @@ mod ui_tests {
             })
             .unwrap()
         });
-        cx.update_window(handle.into(), |_, window, cx| {
+        cx.update_window(handle, |_, window, cx| {
             app.update(cx, |app, cx| {
                 let progress = rx.borrow().clone();
                 app.state.tabs.push(crate::shared::TabState::new(

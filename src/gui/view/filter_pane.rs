@@ -127,7 +127,7 @@ pub fn filter_pane(
                 .child(
                     div()
                         .text_xs()
-                        .child("Add a rule to include, exclude, or highlight logs."),
+                        .child("Add a filter to include, exclude, or highlight logs."),
                 ),
         );
     }
