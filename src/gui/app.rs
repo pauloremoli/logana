@@ -584,6 +584,11 @@ impl App {
 
     fn apply_effect(&mut self, effect: Effect, _window: &mut Window, cx: &mut Context<Self>) {
         match effect {
+            Effect::PrepareSchema {
+                request_id,
+                tab_id,
+                name,
+            } => self.prepare_schema(request_id, tab_id, name, cx),
             Effect::MergeTabs(ids) => self.merge_tabs(ids, cx),
             Effect::ConfigureMcp(port) => self.configure_mcp(port, cx),
             Effect::LoadDefaultMappings { epoch } => self.load_default_mappings(epoch, cx),

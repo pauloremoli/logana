@@ -90,6 +90,9 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
 }
 fn update_inner(state: &mut GuiState, message: Message) -> Effect {
     match message {
+        Message::SchemaPrepared(request_id, tab_id, name, prepared) => {
+            super::schema_preparation::install(state, request_id, tab_id, name, *prepared)
+        }
         Message::FilterPatternValidated(epoch, pattern, timestamp, result) => {
             let key = (pattern, timestamp);
             let Some(editor) = state.editor.as_mut().filter(|e| {
@@ -1169,9 +1172,18 @@ pub fn perform_gui(state: &mut GuiState, command: Commands, label: String) -> Ef
             db: state.db.clone(),
         };
     }
+    if let Commands::Schema { name: Some(name) } = &command
+        && let Some(tab) = state.active_tab()
+    {
+        return Effect::PrepareSchema {
+            request_id,
+            tab_id: tab.id,
+            name: name.clone(),
+        };
+    }
     let result = match &command {
         Commands::SetTheme { theme_name } => Some(set_theme_by_name(state, theme_name)),
-        Commands::Schema { name } => Some(apply_schema_command(state, name.as_deref())),
+        Commands::Schema { .. } => Some(report_schema(state)),
         Commands::Path => Some(report_source_path(state)),
         _ => state.active_tab_mut().and_then(|tab| {
             if apply_stream_command(tab, &command) || apply_display_command(tab, &command) {
@@ -1211,7 +1223,7 @@ pub fn perform_gui(state: &mut GuiState, command: Commands, label: String) -> Ef
         filter_context: None,
     }
 }
-fn finish_palette(
+pub(super) fn finish_palette(
     state: &mut GuiState,
     request_id: u64,
     status: crate::gui::palette::ExecutionState,
@@ -1355,46 +1367,17 @@ fn set_theme_by_name(state: &mut GuiState, theme_name: &str) -> Result<String, S
     Ok(format!("Theme changed to {theme_name}."))
 }
 
-/// Mirrors the TUI's `App::cmd_schema` (`src/ui/commands/display.rs`) for
-/// the active tab: no name shows the current schema (via `state.status`,
-/// same slot the TUI's own command-error path would surface it through);
-/// `"none"` switches to unstructured/raw parsing; any other name resolves
-/// a custom schema (`config::custom_schemas`) or a built-in parser
-/// (`parser::find_builtin_parser`) and applies it. Deliberate
-/// simplification vs. the TUI: doesn't call `apply_default_filters_if_
-/// empty_at` (loading a format's configured default filter file) — that
-/// needs `App::default_filter_files`, a map `GuiState` doesn't have yet;
-/// switching schemas here never auto-loads filters, only the TUI's `:
-/// schema` does.
-fn apply_schema_command(state: &mut GuiState, name: Option<&str>) -> Result<String, String> {
-    let Some(tab) = state.active_tab_mut() else {
-        return Err("Open a log tab to use this command.".into());
-    };
-    match name {
-        None => {
-            let schema_name = tab
-                .display
-                .format
-                .as_deref()
-                .map(|f| f.name().to_string())
-                .unwrap_or_else(|| "none".to_string());
-            return Ok(format!("active schema: {schema_name}"));
-        }
-        Some("none") => {
-            tab.apply_format(None);
-            force_recompute(tab);
-        }
-        Some(schema_name) => {
-            let parser = crate::parser::resolve_parser(schema_name);
-            {
-                let p = parser?;
-                tab.apply_format(Some(p));
-                tab.display.hidden_fields.clear();
-                force_recompute(tab);
-            }
-        }
-    }
-    Ok(format!("Schema changed to {}.", name.unwrap_or("none")))
+fn report_schema(state: &mut GuiState) -> Result<String, String> {
+    let tab = state
+        .active_tab()
+        .ok_or("Open a log tab to use this command.")?;
+    let name = tab
+        .display
+        .format
+        .as_deref()
+        .map(|format| format.name())
+        .unwrap_or("none");
+    Ok(format!("active schema: {name}"))
 }
 /// Mirrors the TUI's `App::cmd_path`: reports the active tab's source file
 /// path (or a placeholder for a tab with none, e.g. stdin) via
@@ -3019,10 +3002,62 @@ mod tests {
         }
     }
 
+    fn finish_schema(state: &mut GuiState, effect: Effect) {
+        let Effect::PrepareSchema {
+            request_id,
+            tab_id,
+            name,
+        } = effect
+        else {
+            panic!("expected schema worker")
+        };
+        let reader = state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .unwrap()
+            .file_reader
+            .clone();
+        let prepared = super::super::schema_preparation::prepare(reader, &name);
+        update(
+            state,
+            Message::SchemaPrepared(request_id, tab_id, name, Box::new(prepared)),
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_changes_defer_full_file_metadata() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let effect = handle_command_string(&mut state, "schema clf".into());
+        assert!(state.tabs[0].display.format.is_none());
+        assert!(state.palette.pending());
+        let Effect::PrepareSchema {
+            request_id,
+            tab_id,
+            name,
+        } = effect
+        else {
+            panic!("expected schema worker")
+        };
+        let prepared =
+            super::super::schema_preparation::prepare(state.tabs[0].file_reader.clone(), &name);
+        state.tabs[0].file_reader =
+            crate::ingestion::FileReader::from_bytes(b"replacement\n".to_vec());
+        let retry = update(
+            &mut state,
+            Message::SchemaPrepared(request_id, tab_id, name, Box::new(prepared)),
+        );
+        assert!(state.tabs[0].display.format.is_none());
+        finish_schema(&mut state, retry);
+        assert_eq!(state.tabs[0].continuation_map.as_ref().unwrap().len(), 1);
+        assert_eq!(state.tabs[0].display.format.as_ref().unwrap().name(), "clf");
+    }
+
     #[tokio::test]
     async fn schema_command_applies_a_builtin_parser_by_name() {
         let (mut state, _file) = state_with_one_tab().await;
-        handle_command_string(&mut state, "schema clf".to_string());
+        let effect = handle_command_string(&mut state, "schema clf".to_string());
+        finish_schema(&mut state, effect);
         assert_eq!(
             state.tabs[0].display.format.as_deref().map(|f| f.name()),
             Some("clf")
@@ -3032,16 +3067,19 @@ mod tests {
     #[tokio::test]
     async fn schema_command_none_clears_a_previously_set_format() {
         let (mut state, _file) = state_with_one_tab().await;
-        handle_command_string(&mut state, "schema clf".to_string());
+        let effect = handle_command_string(&mut state, "schema clf".to_string());
+        finish_schema(&mut state, effect);
         assert!(state.tabs[0].display.format.is_some());
-        handle_command_string(&mut state, "schema none".to_string());
+        let effect = handle_command_string(&mut state, "schema none".to_string());
+        finish_schema(&mut state, effect);
         assert!(state.tabs[0].display.format.is_none());
     }
 
     #[tokio::test]
     async fn schema_command_reports_an_unknown_schema() {
         let (mut state, _file) = state_with_one_tab().await;
-        handle_command_string(&mut state, "schema not-a-real-schema".to_string());
+        let effect = handle_command_string(&mut state, "schema not-a-real-schema".to_string());
+        finish_schema(&mut state, effect);
         assert!(state.tabs[0].display.format.is_none());
         assert!(matches!(state.status, Some(StatusMessage::Error(_))));
     }

@@ -9,6 +9,11 @@ use std::path::PathBuf;
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum Effect {
+    PrepareSchema {
+        request_id: u64,
+        tab_id: crate::shared::TabId,
+        name: String,
+    },
     ValidateFilterPattern {
         epoch: u64,
         pattern: String,

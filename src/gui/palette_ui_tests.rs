@@ -2230,6 +2230,40 @@ fn row_inspector_copies_raw_and_attaches_notes_to_the_source_row(cx: &mut TestAp
 }
 
 #[gpui_kit::test]
+fn schema_changes_install_background_metadata(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1100., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                crate::gui::message::Message::GuiCommand(
+                    crate::commands::Commands::Schema {
+                        name: Some("none".into()),
+                    },
+                    "schema none".into(),
+                ),
+                window,
+                cx,
+            );
+            assert!(app.state.palette.pending());
+            assert!(app.state.active_tab().unwrap().display.format.is_some());
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        app.update(cx, |app, _| {
+            assert!(!app.state.palette.pending());
+            assert!(app.state.active_tab().unwrap().display.format.is_none());
+            assert!(app.state.active_tab().unwrap().continuation_map.is_none());
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn schema_preview_shows_a_bounded_sample_for_the_latest_choice(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (1100., 900.), "dracula");
     cx.update_window(handle.into(), |_, window, cx| {

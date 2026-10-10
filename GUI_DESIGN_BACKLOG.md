@@ -119,7 +119,8 @@ the details without modifying its saved values.
 - [x] Finalize multiline, bookmark, collapse, and unfiltered views in workers.
 - [x] Move rendering field discovery and column fitting out of render callbacks.
 - [x] Validate regex and timestamp filter patterns in background tasks.
-- [ ] Move schema-dependent maps and remaining display commands out of UI handlers.
+- [x] Move schema-dependent maps out of UI handlers.
+- [ ] Move continuation display commands out of UI handlers.
 
 Field suggestions preserve editor drafts and reject results from a superseded
 editor, parser generation, or file snapshot.
@@ -139,3 +140,6 @@ editor choices. Tab switches schedule fitting without reading file contents.
 Pattern validation keeps the editor open, displays checking feedback, preserves
 validation errors, and ignores results for changed or closed editors. Saving
 starts only after the current pattern passes validation.
+
+Schema changes build parser metadata against a captured source in the background.
+Results for changed readers restart preparation; closed tabs cannot receive them.
