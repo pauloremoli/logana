@@ -183,6 +183,31 @@ impl App {
         (id, control)
     }
 
+    fn directory_remaining(
+        &mut self,
+        children: &std::collections::HashSet<u64>,
+        canceled: bool,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        if canceled {
+            let pending: Vec<_> = self
+                .loading
+                .operations
+                .iter()
+                .filter(|op| children.contains(&op.id))
+                .map(|op| op.id)
+                .collect();
+            for child in pending {
+                self.cancel_loading(child, cx);
+            }
+        }
+        self.loading
+            .operations
+            .iter()
+            .filter(|op| children.contains(&op.id))
+            .count()
+    }
+
     pub(super) fn queue_directory(
         &mut self,
         path: PathBuf,
@@ -199,11 +224,11 @@ impl App {
                     tokio::task::spawn_blocking(move || {
                         worker.phase("Reading directory", path.display().to_string(), None);
                         let mut paths = Vec::new();
-                        collect_directory(&path, &worker, &mut paths)?;
-                        if paths.is_empty() {
+                        let errors = collect_directory(&path, &worker, &mut paths)?;
+                        if paths.is_empty() && errors.is_empty() {
                             return Err(format!("'{}' contains no files.", path.display()));
                         }
-                        Ok(paths)
+                        Ok((paths, errors))
                     })
                     .await
                     .map_err(|e| e.to_string())?
@@ -212,22 +237,55 @@ impl App {
                 .map_err(|e| e.to_string())
                 .and_then(|r| r);
             match result {
-                Ok(paths) => {
+                Ok((paths, errors)) => {
+                    control.phase("Opening directory", String::new(), None);
+                    control
+                        .progress
+                        .send_modify(|p| p.total_files = paths.len());
+                    let mut children = std::collections::HashSet::new();
                     for batch in paths.chunks(32) {
                         if control.cancelled() {
                             break;
                         }
-                        this.update(cx, |app, cx| {
+                        let queued = this.update(cx, |app, cx| {
+                            let mut queued = Vec::new();
                             for path in batch {
+                                if control.cancelled() {
+                                    break;
+                                }
                                 app.queue_file_with_args(path.clone(), args.clone(), cx);
+                                queued.push(app.loading.next_id);
                             }
-                        })
-                        .ok();
+                            queued
+                        });
+                        let Ok(queued) = queued else { return };
+                        children.extend(queued);
                         cx.background_executor()
                             .timer(std::time::Duration::from_millis(10))
                             .await;
                     }
-                    this.update(cx, |app, cx| app.finish_loading(id, Ok(()), cx))
+                    // Keep the directory's cancel button until all its requests finish.
+                    loop {
+                        let remaining = this.update(cx, |app, cx| {
+                            app.directory_remaining(&children, control.cancelled(), cx)
+                        });
+                        let Ok(remaining) = remaining else { return };
+                        control
+                            .progress
+                            .send_modify(|p| p.completed = children.len() - remaining);
+                        if remaining == 0 {
+                            break;
+                        }
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(100))
+                            .await;
+                    }
+                    let result = if errors.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(errors.join("\n"))
+                    };
+                    this.update(cx, |app, cx| app.finish_loading(id, result, cx))
                         .ok();
                 }
                 Err(error) => {
@@ -290,24 +348,41 @@ fn collect_directory(
     path: &Path,
     control: &Control,
     files: &mut Vec<PathBuf>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
+    control.check().map_err(|e| e.to_string())?;
+    let mut errors = Vec::new();
     let mut entries = Vec::new();
-    for entry in std::fs::read_dir(path).map_err(|e| e.to_string())? {
+    for entry in std::fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))? {
         control.check().map_err(|e| e.to_string())?;
-        entries.push(entry.map_err(|e| e.to_string())?);
+        match entry {
+            Ok(entry) => entries.push(entry),
+            Err(error) => errors.push(format!("{}: {error}", path.display())),
+        }
     }
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         control.check().map_err(|e| e.to_string())?;
-        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        let kind = match entry.file_type() {
+            Ok(kind) => kind,
+            Err(error) => {
+                errors.push(format!("{}: {error}", entry.path().display()));
+                continue;
+            }
+        };
         if kind.is_dir() {
-            collect_directory(&entry.path(), control, files)?;
+            match collect_directory(&entry.path(), control, files) {
+                Ok(nested_errors) => errors.extend(nested_errors),
+                Err(error) => {
+                    control.check().map_err(|e| e.to_string())?;
+                    errors.push(error);
+                }
+            }
         } else if kind.is_file() {
             files.push(entry.path());
             control.bytes(files.len() as u64);
         }
     }
-    Ok(())
+    Ok(errors)
 }
 
 fn build_merge(
@@ -606,6 +681,28 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn directory_scan_continues_after_unreadable_subdirectory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let unreadable = dir.path().join("a-unreadable");
+        std::fs::create_dir(&unreadable).unwrap();
+        std::fs::write(unreadable.join("hidden.log"), "hidden\n").unwrap();
+        let good = dir.path().join("z-good.log");
+        std::fs::write(&good, "good\n").unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o0)).unwrap();
+        let (control, _) = Control::new();
+        let mut paths = Vec::new();
+        let result = collect_directory(dir.path(), &control, &mut paths);
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let errors = result.unwrap();
+        assert_eq!(paths, vec![good]);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("a-unreadable"));
+    }
+
+    #[test]
     fn directory_scan_and_extraction_obey_cancel_and_destination() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
@@ -645,5 +742,45 @@ mod tests {
             .is_err()
         );
         assert!(!dir.path().join("canceled.log").exists());
+    }
+}
+
+#[cfg(all(test, feature = "gui-test"))]
+mod directory_ui_tests {
+    use super::*;
+    use gpui_kit::gpui::{AppContext, TestAppContext};
+
+    #[gpui_kit::test]
+    fn directory_cancel_stops_children_and_keeps_unrelated_operation(cx: &mut TestAppContext) {
+        let db = Arc::new(
+            runtime::handle()
+                .block_on(crate::db::Database::in_memory())
+                .unwrap(),
+        );
+        let theme = crate::theme::Theme::default();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::gui::theme::install(&theme, cx);
+        });
+        let app = cx.new(|cx| App::new(db, theme, cx));
+        app.update(cx, |app, cx| {
+            let (parent, _) = app.cli_operation(PathBuf::from("directory"), None);
+            let (first, first_control) = app.cli_operation(PathBuf::from("a.log"), None);
+            let (second, second_control) = app.cli_operation(PathBuf::from("b.zip"), None);
+            let (_, unrelated) = app.cli_operation(PathBuf::from("unrelated.log"), None);
+            let children = [first, second].into_iter().collect();
+            assert_eq!(app.directory_remaining(&children, false, cx), 2);
+            assert!(!first_control.cancelled());
+            app.cancel_loading(parent, cx);
+            assert_eq!(app.directory_remaining(&children, true, cx), 2);
+            assert!(first_control.cancelled());
+            assert!(second_control.cancelled());
+            assert!(!unrelated.cancelled());
+            app.finish_loading(first, Ok(()), cx);
+            app.finish_loading(second, Ok(()), cx);
+            assert_eq!(app.directory_remaining(&children, true, cx), 0);
+            app.finish_loading(parent, Ok(()), cx);
+            assert_eq!(app.loading.operations.len(), 1);
+        });
     }
 }

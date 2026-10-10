@@ -1703,7 +1703,13 @@ impl FileReader {
             .stderr(std::process::Stdio::piped())
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true)
-            .spawn()?;
+            .spawn()
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("Cannot start executable {program:?}: {error}"),
+                )
+            })?;
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -3317,6 +3323,18 @@ mod tests {
         assert_eq!(collected.len(), 1);
         assert_eq!(collected[0].0, 0);
         assert_eq!(collected[0].1, b"only".as_ref());
+    }
+
+    #[tokio::test]
+    async fn test_spawn_process_stream_missing_executable_names_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("missing-executable");
+        let program = program.to_str().unwrap();
+        let error = FileReader::spawn_process_stream(program, &[], false)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().contains(program));
     }
 
     #[tokio::test]

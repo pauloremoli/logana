@@ -199,9 +199,9 @@ pub fn log_pane(
                                             .map(|(index, note)| {
                                                 let full_note = note.text.clone();
                                                 div().id(("log-annotation", index)).test_support()
-                                                    .h(rems(ANNOTATION_HEIGHT_PX / 13.)).w_full().px_3().text_sm().truncate()
+                                                    .h(rems(ANNOTATION_HEIGHT_PX / 13.)).w_full().flex().items_center().px_3().text_sm()
                                                     .text_color(color_to_gpui(app.state.theme.comment_fg).unwrap_or(gpui_kit::gpui::rgb(0xaaaaaa))).font_weight(FontWeight::BOLD).cursor_pointer()
-                                                    .child(note.text.replace('\n', " "))
+                                                    .child(div().flex_1().min_w(px(0.)).truncate().child(note.text.replace('\n', " ")))
                                                     .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(full_note.clone()).build(window, cx))
                                         .on_click(cx.listener(move |app, _, window, cx| {
                                                         cx.stop_propagation();

@@ -126,6 +126,29 @@ impl App {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn run_editor_trims_executable_and_expands_home_paths() {
+        let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let mut state = crate::gui::state::GuiState::new(db);
+        crate::gui::actions::open(&mut state, crate::gui::actions::Action::Run, None, None);
+        let editor = state.editor.as_mut().unwrap();
+        editor.values[0] = " cat ".into();
+        editor.values[1] = "~/logs/otel.log\nargument with spaces".into();
+        let crate::gui::effect::Effect::ConnectSource(Source::Run { program, args }) =
+            crate::gui::actions::apply(&mut state)
+        else {
+            panic!("expected a process connection");
+        };
+        assert_eq!(program, "cat");
+        assert_eq!(
+            args,
+            vec![
+                crate::commands::auto_complete::expand_tilde("~/logs/otel.log"),
+                "argument with spaces".into(),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn dlt_editor_carries_device_name_into_connection() {
         let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
         let mut state = crate::gui::state::GuiState::new(db);
@@ -241,6 +264,61 @@ mod tests {
         );
         assert!(!state.editor.as_ref().unwrap().dlt_saving);
     }
+    #[tokio::test]
+    async fn saved_dlt_devices_can_be_edited_and_removed() {
+        use crate::gui::{
+            actions::{self, Action},
+            effect::Effect,
+            message::Message,
+            update::update,
+        };
+        let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let mut state = crate::gui::state::GuiState::new(db);
+        actions::open(&mut state, Action::Dlt, None, None);
+        let e = state.editor.as_mut().unwrap();
+        e.members = vec![(0, "a".into(), true), (1, "b".into(), true)];
+        e.conditions = vec![
+            ("old".into(), "3490".into()),
+            ("other".into(), "3491".into()),
+        ];
+        update(&mut state, Message::SelectDltDevice(Some(0)));
+        assert_eq!(state.editor.as_ref().unwrap().values[0], "old");
+        update(&mut state, Message::EditorText(3, "renamed".into()));
+        let Effect::UpdateDltDevice {
+            epoch,
+            original_name,
+            device: Some(device),
+        } = update(&mut state, Message::SaveDltDevice)
+        else {
+            panic!("expected update");
+        };
+        assert_eq!(original_name, "a");
+        update(&mut state, Message::SelectDltDevice(Some(1)));
+        assert_eq!(state.editor.as_ref().unwrap().edit_id, Some(0));
+        update(&mut state, Message::DltDeviceSaved(epoch, device, Ok(())));
+        assert_eq!(state.editor.as_ref().unwrap().members.len(), 2);
+        assert_eq!(state.editor.as_ref().unwrap().members[0].1, "renamed");
+        assert!(matches!(
+            update(&mut state, Message::RemoveDltDevice),
+            Effect::UpdateDltDevice { device: None, .. }
+        ));
+        update(
+            &mut state,
+            Message::DltDeviceRemoved(epoch, Err("Write failed".into())),
+        );
+        assert_eq!(state.editor.as_ref().unwrap().members.len(), 2);
+        update(&mut state, Message::RemoveDltDevice);
+        update(&mut state, Message::DltDeviceRemoved(epoch, Ok(())));
+        let e = state.editor.as_ref().unwrap();
+        assert_eq!(e.edit_id, None);
+        assert_eq!(e.members, vec![(0, "b".into(), true)]);
+        update(&mut state, Message::SelectDltDevice(Some(0)));
+        assert_eq!(state.editor.as_ref().unwrap().values[0], "other");
+        update(&mut state, Message::SelectDltDevice(None));
+        assert_eq!(state.editor.as_ref().unwrap().edit_id, None);
+        assert!(state.editor.as_ref().unwrap().values[3].is_empty());
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn subprocess_output_is_a_watched_gui_source() {

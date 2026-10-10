@@ -465,7 +465,7 @@ impl App {
             } else {
                 match result {
                     Ok(()) => StatusMessage::Info("Files opened.".into()),
-                    Err(error) => StatusMessage::Error(error),
+                    Err(error) => StatusMessage::Error(format!("{}: {error}", op.path.display())),
                 }
             });
             if self.loading.selected_picker == Some(id) {

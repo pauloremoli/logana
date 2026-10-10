@@ -48,7 +48,7 @@ arboard = { version = "3", optional = true }
 bitflags = "2"
 tempfile = "3.10"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 bzip2 = { version = "0.6", default-features = false, features = ["bzip2-sys"] }
 xz2 = { version = "0.1", default-features = false }
 tar = { version = "0.4", default-features = false }
@@ -56,10 +56,10 @@ opentelemetry-proto = { version = "0.31", default-features = false, features = [
 prost = { version = "0.14", default-features = false }
 tonic = { version = "0.14", default-features = false, features = ["transport", "router"] }
 tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
-strum = { version = "0.28.0", features = ["derive"] }
+strum = { version = "0.28.0", default-features = false, features = ["std", "derive"] }
 schemars = { version = "0.8", default-features = false, features = ["derive", "preserve_order"] }
 arc-swap = { version = "1.9", default-features = false }
-gpui-kit = { version = "0.7", optional = true }
+gpui-kit = { version = "0.7", default-features = false, features = ["component", "assets"], optional = true }
 futures = { version = "0.3", default-features = false, features = ["std", "executor"], optional = true }
 
 [dev-dependencies]

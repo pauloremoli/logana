@@ -22,7 +22,7 @@ eula = false
 [dependencies]
 logana = { path = "../..", default-features = false, features = ["gui"] }
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
-gpui-kit = "0.7"
+gpui-kit = { version = "0.7", default-features = false, features = ["component", "assets"] }
 
 [build-dependencies]
 embed-resource = "3.0"

@@ -603,6 +603,30 @@ impl App {
             }
             Effect::ListDocker { epoch } => self.list_docker(epoch, cx),
             Effect::ConnectSource(source) => self.connect_source(source, cx),
+            Effect::UpdateDltDevice {
+                epoch,
+                original_name,
+                device,
+            } => {
+                cx.spawn(async move |this, cx| {
+                    let saved = device.clone();
+                    let result = runtime::handle()
+                        .spawn_blocking(move || {
+                            crate::config::DltDevice::update_saved(&original_name, saved.as_ref())
+                        })
+                        .await
+                        .unwrap_or_else(|error| Err(error.to_string()));
+                    this.update_in(cx, |app, window, cx| {
+                        let message = match device {
+                            Some(device) => Message::DltDeviceSaved(epoch, device, result),
+                            None => Message::DltDeviceRemoved(epoch, result),
+                        };
+                        app.dispatch(message, window, cx)
+                    })
+                    .ok();
+                })
+                .detach();
+            }
             Effect::ValidateFilterPattern {
                 epoch,
                 pattern,

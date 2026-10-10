@@ -1,4 +1,5 @@
 use crate::filters::{FilterDef, FilterType, GroupDef};
+use crate::gui::actions::{Action, CATALOG};
 use crate::gui::app::App;
 use crate::gui::color::{filter_row_bg_color, filter_row_color};
 use crate::gui::message::Message;
@@ -8,16 +9,12 @@ use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Empty, div, px};
-
-/// The filter list's own header row occupies child index 0 of the
-/// scrollable container (see `filter_pane`), so a selected filter at
-/// `index` sits at `index + FILTER_LIST_HEADER_ROWS` for `scroll_to_item`.
-const FILTER_LIST_HEADER_ROWS: usize = 1;
 
 /// Native filter controls: add, edit, enable, remove, and drag to reorder.
 pub fn filter_pane(
@@ -31,23 +28,24 @@ pub fn filter_pane(
     let entity = cx.entity();
     let empty = filter_defs.is_empty();
     let enabled = filter_defs.iter().filter(|def| def.enabled).count();
+    let total = filter_defs.len();
     if let Some(index) = selected {
-        scroll.scroll_to_item(index + FILTER_LIST_HEADER_ROWS);
+        scroll.scroll_to_item(index);
     }
-    let mut col = div()
-        .id("sidebar-filters-scroll")
+    let pane = div()
         .flex()
         .flex_col()
         .flex_1()
         .min_h(px(0.))
-        .gap_2()
-        .overflow_y_scroll()
-        .track_scroll(scroll)
-        .px_4()
-        .pt_4()
-        .pb_4()
+        .overflow_hidden()
         .child(
             div()
+                .id("sidebar-filters-header")
+                .test_support()
+                .flex_shrink_0()
+                .px_4()
+                .pt_4()
+                .pb_2()
                 .flex()
                 .items_center()
                 .gap_1()
@@ -88,29 +86,64 @@ pub fn filter_pane(
                         .dropdown_menu(move |menu, _, _| {
                             let fields = entity.clone();
                             let clear = entity.clone();
-                            menu.item(PopupMenuItem::new("Add from field").on_click(
+                            let mut menu =
+                                menu.item(PopupMenuItem::new("Add from field").on_click(
+                                    move |_, window, cx| {
+                                        fields.update(cx, |app, cx| {
+                                            app.dispatch(Message::FacetBrowserToggled, window, cx)
+                                        });
+                                    },
+                                ));
+                            for action in [
+                                Action::Filter,
+                                Action::ToggleFiltering,
+                                Action::EnableFilters,
+                                Action::DisableFilters,
+                                Action::SaveFilters,
+                                Action::LoadFilters,
+                                Action::AppendFilters,
+                                Action::ImportFilters,
+                                Action::DefaultFilters,
+                            ] {
+                                let target = entity.clone();
+                                let label =
+                                    CATALOG.iter().find(|d| d.action == action).unwrap().label;
+                                let disabled = match action {
+                                    Action::EnableFilters => empty || enabled == total,
+                                    Action::DisableFilters => enabled == 0,
+                                    _ => false,
+                                };
+                                menu = menu.item(
+                                    PopupMenuItem::new(label).disabled(disabled).on_click(
+                                        move |_, window, cx| {
+                                            target.update(cx, |app, cx| {
+                                                app.dispatch(Message::GuiAction(action), window, cx)
+                                            });
+                                        },
+                                    ),
+                                );
+                            }
+                            menu.item(PopupMenuItem::new("Clear all").disabled(empty).on_click(
                                 move |_, window, cx| {
-                                    fields.update(cx, |app, cx| {
-                                        app.dispatch(Message::FacetBrowserToggled, window, cx)
+                                    clear.update(cx, |app, cx| {
+                                        app.dispatch(Message::ClearAllFilters(tab_idx), window, cx)
                                     });
                                 },
                             ))
-                            .item(
-                                PopupMenuItem::new("Clear all").disabled(empty).on_click(
-                                    move |_, window, cx| {
-                                        clear.update(cx, |app, cx| {
-                                            app.dispatch(
-                                                Message::ClearAllFilters(tab_idx),
-                                                window,
-                                                cx,
-                                            )
-                                        });
-                                    },
-                                ),
-                            )
                         }),
                 ),
         );
+    let mut col = div()
+        .id("sidebar-filters-scroll")
+        .test_support()
+        .size_full()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .overflow_y_scroll()
+        .track_scroll(scroll)
+        .px_4()
+        .pb_4();
     if empty {
         col = col.child(
             div()
@@ -140,7 +173,15 @@ pub fn filter_pane(
             cx,
         ));
     }
-    col
+    pane.child(
+        div()
+            .relative()
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_hidden()
+            .child(col)
+            .vertical_scrollbar(scroll),
+    )
 }
 
 pub(crate) fn display_pattern(pattern: &str) -> String {
@@ -179,6 +220,7 @@ fn filter_row(
     div()
         .id(("filter-row", id))
         .group("filter-row")
+        .flex_shrink_0()
         .on_mouse_down(
             gpui_kit::gpui::MouseButton::Left,
             cx.listener(move |app, _, _, cx| {

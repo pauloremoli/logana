@@ -340,25 +340,52 @@ fn dlt_editor(app: &App, width: f32, height: f32, cx: &mut Context<App>) -> AnyE
                 continue;
             }
             count += 1;
-            let name = label.clone();
+            let device_index = *index;
             let host = host.clone();
             let port = port.clone();
             devices = devices.child(
-                ListItem::new(("dlt-device", *index))
-                    .selected(e.values[0] == host && e.values[1] == port && e.values[3] == *label)
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
                     .child(
-                        div().flex().flex_col().child(label.clone()).child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(format!("{host}:{port}")),
-                        ),
+                        ListItem::new(("dlt-device", *index))
+                            .flex_1()
+                            .min_w(px(0.))
+                            .selected(e.edit_id == Some(*index))
+                            .child(
+                                div().flex().flex_col().child(label.clone()).child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("{host}:{port}")),
+                                ),
+                            )
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.dispatch(
+                                    Message::SelectDltDevice(Some(device_index)),
+                                    window,
+                                    cx,
+                                );
+                            })),
                     )
-                    .on_click(cx.listener(move |app, _, window, cx| {
-                        app.dispatch(Message::EditorText(0, host.clone()), window, cx);
-                        app.dispatch(Message::EditorText(1, port.clone()), window, cx);
-                        app.dispatch(Message::EditorText(3, name.clone()), window, cx);
-                    })),
+                    .child(
+                        Button::new(("dlt-remove-device", device_index))
+                            .ghost()
+                            .small()
+                            .icon(IconName::X)
+                            .accessibility_label(format!("Remove saved device {label}"))
+                            .tooltip("Remove saved device")
+                            .disabled(e.dlt_saving)
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.dispatch(
+                                    Message::SelectDltDevice(Some(device_index)),
+                                    window,
+                                    cx,
+                                );
+                                app.dispatch(Message::RemoveDltDevice, window, cx);
+                            })),
+                    ),
             );
         }
     }
@@ -381,11 +408,13 @@ fn dlt_editor(app: &App, width: f32, height: f32, cx: &mut Context<App>) -> AnyE
                 .child(text(app, 0, "Device host", cx))
                 .child(text(app, 1, "TCP port", cx))
                 .child(div().text_sm().text_color(cx.theme().muted_foreground)
-                    .child("Select a saved device to fill these fields. Edit them before connecting, or save a new name."))
+                    .child("Select a saved device to edit its name, host, or port. Use New device to add another."))
                 .child(
                     Button::new("dlt-save-device")
                         .label(if e.dlt_saving {
                             "Saving…"
+                        } else if e.edit_id.is_some() {
+                            "Save changes"
                         } else {
                             "Save device"
                         })
@@ -393,7 +422,8 @@ fn dlt_editor(app: &App, width: f32, height: f32, cx: &mut Context<App>) -> AnyE
                         .on_click(cx.listener(|app, _, window, cx| {
                             app.dispatch(Message::SaveDltDevice, window, cx)
                         })),
-                ).into_any_element();
+                )
+                .into_any_element();
     let saved = div()
         .id("dlt-saved-devices")
         .test_support()
@@ -410,6 +440,14 @@ fn dlt_editor(app: &App, width: f32, height: f32, cx: &mut Context<App>) -> AnyE
             div()
                 .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
                 .child("Saved devices"),
+        )
+        .child(
+            Button::new("dlt-new-device")
+                .label("New device")
+                .disabled(e.dlt_saving)
+                .on_click(cx.listener(|app, _, window, cx| {
+                    app.dispatch(Message::SelectDltDevice(None), window, cx)
+                })),
         )
         .child(text(app, 2, "Search devices", cx))
         .child(devices)

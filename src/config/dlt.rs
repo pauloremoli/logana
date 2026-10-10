@@ -31,6 +31,45 @@ impl DltDevice {
         Self::remove_from(device_name, &config_path)
     }
 
+    pub fn update_saved(original_name: &str, device: Option<&DltDevice>) -> Result<(), String> {
+        let path = dirs::config_dir()
+            .map(|d| d.join("logana").join("config.json"))
+            .ok_or_else(|| "Could not determine config directory".to_string())?;
+        Self::update_saved_at(original_name, device, &path)
+    }
+
+    pub(crate) fn update_saved_at(
+        original_name: &str,
+        device: Option<&DltDevice>,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let contents = std::fs::read_to_string(path).map_err(|e| format!("Read error: {e}"))?;
+        let mut value: serde_json::Value =
+            serde_json::from_str(&contents).map_err(|e| format!("Invalid config: {e}"))?;
+        let devices = value
+            .get_mut("dlt_devices")
+            .and_then(|v| v.as_array_mut())
+            .ok_or("No saved DLT devices found.")?;
+        let index = devices
+            .iter()
+            .position(|d| d["name"].as_str() == Some(original_name))
+            .ok_or("Saved DLT device no longer exists.")?;
+        if let Some(device) = device {
+            if devices
+                .iter()
+                .enumerate()
+                .any(|(i, d)| i != index && d["name"].as_str() == Some(&device.name))
+            {
+                return Err("A saved device already uses this name. Choose another name.".into());
+            }
+            devices[index] = serde_json::to_value(device).map_err(|e| e.to_string())?;
+        } else {
+            devices.remove(index);
+        }
+        let json = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+        std::fs::write(path, json).map_err(|e| format!("Write error: {e}"))
+    }
+
     pub(crate) fn save_to(device: &DltDevice, config_path: &std::path::Path) -> Result<(), String> {
         let mut value: serde_json::Value = if config_path.exists() {
             let contents =
@@ -101,6 +140,35 @@ mod tests {
     fn read_config(path: &std::path::Path) -> serde_json::Value {
         let s = std::fs::read_to_string(path).unwrap();
         serde_json::from_str(&s).unwrap()
+    }
+
+    #[test]
+    fn editing_and_removing_saved_devices_preserves_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        write_config(
+            &path,
+            r#"{"theme":"dark","dlt_devices":[{"name":"a","host":"old"},{"name":"b","host":"other"}]}"#,
+        );
+        let edited = device("renamed", "new", Some(4000));
+        DltDevice::update_saved_at("a", Some(&edited), &path).unwrap();
+        let config = read_config(&path);
+        assert_eq!(config["theme"], "dark");
+        assert_eq!(
+            config["dlt_devices"][0],
+            serde_json::to_value(&edited).unwrap()
+        );
+        let before = std::fs::read(&path).unwrap();
+        assert!(
+            DltDevice::update_saved_at("renamed", Some(&device("b", "new", None)), &path).is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        DltDevice::update_saved_at("renamed", None, &path).unwrap();
+        assert_eq!(
+            read_config(&path)["dlt_devices"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(read_config(&path)["dlt_devices"][0]["name"], "b");
     }
 
     #[test]

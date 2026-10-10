@@ -1610,6 +1610,9 @@ fn filter_sidebar_keyboard_navigation_scrolls_selection_into_view(cx: &mut TestA
             );
         });
         window.render_frame(cx);
+        let header_bounds = window.find("sidebar-filters-header").bounds();
+        let items_bounds = window.find("sidebar-filters-scroll").bounds();
+        assert!(items_bounds.top() >= header_bounds.bottom());
         assert_eq!(app.read(cx).state.sidebar_cursor, 0);
         assert_eq!(app.read(cx).filter_sidebar_scroll.offset().y, px(0.));
         app.update(cx, |app, cx| {
@@ -1622,6 +1625,10 @@ fn filter_sidebar_keyboard_navigation_scrolls_selection_into_view(cx: &mut TestA
             }
         });
         window.render_frame(cx);
+        assert_eq!(
+            window.find("sidebar-filters-header").bounds(),
+            header_bounds
+        );
         assert_eq!(app.read(cx).state.sidebar_cursor, 30);
         assert!(
             app.read(cx).filter_sidebar_scroll.offset().y < px(0.),

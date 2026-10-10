@@ -1341,8 +1341,11 @@ pub fn apply(state: &mut GuiState) -> Effect {
             return Effect::None;
         }
         let source = crate::gui::sources::Source::Run {
-            program: e.values[0].clone(),
-            args: e.values[1].lines().map(str::to_string).collect(),
+            program: crate::commands::auto_complete::expand_tilde(e.values[0].trim()),
+            args: e.values[1]
+                .lines()
+                .map(crate::commands::auto_complete::expand_tilde)
+                .collect(),
         };
         close(state, true);
         return Effect::ConnectSource(source);

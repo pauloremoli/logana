@@ -38,6 +38,11 @@ pub enum Effect {
         epoch: u64,
     },
     ConnectSource(crate::gui::sources::Source),
+    UpdateDltDevice {
+        epoch: u64,
+        original_name: String,
+        device: Option<crate::config::DltDevice>,
+    },
     SaveDltDevice {
         epoch: u64,
         device: crate::config::DltDevice,

@@ -54,10 +54,10 @@ pub fn group_pane(
                 )
                 .child(
                     Button::new("add-group")
-                        .ghost()
+                        .primary()
                         .small()
                         .icon(IconName::Plus)
-                        .label("Add")
+                        .label("Add group")
                         .tooltip("Add group")
                         .on_click(cx.listener(|app, _, window, cx| {
                             app.dispatch(

@@ -115,6 +115,76 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
                 }
             }
         }
+        Message::SelectDltDevice(index) => {
+            if let Some(e) = state
+                .editor
+                .as_mut()
+                .filter(|e| e.action == crate::gui::actions::Action::Dlt && !e.dlt_saving)
+            {
+                if let Some(index) = index {
+                    if let Some((_, name, _)) = e.members.get(index)
+                        && let Some((host, port)) = e.conditions.get(index)
+                    {
+                        e.values[0] = host.clone();
+                        e.values[1] = port.clone();
+                        e.values[3] = name.clone();
+                        e.edit_id = Some(index);
+                    }
+                } else {
+                    e.edit_id = None;
+                    e.values[0] = "localhost".into();
+                    e.values[1] = crate::config::DEFAULT_DLT_PORT.to_string();
+                    e.values[3].clear();
+                }
+                e.error = None;
+            }
+            Effect::None
+        }
+        Message::RemoveDltDevice => {
+            let Some(e) = state
+                .editor
+                .as_mut()
+                .filter(|e| e.action == crate::gui::actions::Action::Dlt && !e.dlt_saving)
+            else {
+                return Effect::None;
+            };
+            let Some(index) = e.edit_id else {
+                return Effect::None;
+            };
+            e.dlt_saving = true;
+            e.error = None;
+            Effect::UpdateDltDevice {
+                epoch: e.epoch,
+                original_name: e.members[index].1.clone(),
+                device: None,
+            }
+        }
+        Message::DltDeviceRemoved(epoch, result) => {
+            if let Some(e) = state
+                .editor
+                .as_mut()
+                .filter(|e| e.epoch == epoch && e.action == crate::gui::actions::Action::Dlt)
+            {
+                e.dlt_saving = false;
+                if result.is_ok() {
+                    if let Some(index) = e.edit_id.take() {
+                        e.members.remove(index);
+                        e.conditions.remove(index);
+                        for (index, member) in e.members.iter_mut().enumerate() {
+                            member.0 = index;
+                        }
+                        e.values[3].clear();
+                    }
+                } else {
+                    e.error = result.clone().err();
+                }
+            }
+            state.notify(match result {
+                Ok(()) => StatusMessage::Info("Removed saved DLT device.".into()),
+                Err(error) => StatusMessage::Error(error),
+            });
+            Effect::None
+        }
         Message::SaveDltDevice => {
             let Some(e) = state
                 .editor
@@ -125,7 +195,9 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             };
             match crate::gui::actions::dlt_device(e, true) {
                 Ok(device) => {
-                    if e.members.iter().any(|(_, name, _)| *name == device.name) {
+                    if e.members.iter().enumerate().any(|(index, (_, name, _))| {
+                        Some(index) != e.edit_id && *name == device.name
+                    }) {
                         e.error = Some(
                             "A saved device already uses this name. Choose another name.".into(),
                         );
@@ -133,9 +205,17 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
                     }
                     e.dlt_saving = true;
                     e.error = None;
-                    Effect::SaveDltDevice {
-                        epoch: e.epoch,
-                        device,
+                    if let Some(index) = e.edit_id {
+                        Effect::UpdateDltDevice {
+                            epoch: e.epoch,
+                            original_name: e.members[index].1.clone(),
+                            device: Some(device),
+                        }
+                    } else {
+                        Effect::SaveDltDevice {
+                            epoch: e.epoch,
+                            device,
+                        }
                     }
                 }
                 Err(error) => {
@@ -152,15 +232,26 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             {
                 e.dlt_saving = false;
                 if result.is_ok() {
-                    let index = e.conditions.len();
-                    e.members.push((index, device.name.clone(), true));
-                    e.conditions.push((
-                        device.host,
-                        device
-                            .port
-                            .unwrap_or(crate::config::DEFAULT_DLT_PORT)
-                            .to_string(),
-                    ));
+                    let index = e.edit_id.unwrap_or(e.conditions.len());
+                    if e.edit_id.is_some() {
+                        e.members[index].1 = device.name.clone();
+                        e.conditions[index] = (
+                            device.host.clone(),
+                            device
+                                .port
+                                .unwrap_or(crate::config::DEFAULT_DLT_PORT)
+                                .to_string(),
+                        );
+                    } else {
+                        e.members.push((index, device.name.clone(), true));
+                        e.conditions.push((
+                            device.host,
+                            device
+                                .port
+                                .unwrap_or(crate::config::DEFAULT_DLT_PORT)
+                                .to_string(),
+                        ));
+                    }
                 } else {
                     e.error = result.clone().err();
                 }
