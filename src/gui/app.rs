@@ -71,6 +71,7 @@ pub struct App {
     pub menu_bar: Entity<AppMenuBar>,
     pub facet_counts: std::collections::HashMap<crate::shared::TabId, FacetCache>,
     pub facet_search: Option<Entity<InputState>>,
+    pub(super) facet_query: Option<crate::gui::facet_query::Query>,
     pub archive_search: Option<Entity<InputState>>,
     pub inspected_row: Option<(crate::shared::TabId, usize)>,
     pub inspector_raw: bool,
@@ -101,7 +102,7 @@ pub struct App {
 
 pub struct FacetCache {
     pub(super) key: (usize, String),
-    pub counts: Option<crate::shared::FieldValueCounts>,
+    pub counts: Option<Arc<crate::shared::FieldValueCounts>>,
 }
 
 impl App {
@@ -264,6 +265,7 @@ impl App {
             menu_bar: AppMenuBar::new(cx),
             facet_counts: Default::default(),
             facet_search: None,
+            facet_query: None,
             archive_search: None,
             inspected_row: None,
             inspector_raw: false,
@@ -986,7 +988,7 @@ impl App {
                 if let Some(entry) = app.facet_counts.get_mut(&id)
                     && entry.key == key
                 {
-                    entry.counts = Some(result);
+                    entry.counts = Some(Arc::new(result));
                     cx.notify();
                 }
             })
@@ -1749,6 +1751,7 @@ impl Render for App {
             self.text_context = text_context;
         }
         self.sync_field_discovery(cx);
+        self.sync_facet_query(cx);
         self.sync_schema_preview(cx);
         self.sync_export_preview(cx);
         let focused = |input: &Option<Entity<InputState>>| {

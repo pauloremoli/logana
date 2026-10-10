@@ -524,7 +524,7 @@ fn add_log_tab(app: &Entity<App>, cx: &mut gpui::App, structured: bool) {
             tab.id,
             super::app::FacetCache {
                 key,
-                counts: Some(counts),
+                counts: Some(std::sync::Arc::new(counts)),
             },
         );
         cx.notify();
@@ -1118,7 +1118,7 @@ fn cache_log_facets(app: &mut App) {
         tab.id,
         super::app::FacetCache {
             key,
-            counts: Some(counts),
+            counts: Some(std::sync::Arc::new(counts)),
         },
     );
 }
@@ -2106,13 +2106,13 @@ fn field_facets_page_values_and_search_every_page(cx: &mut TestAppContext) {
             app.state.facet_browser_open = true;
             let id = app.state.tabs[0].id;
             let cache = app.facet_counts.get_mut(&id).unwrap();
-            cache.counts = Some(crate::shared::FieldValueCounts {
+            cache.counts = Some(std::sync::Arc::new(crate::shared::FieldValueCounts {
                 names: vec!["service".into()],
                 counts: std::collections::HashMap::from([(
                     "service".into(),
                     (0..100).map(|i| (format!("value{i:03}"), 1)).collect(),
                 )]),
-            });
+            }));
             cx.notify();
         });
         window.render_frame(cx);
@@ -2133,7 +2133,20 @@ fn field_facets_page_values_and_search_every_page(cx: &mut TestAppContext) {
         assert!(window.try_find("facet-value:service:value080").is_some());
 
         window.click("facet-search-input", cx);
-        window.input("value099", cx);
+        app.update(cx, |app, cx| {
+            app.facet_search.as_ref().unwrap().update(cx, |input, cx| {
+                input.set_value("value099", window, cx);
+            });
+            app.sync_facet_query(cx);
+            let (counts, pending) = app.facet_display_counts().unwrap();
+            assert!(pending);
+            assert_eq!(counts.counts["service"].len(), 100);
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find("facet-value:service:value099").is_some());
         assert!(window.try_find("facet-next:service").is_none());

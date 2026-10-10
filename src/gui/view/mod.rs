@@ -216,9 +216,7 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                     &app.state.facet_expanded,
                     &app.facet_pages,
                     app.facet_search.as_ref(),
-                    app.facet_counts
-                        .get(&tab.id)
-                        .and_then(|entry| entry.counts.as_ref()),
+                    app.facet_display_counts(),
                     &app.filter_sidebar_scroll,
                     &app.group_sidebar_scroll,
                     cx,

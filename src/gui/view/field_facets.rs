@@ -29,6 +29,7 @@ pub fn field_facets(
     expanded: &HashMap<String, bool>,
     pages: &HashMap<String, usize>,
     search: Option<&Entity<InputState>>,
+    searching: bool,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let mut col = div()
@@ -64,20 +65,19 @@ pub fn field_facets(
                 .prefix(Icon::new(IconName::Search)),
         );
     }
+    if searching {
+        col = col.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Searching values…"),
+        );
+    }
     let mut matches = 0;
     for name in &counts.names {
         let Some(values) = counts.counts.get(name) else {
             continue;
         };
-        let values: Vec<_> = values
-            .iter()
-            .filter(|(value, _)| {
-                query.is_empty()
-                    || name.to_lowercase().contains(&query)
-                    || value.to_lowercase().contains(&query)
-            })
-            .cloned()
-            .collect();
         if values.is_empty() {
             continue;
         }
@@ -90,14 +90,14 @@ pub fn field_facets(
         col = col.child(facet_category(
             tab_idx,
             name,
-            &values,
+            values,
             filter_defs,
             is_expanded,
             pages.get(name).copied().unwrap_or(0),
             cx,
         ));
     }
-    if matches == 0 {
+    if matches == 0 && !searching {
         col = col.child(
             div()
                 .py_3()

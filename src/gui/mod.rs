@@ -55,3 +55,5 @@ mod field_discovery;
 mod table_preparation;
 
 mod schema_preparation;
+
+mod facet_query;

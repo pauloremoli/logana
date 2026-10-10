@@ -150,3 +150,7 @@ targets the complete source rather than the first available results.
 
 Live sources detect their initial format and default field visibility in the
 reading worker before installing the first structured snapshot.
+
+Field-value search prepares matching values in a background worker and keeps
+the input responsive while checking. Rendering borrows prepared lists and
+creates controls only for the current page.

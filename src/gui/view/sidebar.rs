@@ -42,7 +42,7 @@ pub fn sidebar(
     facet_expanded: &HashMap<String, bool>,
     facet_pages: &HashMap<String, usize>,
     facet_search: Option<&Entity<InputState>>,
-    facet_counts: Option<&crate::shared::FieldValueCounts>,
+    facet_counts: Option<(&crate::shared::FieldValueCounts, bool)>,
     filter_scroll: &gpui_kit::gpui::ScrollHandle,
     group_scroll: &gpui_kit::gpui::ScrollHandle,
     cx: &mut Context<App>,
@@ -78,13 +78,14 @@ pub fn sidebar(
                 return outer.child(filters_pane);
             }
             let facets = match facet_counts {
-                Some(counts) => field_facets::field_facets(
+                Some((counts, searching)) => field_facets::field_facets(
                     tab_idx,
                     counts,
                     filter_defs,
                     facet_expanded,
                     facet_pages,
                     facet_search,
+                    searching,
                     cx,
                 )
                 .into_any_element(),
