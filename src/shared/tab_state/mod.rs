@@ -3105,21 +3105,33 @@ impl TabState {
     }
 
     fn compute_field_names(&self) -> Vec<String> {
-        let mut names = if let Some(parser) = &self.display.format {
-            const SAMPLE_LIMIT: usize = 200;
-            let limit = self.filter.visible_indices.len().min(SAMPLE_LIMIT);
-            let owned_lines: Vec<_> = (0..limit)
-                .map(|i| {
-                    self.file_reader
-                        .get_line(self.filter.visible_indices.get(i))
-                })
+        let indices: Vec<_> = self.filter.visible_indices.iter().take(200).collect();
+        Self::field_names_for(
+            &self.file_reader,
+            self.display.format.as_deref(),
+            &indices,
+            self.merged.is_some(),
+        )
+    }
+
+    pub fn field_names_for(
+        reader: &FileReader,
+        parser: Option<&dyn LogFormatParser>,
+        indices: &[usize],
+        merged: bool,
+    ) -> Vec<String> {
+        let mut names = if let Some(parser) = parser {
+            let owned: Vec<_> = indices
+                .iter()
+                .take(200)
+                .map(|&i| reader.get_line(i))
                 .collect();
-            let lines: Vec<&[u8]> = owned_lines.iter().map(|l| &**l).collect();
+            let lines: Vec<&[u8]> = owned.iter().map(|line| &**line).collect();
             parser.collect_field_names(&lines)
         } else {
             Vec::new()
         };
-        if self.merged.is_some() {
+        if merged {
             names.insert(0, "source".to_string());
         }
         names
@@ -3151,12 +3163,8 @@ impl TabState {
         let total = reader.line_count();
         let limit = total.min(SAMPLE_LIMIT);
 
-        // Step 1: Discover canonical names from raw file lines.
-        const NAME_SAMPLE: usize = 200;
-        let name_sample = total.min(NAME_SAMPLE);
-        let owned_name_lines: Vec<_> = (0..name_sample).map(|i| reader.get_line(i)).collect();
-        let name_lines: Vec<&[u8]> = owned_name_lines.iter().map(|l| &**l).collect();
-        let names = parser.collect_field_names(&name_lines);
+        let indices: Vec<_> = (0..total.min(200)).collect();
+        let names = Self::field_names_for(reader, Some(parser), &indices, false);
         // Step 2: Scan raw lines to collect values and per-name frequency counts.
         let mut name_freq: HashMap<String, usize> = HashMap::new();
         let mut value_map: HashMap<String, HashSet<String>> = HashMap::new();

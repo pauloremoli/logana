@@ -51,3 +51,5 @@ mod merge;
 mod history;
 
 mod field_discovery;
+
+mod table_preparation;

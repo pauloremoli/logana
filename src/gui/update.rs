@@ -729,8 +729,7 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             state.keyboard_sidebar = None;
             if idx < state.tabs.len() {
                 state.active_tab = idx;
-                state.column_widths =
-                    crate::gui::column_widths::fit_column_widths(&state.tabs[idx]);
+                state.column_widths = Default::default();
                 state.column_resize_last_x = None;
             }
             Effect::None
@@ -2808,6 +2807,7 @@ mod tests {
         state.tabs[0].display.format = Some(Arc::new(crate::parser::SyslogParser::default()));
         state.tabs[0].file_reader =
             FileReader::from_bytes(b"<134>Oct 11 22:14:15 host sshd[1234]: message\n".to_vec());
+        state.tabs[0].collect_field_names();
         update(
             &mut state,
             Message::GuiAction(crate::gui::actions::Action::Columns),

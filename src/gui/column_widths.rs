@@ -19,6 +19,15 @@ pub struct ColumnWidths {
     pub level: f32,
 }
 
+pub(super) struct Snapshot {
+    reader: crate::ingestion::FileReader,
+    parser: Option<std::sync::Arc<dyn crate::parser::LogFormatParser>>,
+    visible: Vec<usize>,
+    labels: Vec<String>,
+    merged: bool,
+    show_keys: bool,
+}
+
 /// A column can never be dragged narrower than this — small enough to
 /// still show its header glyph, not so small a stray drag collapses it
 /// to nothing.
@@ -38,11 +47,7 @@ const COL_TIME_MIN_WIDTH: f32 = 44.8;
 /// resize (dragging a column's handle) available to correct it.
 const CHAR_WIDTH_PX: f32 = 7.2;
 const COL_PADDING_PX: f32 = 16.0;
-/// Caps how many visible lines `fit_time_width` samples for the longest
-/// timestamp — same sampling-with-a-cap philosophy as
-/// `TabState::build_field_index`/`build_field_value_counts`, just a
-/// smaller cap since this runs synchronously on every file load rather
-/// than lazily while a panel is open.
+/// Limits the row sample used for column fitting.
 const FIT_SAMPLE_CAP: usize = 500;
 
 impl Default for ColumnWidths {
@@ -55,53 +60,79 @@ impl Default for ColumnWidths {
     }
 }
 
-/// Auto-fit column widths for `tab`'s content, run once when a file
-/// loads (not on every render — sampling is cheap but not free). `#`
-/// fits the file's real line count exactly (O(1), no sampling needed);
-/// Time and Level sample up to `FIT_SAMPLE_CAP` lines for the longest values.
+/// Fit fixed columns against a captured row sample.
 pub fn fit_column_widths(tab: &TabState) -> ColumnWidths {
-    ColumnWidths {
-        line_no: fit_line_no_width(tab),
-        time: fit_time_width(tab),
-        level: fit_level_width(tab),
-    }
+    Snapshot::capture(tab).fixed_widths()
 }
 
-fn fit_level_width(tab: &TabState) -> f32 {
-    let mut width = text_width("Level") + COL_PADDING_PX;
-    for line in 0..tab.file_reader.line_count().min(FIT_SAMPLE_CAP) {
-        let bytes = tab.file_reader.get_line(line);
-        let level = crate::gui::level::classify_line_level(tab, &bytes);
-        let label = match level {
-            crate::parser::LogLevel::Unknown => String::new(),
-            crate::parser::LogLevel::Warning => "WARN".to_string(),
-            _ => format!("{level:?}").to_uppercase(),
-        };
-        width = width.max(text_width(&label) + COL_PADDING_PX);
-    }
-    width
-}
-
+#[cfg(test)]
 fn fit_line_no_width(tab: &TabState) -> f32 {
-    let digits = tab.file_reader.line_count().max(1).to_string().len() as f32;
-    ((digits + 1.) * CHAR_WIDTH_PX + COL_PADDING_PX).max(COL_LINE_NO_MIN_WIDTH)
+    Snapshot::capture(tab).fixed_widths().line_no
+}
+#[cfg(test)]
+fn fit_time_width(tab: &TabState) -> f32 {
+    Snapshot::capture(tab).fixed_widths().time
 }
 
-fn fit_time_width(tab: &TabState) -> f32 {
-    let Some(parser) = tab.display.format.as_deref() else {
-        return COL_TIME_MIN_WIDTH;
-    };
-    let sample_len = tab.filter.visible_indices.len().min(FIT_SAMPLE_CAP);
-    let max_len = (0..sample_len)
-        .filter_map(|pos| tab.filter.visible_indices.get_opt(pos))
-        .filter_map(|line_idx| {
-            let bytes = tab.file_reader.get_line(line_idx);
-            parser
-                .parse_line(&bytes)
-                .and_then(|parts| parts.timestamp.map(text_width))
-        })
-        .fold(0.0_f32, f32::max);
-    (max_len + COL_PADDING_PX).max(COL_TIME_MIN_WIDTH)
+impl Snapshot {
+    pub(super) fn capture(tab: &TabState) -> Self {
+        Self {
+            reader: tab.file_reader.clone(),
+            parser: tab.display.format.clone(),
+            visible: tab
+                .filter
+                .visible_indices
+                .iter()
+                .take(FIT_SAMPLE_CAP)
+                .collect(),
+            labels: tab
+                .merged
+                .as_ref()
+                .map(|m| m.source_labels.clone())
+                .unwrap_or_default(),
+            merged: tab.merged.is_some(),
+            show_keys: tab.display.show_keys,
+        }
+    }
+
+    pub(super) fn names(&self) -> Vec<String> {
+        let indices: Vec<_> = (0..self.reader.line_count().min(200)).collect();
+        TabState::field_names_for(&self.reader, self.parser.as_deref(), &indices, self.merged)
+    }
+
+    pub(super) fn fixed_widths(&self) -> ColumnWidths {
+        let digits = self.reader.line_count().max(1).to_string().len() as f32;
+        let mut level = text_width("Level") + COL_PADDING_PX;
+        let mut time = COL_TIME_MIN_WIDTH;
+        if let Some(parser) = self.parser.as_deref() {
+            for line in 0..self.reader.line_count().min(FIT_SAMPLE_CAP) {
+                let bytes = self.reader.get_line(line);
+                let classified = parser
+                    .parse_line(&bytes)
+                    .and_then(|parts| parts.level)
+                    .map(|raw| crate::parser::classify_level(Some(parser), raw))
+                    .unwrap_or_default();
+                let label = match classified {
+                    crate::parser::LogLevel::Unknown => String::new(),
+                    crate::parser::LogLevel::Warning => "WARN".to_string(),
+                    _ => format!("{classified:?}").to_uppercase(),
+                };
+                level = level.max(text_width(&label) + COL_PADDING_PX);
+            }
+            for &line in &self.visible {
+                let bytes = self.reader.get_line(line);
+                if let Some(timestamp) = parser.parse_line(&bytes).and_then(|parts| parts.timestamp)
+                {
+                    time = time.max(text_width(timestamp) + COL_PADDING_PX);
+                }
+            }
+        }
+        ColumnWidths {
+            line_no: ((digits + 1.) * CHAR_WIDTH_PX + COL_PADDING_PX).max(COL_LINE_NO_MIN_WIDTH),
+            time,
+            level,
+        }
+    }
 }
 
 /// Content widths are cached independently of viewport size and resize handles.
@@ -151,43 +182,7 @@ pub fn table_widths(
             fields: entry.widths.clone(),
         };
     }
-    let mut fitted = std::collections::BTreeMap::new();
-    for field in fields.iter().filter(|field| {
-        !matches!(
-            field.as_str(),
-            "timestamp" | "time" | "ts" | "level" | "lvl" | "message" | "msg"
-        )
-    }) {
-        fitted.insert(field.clone(), text_width(field) + COL_PADDING_PX);
-    }
-    if let (Some(width), Some(merged)) = (fitted.get_mut("source"), tab.merged.as_ref()) {
-        for label in &merged.source_labels {
-            let prefix = if tab.display.show_keys {
-                text_width("source=")
-            } else {
-                0.
-            };
-            *width = width.max(text_width(label) + prefix + COL_PADDING_PX);
-        }
-    }
-    if let Some(parser) = tab.display.format.as_ref() {
-        for line in 0..tab.file_reader.line_count().min(FIT_SAMPLE_CAP) {
-            let bytes = tab.file_reader.get_line(line);
-            if let Some(parts) = parser.parse_line(&bytes) {
-                for (field, width) in &mut fitted {
-                    if let Some(value) = crate::filters::resolve_field(field, &parts) {
-                        let prefix = if tab.display.show_keys && !value.is_empty() {
-                            text_width(field) + CHAR_WIDTH_PX
-                        } else {
-                            0.
-                        };
-                        *width = width.max(text_width(value) + prefix + COL_PADDING_PX);
-                    }
-                }
-            }
-        }
-    }
-    let widths = std::sync::Arc::new(fitted);
+    let widths = Snapshot::capture(tab).field_widths(fields);
     *cache = Some(FieldWidthCache {
         key,
         widths: widths.clone(),
@@ -196,6 +191,115 @@ pub fn table_widths(
         fixed,
         fields: widths,
     }
+}
+
+fn header_widths(fields: &[String]) -> std::collections::BTreeMap<String, f32> {
+    fields
+        .iter()
+        .filter(|field| {
+            !matches!(
+                field.as_str(),
+                "timestamp" | "time" | "ts" | "level" | "lvl" | "message" | "msg"
+            )
+        })
+        .map(|field| (field.clone(), text_width(field) + COL_PADDING_PX))
+        .collect()
+}
+
+impl Snapshot {
+    fn field_widths(
+        &self,
+        fields: &[String],
+    ) -> std::sync::Arc<std::collections::BTreeMap<String, f32>> {
+        let mut fitted = header_widths(fields);
+        if let Some(width) = fitted.get_mut("source") {
+            for label in &self.labels {
+                let prefix = if self.show_keys {
+                    text_width("source=")
+                } else {
+                    0.
+                };
+                *width = width.max(text_width(label) + prefix + COL_PADDING_PX);
+            }
+        }
+        if let Some(parser) = self.parser.as_ref() {
+            for line in 0..self.reader.line_count().min(FIT_SAMPLE_CAP) {
+                let bytes = self.reader.get_line(line);
+                if let Some(parts) = parser.parse_line(&bytes) {
+                    for (field, width) in &mut fitted {
+                        if let Some(value) = crate::filters::resolve_field(field, &parts) {
+                            let prefix = if self.show_keys && !value.is_empty() {
+                                text_width(field) + CHAR_WIDTH_PX
+                            } else {
+                                0.
+                            };
+                            *width = width.max(text_width(value) + prefix + COL_PADDING_PX);
+                        }
+                    }
+                }
+            }
+        }
+        std::sync::Arc::new(fitted)
+    }
+
+    pub(super) fn prepare(
+        &self,
+        source: crate::shared::TabId,
+        generation: u64,
+    ) -> (Vec<String>, FieldWidthCache, ColumnWidths) {
+        let fields = self.names();
+        let cache = FieldWidthCache {
+            key: (
+                source,
+                generation,
+                self.reader.line_count(),
+                self.show_keys,
+                fields.clone(),
+            ),
+            widths: self.field_widths(&fields),
+        };
+        (fields, cache, self.fixed_widths())
+    }
+}
+
+pub fn prepared_table_widths(
+    cache: &Option<FieldWidthCache>,
+    tab: &TabState,
+    fields: &[String],
+    fixed: ColumnWidths,
+) -> TableWidths {
+    let key = (
+        tab.id,
+        tab.cache.parse_gen,
+        tab.file_reader.line_count(),
+        tab.display.show_keys,
+        fields.to_vec(),
+    );
+    let widths = cache
+        .as_ref()
+        .filter(|entry| entry.key == key)
+        .map(|entry| entry.widths.clone())
+        .unwrap_or_else(|| std::sync::Arc::new(header_widths(fields)));
+    TableWidths {
+        fixed,
+        fields: widths,
+    }
+}
+
+pub fn cached_field_names(tab: &TabState) -> Vec<String> {
+    tab.cache
+        .field_names
+        .as_ref()
+        .filter(|(generation, _)| *generation == tab.cache.parse_gen)
+        .map(|(_, names)| names.clone())
+        .or_else(|| tab.display.field_layout.columns.clone())
+        .or_else(|| {
+            tab.cache
+                .field_names
+                .as_ref()
+                .map(|(_, names)| names.clone())
+        })
+        .unwrap_or_default()
 }
 
 /// Applies a resize drag's pixel delta to `column`, clamped so a column

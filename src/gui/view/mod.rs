@@ -114,10 +114,10 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
             // ends, so `log_pane`'s `cx.entity()` call (which needs
             // `&mut Context<App>`) and `sidebar`'s panes aren't fighting
             // the outer borrow.
-            let fields = app.state.tabs[active_tab].collect_field_names();
+            let fields = crate::gui::column_widths::cached_field_names(&app.state.tabs[active_tab]);
             let tab = &app.state.tabs[active_tab];
-            let mut widths = crate::gui::column_widths::table_widths(
-                &mut app.field_widths,
+            let mut widths = crate::gui::column_widths::prepared_table_widths(
+                &app.field_widths,
                 tab,
                 &fields,
                 app.state.column_widths,

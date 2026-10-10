@@ -63,6 +63,8 @@ pub struct App {
     pub filter_sidebar_scroll: gpui_kit::gpui::ScrollHandle,
     pub group_sidebar_scroll: gpui_kit::gpui::ScrollHandle,
     pub field_widths: Option<crate::gui::column_widths::FieldWidthCache>,
+    pub(super) table_preparation_key: Option<crate::gui::table_preparation::Key>,
+    pub(super) table_preparation_task: Option<gpui_kit::gpui::Task<()>>,
     pub sidebar_width: f32,
     notification_timer_revision: u64,
     pub table_layout: Option<crate::gui::view::log_pane::LayoutCache>,
@@ -256,6 +258,8 @@ impl App {
             table_layout: None,
             notification_timer_revision: 0,
             field_widths: None,
+            table_preparation_key: None,
+            table_preparation_task: None,
             sidebar_width: crate::gui::view::sidebar::SIDEBAR_WIDTH,
             menu_bar: AppMenuBar::new(cx),
             facet_counts: Default::default(),
@@ -1693,8 +1697,9 @@ impl Render for App {
         self.text_document
             .borrow_mut()
             .sync(self.text_handle.snapshot(cx));
-        let text_context = self.state.active_tab_mut().map(|tab| {
-            let fields = tab.collect_field_names();
+        self.sync_table_preparation(cx);
+        let text_context = self.state.active_tab().map(|tab| {
+            let fields = crate::gui::column_widths::cached_field_names(tab);
             let columns = crate::gui::view::log_pane::visible_columns(tab, &fields);
             (
                 tab.id,

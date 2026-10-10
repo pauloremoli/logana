@@ -828,7 +828,7 @@ pub fn open(
     };
     if let Some(tab) = state.active_tab_mut() {
         if action == Action::Columns {
-            let mut names = tab.collect_field_names();
+            let mut names = crate::gui::column_widths::cached_field_names(tab);
             if tab.display.format.is_none() && !names.iter().any(|n| n == "message") {
                 names.push("message".into());
             }

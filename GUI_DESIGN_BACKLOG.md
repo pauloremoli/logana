@@ -117,7 +117,8 @@ the details without modifying its saved values.
 - [x] Discover filter field names and observed values in a background task.
 - [x] Compile GUI filter expressions and prepare field/date conditions in workers.
 - [x] Finalize multiline, bookmark, collapse, and unfiltered views in workers.
-- [ ] Move rendering field discovery and column fitting out of render callbacks.
+- [x] Move rendering field discovery and column fitting out of render callbacks.
+- [ ] Finish the audit of filter validation and schema-dependent preparation.
 
 Field suggestions preserve editor drafts and reject results from a superseded
 editor, parser generation, or file snapshot.
@@ -129,3 +130,7 @@ GUI refreshes retain the current view while computing replacements. Completed
 views arrive ready to install; GUI scans avoid restoring or duplicating large
 visible-index caches on the UI thread. Progressive index capacity is allocated
 in the worker to prevent full-vector reallocations during frame updates.
+
+Table preparation runs against captured readers and parsers. Rendering reads
+prepared metadata; delayed results preserve manual column resizing and column
+editor choices. Tab switches schedule fitting without reading file contents.

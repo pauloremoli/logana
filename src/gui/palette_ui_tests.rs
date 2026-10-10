@@ -503,7 +503,11 @@ fn add_log_tab(app: &Entity<App>, cx: &mut gpui::App, structured: bool) {
             manager,
             "test.log".into(),
         ));
-        let tab = &app.state.tabs[0];
+        let tab = &mut app.state.tabs[0];
+        let fields = tab.collect_field_names();
+        let mut widths = None;
+        crate::gui::column_widths::table_widths(&mut widths, tab, &fields, app.state.column_widths);
+        app.field_widths = widths;
         let key = (
             tab.file_reader.line_count(),
             tab.display
@@ -2589,4 +2593,29 @@ fn finish_gui_filters(tab: &mut crate::shared::TabState) {
         .await
         .expect("background filter refresh completes");
     });
+}
+
+#[gpui_kit::test]
+fn table_preparation_defers_sampling_until_the_worker_runs(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, _| {
+            app.state.tabs[0].cache.field_names = None;
+            app.field_widths = None;
+        });
+        window.render_frame(cx);
+        assert!(app.read(cx).state.tabs[0].cache.field_names.is_none());
+        assert!(app.read(cx).field_widths.is_none());
+        app.update(cx, |app, _| app.state.column_widths.time = 123.);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(app.read(cx).state.tabs[0].cache.field_names.is_some());
+        assert!(app.read(cx).field_widths.is_some());
+        assert_eq!(app.read(cx).state.column_widths.time, 123.);
+    })
+    .unwrap();
 }
