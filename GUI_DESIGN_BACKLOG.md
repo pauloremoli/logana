@@ -116,10 +116,16 @@ the details without modifying its saved values.
 
 - [x] Discover filter field names and observed values in a background task.
 - [x] Compile GUI filter expressions and prepare field/date conditions in workers.
-- [ ] Move remaining file-size completion and rendering preparation off the UI thread.
+- [x] Finalize multiline, bookmark, collapse, and unfiltered views in workers.
+- [ ] Move rendering field discovery and column fitting out of render callbacks.
 
 Field suggestions preserve editor drafts and reject results from a superseded
 editor, parser generation, or file snapshot.
 
 Filter-file results and direct filter edits start cancellable background preparation.
 Marks-only and style-only refreshes use the same worker preparation path.
+
+GUI refreshes retain the current view while computing replacements. Completed
+views arrive ready to install; GUI scans avoid restoring or duplicating large
+visible-index caches on the UI thread. Progressive index capacity is allocated
+in the worker to prevent full-vector reallocations during frame updates.

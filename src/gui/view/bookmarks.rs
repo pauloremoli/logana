@@ -9,7 +9,7 @@ pub fn jump(app: &mut App, line: usize) -> bool {
     let Some(tab) = app.state.active_tab_mut() else {
         return false;
     };
-    let Some(row) = tab.filter.visible_indices.iter().position(|i| i == line) else {
+    let Some(row) = tab.filter.visible_indices.position_of(line) else {
         app.state.notify(StatusMessage::Info(
             "This row is hidden by the current filters.".into(),
         ));
@@ -45,6 +45,9 @@ pub fn sync(state: &mut crate::gui::state::GuiState) {
         return;
     }
     if let Some(tab) = state.active_tab_mut() {
+        if tab.filter.show_marks_only && tab.filter.handle.is_some() {
+            return;
+        }
         let mut marks = tab.mark_manager.get_indices();
         marks.retain(|&line| line < tab.file_reader.line_count());
         if !tab.filter.show_marks_only || !tab.filter.visible_indices.iter().eq(marks) {

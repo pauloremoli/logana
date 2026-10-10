@@ -20,6 +20,7 @@ use crate::utils::search::SearchResult;
 
 pub mod cache_state;
 pub mod display_config;
+mod filter_completion;
 pub mod filter_state;
 pub mod interaction_state;
 pub mod merged;
@@ -1047,7 +1048,7 @@ impl TabState {
                 }
             }
         }
-        if tab.filter.handle.is_none() {
+        if tab.install_filter_completion() || tab.filter.handle.is_none() {
             return;
         }
         // Phase 1: drain available chunks into a local buffer (limits borrow scope).
@@ -1091,6 +1092,10 @@ impl TabState {
         let mut should_replace = !already_had_first;
         for chunk in chunks {
             let is_last = chunk.is_last;
+            if is_last && tab.filter.completed.is_some() {
+                tab.install_filter_completion();
+                return;
+            }
             if let Some(h) = tab.filter.handle.as_mut() {
                 h.displayed_progress = chunk.progress;
             }
@@ -1127,7 +1132,7 @@ impl TabState {
                     .min(tab.filter.visible_indices.len() - 1);
             }
         }
-        if done {
+        if done && tab.filter.completed.is_none() {
             if let Some(h) = &tab.filter.handle {
                 tab.filter.cached_scan = Some(crate::shared::CachedScanResult {
                     filter_fingerprint: h.scan_fingerprint.clone(),
@@ -1161,15 +1166,27 @@ impl TabState {
     }
 
     fn compute_unfiltered_visible_controlled(&self, cancel: &AtomicBool) -> VisibleLines {
-        let n = self.file_reader.line_count();
-        if self.display.format.is_none() || self.display.raw_mode {
+        Self::unfiltered_visible_for(
+            &self.file_reader,
+            self.display.format.is_some() && !self.display.raw_mode,
+            cancel,
+        )
+    }
+
+    fn unfiltered_visible_for(
+        reader: &FileReader,
+        structured: bool,
+        cancel: &AtomicBool,
+    ) -> VisibleLines {
+        let n = reader.line_count();
+        if !structured {
             return VisibleLines::All(n);
         }
         // Fast path: scan for the first blank line.  If none exist (the common
         // case for log files) return All without allocating a Vec at all.
         let first_empty = (0..n)
             .take_while(|_| !cancel.load(Ordering::Relaxed))
-            .find(|&i| self.file_reader.line_is_empty(i));
+            .find(|&i| reader.line_is_empty(i));
         let Some(first_empty) = first_empty else {
             return VisibleLines::All(n);
         };
@@ -1179,7 +1196,7 @@ impl TabState {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
-            if i != first_empty && !self.file_reader.line_is_empty(i) {
+            if i != first_empty && !reader.line_is_empty(i) {
                 vis.push(i);
             }
         }
@@ -1859,6 +1876,7 @@ impl TabState {
 
     pub fn begin_filter_refresh(&mut self) {
         self.filter.prepared = None;
+        self.filter.completed = None;
         if let Some(ref h) = self.filter.handle {
             h.cancel.store(true, Ordering::Relaxed);
         }
@@ -1869,6 +1887,16 @@ impl TabState {
         let has_active_filters =
             self.filter.show_marks_only || self.log_manager.get_filters().iter().any(|f| f.enabled);
 
+        if self.filter.background_preparation
+            && (!has_active_filters || self.filter.show_marks_only || !self.filter.enabled)
+            && (self.filter.show_marks_only
+                || (self.display.format.is_some() && !self.display.raw_mode)
+                || self.display.collapse_continuations
+                || !self.filter.overridden_groups.is_empty())
+        {
+            self.begin_simple_filter_refresh();
+            return;
+        }
         if !has_active_filters {
             let current_line = if self.filter.saved_view.is_some() {
                 self.filter
@@ -1964,6 +1992,7 @@ impl TabState {
             .collect();
         let current_line_count = self.file_reader.line_count();
         if let Some(cached) = &self.filter.cached_scan
+            && !self.filter.background_preparation
             && cached.filter_fingerprint == desired_fingerprint
             && cached.line_count == current_line_count
             && cached.raw_mode == self.display.raw_mode
@@ -2016,6 +2045,15 @@ impl TabState {
             .unwrap_or(1);
         let (result_tx, result_rx) = mpsc::channel::<FilterChunk>(channel_capacity);
 
+        let finalizer = self
+            .filter
+            .background_preparation
+            .then(|| filter_completion::Finalizer::capture(self));
+        let mut completed_tx = finalizer.as_ref().map(|_| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.filter.completed = Some(rx);
+            tx
+        });
         let file_reader = self.file_reader.clone();
         let fm_arc = self.filter.manager.clone();
         let all_filter_defs = self.log_manager.get_filters().to_vec();
@@ -2087,6 +2125,8 @@ impl TabState {
             let mut total_field_counts = vec![0usize; n_field];
             let mut total_date_counts = vec![0usize; n_date];
 
+            let mut complete_visible = Vec::new();
+            let mut finalizer = finalizer;
             let mut chunk_start = 0;
             let mut chunk_size = INITIAL_CHUNK_SIZE;
             while chunk_start < line_count {
@@ -2105,7 +2145,7 @@ impl TabState {
                 #[cfg(unix)]
                 file_reader.advise_for_scan(chunk_start..chunk_end);
 
-                let (visible, text_counts, field_counts, date_counts) = if use_wholefile {
+                let (mut visible, text_counts, field_counts, date_counts) = if use_wholefile {
                     // Fast path: whole-buffer AC scan with rayon sub-chunking.
                     // Paged (large-file) readers materialize just this
                     // chunk's bytes instead of needing the whole file
@@ -2279,6 +2319,23 @@ impl TabState {
                     None
                 };
 
+                if finalizer.is_some() {
+                    if chunk_start == 0 {
+                        visible.reserve(line_count.saturating_sub(visible.len()));
+                    }
+                    complete_visible.extend_from_slice(&visible);
+                    if is_last {
+                        let result = finalizer.take().unwrap().finish(
+                            VisibleLines::Filtered(std::mem::take(&mut complete_visible)),
+                            filter_match_counts.clone().unwrap_or_default(),
+                            fm_arc.has_include(),
+                            true,
+                        );
+                        if completed_tx.take().unwrap().send(result).is_err() {
+                            return;
+                        }
+                    }
+                }
                 if result_tx
                     .blocking_send(FilterChunk {
                         visible,
@@ -2297,6 +2354,20 @@ impl TabState {
 
             // Guard: if the file is empty the loop body never runs; send one empty final chunk.
             if line_count == 0 {
+                if let Some(finalizer) = finalizer {
+                    let result = finalizer.finish(
+                        VisibleLines::Filtered(Vec::new()),
+                        merge_filter_counts(
+                            &all_filter_defs,
+                            &total_text_counts,
+                            &total_field_counts,
+                            &total_date_counts,
+                        ),
+                        fm_arc.has_include(),
+                        true,
+                    );
+                    let _ = completed_tx.unwrap().send(result);
+                }
                 let _ = result_tx.blocking_send(FilterChunk {
                     visible: Vec::new(),
                     filter_match_counts: Some(merge_filter_counts(

@@ -17,6 +17,7 @@ pub type PreparedFilters = (
 
 pub struct FilterState {
     pub background_preparation: bool,
+    pub completed: Option<tokio::sync::oneshot::Receiver<super::filter_completion::CompletedView>>,
     pub prepared: Option<tokio::sync::oneshot::Receiver<PreparedFilters>>,
     pub visible_indices: VisibleLines,
     pub enabled: bool,
@@ -79,6 +80,7 @@ impl Default for FilterState {
     fn default() -> Self {
         Self {
             background_preparation: false,
+            completed: None,
             prepared: None,
             visible_indices: VisibleLines::default(),
             enabled: true,

@@ -375,6 +375,7 @@ fn view_mode_switches_between_logs_and_bookmarks(cx: &mut TestAppContext) {
         })
         .unwrap();
         cx.update(|cx| {
+            app.update(cx, |app, _| finish_gui_filters(&mut app.state.tabs[0]));
             let state = &app.read(cx).state;
             assert_eq!(state.nav_page, page);
             let lines: Vec<_> = state.tabs[0].filter.visible_indices.iter().collect();
@@ -399,8 +400,9 @@ fn view_mode_switches_between_logs_and_bookmarks(cx: &mut TestAppContext) {
                         window,
                         cx,
                     );
-                    assert!(app.state.tabs[0].filter.visible_indices.is_empty());
                 });
+                window.render_frame(cx);
+                app.update(cx, |app, _| finish_gui_filters(&mut app.state.tabs[0]));
                 window.render_frame(cx);
                 assert!(window.try_find(("log-row", 0usize)).is_none());
             }
@@ -2573,5 +2575,18 @@ fn closing_filter_editor_discards_pending_field_discovery(cx: &mut TestAppContex
     cx.update(|cx| {
         assert!(app.read(cx).state.editor.is_none());
         assert!(app.read(cx).state.field_discovery.is_none());
+    });
+}
+
+fn finish_gui_filters(tab: &mut crate::shared::TabState) {
+    runtime::handle().block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while tab.filter.handle.is_some() || tab.filter.prepared.is_some() {
+                tab.advance_filter_computation();
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("background filter refresh completes");
     });
 }

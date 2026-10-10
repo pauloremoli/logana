@@ -2653,6 +2653,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clearing_gui_filters_defers_blank_row_scan() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let tab = &mut state.tabs[0];
+        tab.file_reader = FileReader::from_bytes(b"line one\n\nline two\n".to_vec());
+        tab.display.format = Some(Arc::new(crate::parser::SyslogParser::default()));
+        tab.filter.visible_indices = VisibleLines::Filtered(vec![2]);
+        force_recompute(tab);
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![2]
+        );
+        drain_gui_scan(tab).await;
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+    }
+
+    #[tokio::test]
     async fn gui_filter_refresh_defers_compilation_and_keeps_latest_request() {
         let (mut state, _file) = state_with_one_tab().await;
         let tab = &mut state.tabs[0];
