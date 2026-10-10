@@ -147,3 +147,6 @@ Results for changed readers restart preparation; closed tabs cannot receive them
 Collapse and expand keep the current rows until background masking finishes.
 Pending scans honor newer keyboard, mouse, search, and bookmark navigation; End
 targets the complete source rather than the first available results.
+
+Live sources detect their initial format and default field visibility in the
+reading worker before installing the first structured snapshot.

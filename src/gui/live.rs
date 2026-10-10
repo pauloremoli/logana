@@ -4,6 +4,40 @@ use crate::ingestion::FileReader;
 use gpui_kit::gpui::Context;
 use std::path::Path;
 
+struct StreamSnapshot {
+    reader: FileReader,
+    incremental: bool,
+    metadata: Option<crate::ingestion::format_detect::DetectedFormat>,
+    hidden_fields: std::collections::HashSet<String>,
+}
+
+fn read_prepared_snapshot(
+    reader: FileReader,
+    path: &Path,
+    detect: bool,
+) -> std::io::Result<StreamSnapshot> {
+    let (reader, incremental) = read_snapshot(reader, path)?;
+    let metadata =
+        detect.then(|| crate::ingestion::format_detect::detect_format_for_reader(&reader));
+    let hidden_fields = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.format.as_ref())
+        .map(|parser| {
+            let rows = (0..reader.line_count().min(200))
+                .map(|line| reader.get_line(line))
+                .collect::<Vec<_>>();
+            let sample = rows.iter().map(|row| &**row).collect::<Vec<_>>();
+            parser.default_hidden_fields(&sample)
+        })
+        .unwrap_or_default();
+    Ok(StreamSnapshot {
+        reader,
+        incremental,
+        metadata,
+        hidden_fields,
+    })
+}
+
 fn read_snapshot(mut reader: FileReader, path: &Path) -> std::io::Result<(FileReader, bool)> {
     let incremental = reader.try_extend_from_read()?;
     if !incremental {
@@ -35,11 +69,12 @@ impl App {
             let path = watch.reader_path.clone();
             let reader = tab.file_reader.clone();
             let id = tab.id;
+            let detect = tab.display.format.is_none();
             self.stream_pending.insert(id);
             cx.spawn(async move |this, cx| {
                 let read_path = path.clone();
                 let result = crate::gui::runtime::handle()
-                    .spawn_blocking(move || read_snapshot(reader, &read_path))
+                    .spawn_blocking(move || read_prepared_snapshot(reader, &read_path, detect))
                     .await;
                 this.update_in(cx, |app, _, cx| {
                     let handle = crate::gui::runtime::handle();
@@ -58,7 +93,7 @@ impl App {
                         return;
                     }
                     match result {
-                        Ok(Ok((reader, incremental))) => {
+                        Ok(Ok(StreamSnapshot { reader, incremental, metadata, hidden_fields })) => {
                             let replaced =
                                 !incremental && reader.line_count() < tab.file_reader.line_count();
                             tab.file_reader = reader;
@@ -67,8 +102,15 @@ impl App {
                                 tab.comment_manager.clear();
                                 app.state.log_selection = None;
                             }
-                            if tab.display.format.is_none() && tab.file_reader.line_count() > 0 {
-                                tab.detect_and_apply_format();
+                            if tab.display.format.is_none() && let Some(metadata) = metadata {
+                                tab.display.format = metadata.format;
+                                tab.continuation_map = metadata.continuation_map;
+                                tab.year_map = metadata.year_map;
+                                if tab.display.hidden_fields.is_empty() && !hidden_fields.is_empty() {
+                                    tab.display.hidden_fields = hidden_fields;
+                                    tab.set_notification("Some fields are hidden. Use 'select-fields' to choose fields or 'show-all-fields' to show all.");
+                                }
+                                tab.invalidate_parse_cache();
                             }
                             // Full background filtering also rechecks a previously incomplete last line.
                             tab.begin_filter_refresh_background();
@@ -105,6 +147,24 @@ impl App {
 mod tests {
     use super::*;
     use std::io::Write;
+    #[test]
+    fn first_stream_snapshot_prepares_format_metadata() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let reader = FileReader::new(file.path().to_str().unwrap()).unwrap();
+        file.write_all(b"{\"level\":\"INFO\",\"msg\":\"value1\"}\n")
+            .unwrap();
+        let snapshot = read_prepared_snapshot(reader, file.path(), true).unwrap();
+        assert!(snapshot.incremental);
+        let metadata = snapshot.metadata.unwrap();
+        assert!(metadata.format.is_some());
+        assert_eq!(
+            metadata.continuation_map.unwrap().len(),
+            snapshot.reader.line_count()
+        );
+        let snapshot = read_prepared_snapshot(snapshot.reader, file.path(), false).unwrap();
+        assert!(snapshot.metadata.is_none());
+    }
+
     #[test]
     fn growth_partial_lines_and_truncation_are_consumed() {
         let mut file = tempfile::NamedTempFile::new().unwrap();
