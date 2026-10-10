@@ -588,6 +588,20 @@ impl App {
             }
             Effect::ListDocker { epoch } => self.list_docker(epoch, cx),
             Effect::ConnectSource(source) => self.connect_source(source, cx),
+            Effect::SaveDltDevice { epoch, device } => {
+                cx.spawn(async move |this, cx| {
+                    let saved = device.clone();
+                    let result = runtime::handle()
+                        .spawn_blocking(move || crate::config::DltDevice::save(&saved))
+                        .await
+                        .unwrap_or_else(|error| Err(error.to_string()));
+                    this.update_in(cx, |app, window, cx| {
+                        app.dispatch(Message::DltDeviceSaved(epoch, device, result), window, cx)
+                    })
+                    .ok();
+                })
+                .detach();
+            }
             Effect::ExportDialog {
                 tab_id,
                 template,

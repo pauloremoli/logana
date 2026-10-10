@@ -28,6 +28,10 @@ pub enum Effect {
         epoch: u64,
     },
     ConnectSource(crate::gui::sources::Source),
+    SaveDltDevice {
+        epoch: u64,
+        device: crate::config::DltDevice,
+    },
     ExportDialog {
         tab_id: crate::shared::TabId,
         template: String,

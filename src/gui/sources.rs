@@ -6,6 +6,7 @@ pub enum Source {
     Stdin,
     Docker { container: String, name: String },
     Dlt { host: String, port: u16 },
+    NamedDlt(crate::config::DltDevice),
     Otel { port: u16, grpc: bool },
     Run { program: String, args: Vec<String> },
 }
@@ -14,6 +15,10 @@ impl Source {
         self,
         db: std::sync::Arc<crate::db::Database>,
     ) -> Result<Box<crate::shared::TabState>, String> {
+        let title = match &self {
+            Self::NamedDlt(device) => Some(device.name.clone()),
+            _ => None,
+        };
         let (label, connect, no_retry) = match self {
             Self::Stdin => {
                 let connect: crate::shared::ConnectFn = std::sync::Arc::new(|| {
@@ -31,6 +36,14 @@ impl Source {
                 crate::shared::dlt_connect_fn(host, port),
                 false,
             ),
+            Self::NamedDlt(device) => {
+                let port = device.port.unwrap_or(crate::config::DEFAULT_DLT_PORT);
+                (
+                    format!("dlt://{}:{port}", device.host),
+                    crate::shared::dlt_connect_fn(device.host, port),
+                    false,
+                )
+            }
             Self::Otel { port, grpc } => {
                 if grpc {
                     (
@@ -65,6 +78,9 @@ impl Source {
         .map_err(|e| e.to_string())?;
         let manager = crate::db::LogManager::new(db, Some(label.clone())).await;
         let mut tab = crate::shared::TabState::new(reader, manager, label);
+        if let Some(title) = title {
+            tab.title = title;
+        }
         tab.detect_and_apply_format();
         tab.stream.watch = Some(watch);
         tab.stream.tail_mode = true;
@@ -109,6 +125,122 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn dlt_editor_carries_device_name_into_connection() {
+        let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let mut state = crate::gui::state::GuiState::new(db);
+        crate::gui::actions::open(&mut state, crate::gui::actions::Action::Dlt, None, None);
+        state.editor.as_mut().unwrap().values[3] = "mydevice".into();
+        let effect = crate::gui::actions::apply(&mut state);
+        let crate::gui::effect::Effect::ConnectSource(Source::NamedDlt(device)) = effect else {
+            panic!("expected a named DLT connection");
+        };
+        assert_eq!(device.name, "mydevice");
+    }
+    #[tokio::test]
+    async fn named_dlt_tab_uses_name_and_keeps_endpoint_identity() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let tab = Source::NamedDlt(crate::config::DltDevice {
+            name: "mydevice".into(),
+            host: "127.0.0.1".into(),
+            port: Some(port),
+        })
+        .open(db)
+        .await
+        .unwrap();
+        assert_eq!(tab.title, "mydevice");
+        assert_eq!(
+            tab.log_manager.source_file(),
+            Some(format!("dlt://127.0.0.1:{port}").as_str())
+        );
+        assert!(tab.stream.watch.is_some());
+    }
+
+    #[tokio::test]
+    async fn saving_named_dlt_device_validates_and_roundtrips_configuration() {
+        use crate::gui::{
+            actions::{self, Action},
+            effect::Effect,
+            message::Message,
+            update::update,
+        };
+        let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let mut state = crate::gui::state::GuiState::new(db);
+        actions::open(&mut state, Action::Dlt, None, None);
+        state.editor.as_mut().unwrap().members.clear();
+        state.editor.as_mut().unwrap().conditions.clear();
+        assert!(matches!(
+            update(&mut state, Message::SaveDltDevice),
+            Effect::None
+        ));
+        assert!(
+            state
+                .editor
+                .as_ref()
+                .unwrap()
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("name")
+        );
+        state.editor.as_mut().unwrap().values[3] = " mydevice ".into();
+        state.editor.as_mut().unwrap().values[1] = "0".into();
+        assert!(matches!(
+            update(&mut state, Message::SaveDltDevice),
+            Effect::None
+        ));
+        state.editor.as_mut().unwrap().values[1] = "3490".into();
+        let Effect::SaveDltDevice { epoch, device } = update(&mut state, Message::SaveDltDevice)
+        else {
+            panic!("expected device save");
+        };
+        assert_eq!(device.name, "mydevice");
+        assert!(matches!(
+            update(&mut state, Message::SaveDltDevice),
+            Effect::None
+        ));
+        let file = tempfile::NamedTempFile::new().unwrap();
+        crate::config::DltDevice::save_to(&device, file.path()).unwrap();
+        let config: crate::config::Config =
+            serde_json::from_slice(&std::fs::read(file.path()).unwrap()).unwrap();
+        assert_eq!(config.dlt_devices, vec![device.clone()]);
+        update(
+            &mut state,
+            Message::DltDeviceSaved(epoch, device.clone(), Ok(())),
+        );
+        assert!(!state.editor.as_ref().unwrap().dlt_saving);
+        assert_eq!(state.editor.as_ref().unwrap().members[0].1, "mydevice");
+        assert!(matches!(
+            update(&mut state, Message::SaveDltDevice),
+            Effect::None
+        ));
+        assert!(
+            state
+                .editor
+                .as_ref()
+                .unwrap()
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("already")
+        );
+        state.editor.as_mut().unwrap().values[3] = "anotherdevice".into();
+        let Effect::SaveDltDevice { epoch, device } = update(&mut state, Message::SaveDltDevice)
+        else {
+            panic!("expected device save");
+        };
+        update(
+            &mut state,
+            Message::DltDeviceSaved(epoch, device, Err("Write failed".into())),
+        );
+        assert_eq!(
+            state.editor.as_ref().unwrap().error.as_deref(),
+            Some("Write failed")
+        );
+        assert!(!state.editor.as_ref().unwrap().dlt_saving);
+    }
     #[cfg(unix)]
     #[tokio::test]
     async fn subprocess_output_is_a_watched_gui_source() {

@@ -98,3 +98,12 @@ navigation, and End navigation after rendering.
 
 The row inspector opens from the row context menu; its standalone button was
 removed at the user’s request.
+
+## Named DLT devices
+
+- [x] Save named DLT devices from the connection dialog and reuse them later.
+- [x] Carry a selected device name into its connected tab title.
+
+Saving uses a background effect and the shared configuration persistence helper.
+The connection endpoint remains the source identity for reconnection and saved
+file context; the device name supplies the visible tab title.

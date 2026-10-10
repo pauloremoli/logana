@@ -814,11 +814,14 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                         continue;
                     }
                     count += 1;
+                    let name = label.clone();
                     let host = host.clone();
                     let port = port.clone();
                     body = body.child(
                         ListItem::new(("dlt-device", *index))
-                            .selected(e.values[0] == host && e.values[1] == port)
+                            .selected(
+                                e.values[0] == host && e.values[1] == port && e.values[3] == *label,
+                            )
                             .child(
                                 div().flex().flex_col().child(label.clone()).child(
                                     div()
@@ -830,6 +833,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                             .on_click(cx.listener(move |app, _, window, cx| {
                                 app.dispatch(Message::EditorText(0, host.clone()), window, cx);
                                 app.dispatch(Message::EditorText(1, port.clone()), window, cx);
+                                app.dispatch(Message::EditorText(3, name.clone()), window, cx);
                             })),
                     );
                 }
@@ -840,7 +844,25 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             }
             body = body
                 .child(text(app, 0, "Device host", cx))
-                .child(text(app, 1, "TCP port", cx));
+                .child(text(app, 1, "TCP port", cx))
+                .child(text(
+                    app,
+                    3,
+                    "Device name (optional for direct connections)",
+                    cx,
+                ))
+                .child(
+                    Button::new("dlt-save-device")
+                        .label(if e.dlt_saving {
+                            "Saving…"
+                        } else {
+                            "Save device"
+                        })
+                        .disabled(e.dlt_saving)
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            app.dispatch(Message::SaveDltDevice, window, cx)
+                        })),
+                );
         }
         Action::Otel => {
             body = body

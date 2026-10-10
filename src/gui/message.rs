@@ -23,6 +23,8 @@ pub enum Message {
     AnnotationRemoved(usize),
     EditGroup(String),
     EditorText(usize, String),
+    SaveDltDevice,
+    DltDeviceSaved(u64, crate::config::DltDevice, Result<(), String>),
     EditorToggle(usize),
     EditorTimestampPart(usize, String),
     EditorAdvanced,

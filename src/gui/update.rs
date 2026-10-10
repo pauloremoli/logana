@@ -82,6 +82,62 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
 }
 fn update_inner(state: &mut GuiState, message: Message) -> Effect {
     match message {
+        Message::SaveDltDevice => {
+            let Some(e) = state
+                .editor
+                .as_mut()
+                .filter(|e| e.action == crate::gui::actions::Action::Dlt && !e.dlt_saving)
+            else {
+                return Effect::None;
+            };
+            match crate::gui::actions::dlt_device(e, true) {
+                Ok(device) => {
+                    if e.members.iter().any(|(_, name, _)| *name == device.name) {
+                        e.error = Some(
+                            "A saved device already uses this name. Choose another name.".into(),
+                        );
+                        return Effect::None;
+                    }
+                    e.dlt_saving = true;
+                    e.error = None;
+                    Effect::SaveDltDevice {
+                        epoch: e.epoch,
+                        device,
+                    }
+                }
+                Err(error) => {
+                    e.error = Some(error);
+                    Effect::None
+                }
+            }
+        }
+        Message::DltDeviceSaved(epoch, device, result) => {
+            if let Some(e) = state
+                .editor
+                .as_mut()
+                .filter(|e| e.epoch == epoch && e.action == crate::gui::actions::Action::Dlt)
+            {
+                e.dlt_saving = false;
+                if result.is_ok() {
+                    let index = e.conditions.len();
+                    e.members.push((index, device.name.clone(), true));
+                    e.conditions.push((
+                        device.host,
+                        device
+                            .port
+                            .unwrap_or(crate::config::DEFAULT_DLT_PORT)
+                            .to_string(),
+                    ));
+                } else {
+                    e.error = result.clone().err();
+                }
+            }
+            state.notify(match result {
+                Ok(()) => StatusMessage::Info(format!("Saved DLT device {}.", device.name)),
+                Err(error) => StatusMessage::Error(error),
+            });
+            Effect::None
+        }
         Message::AnnotationRemoved(index) => {
             if let Some(tab) = state.active_tab_mut()
                 && index < tab.comment_manager.get().len()

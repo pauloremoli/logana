@@ -547,6 +547,7 @@ pub struct Editor {
     pub error: Option<String>,
     pub edit_id: Option<usize>,
     pub group_name_locked: bool,
+    pub dlt_saving: bool,
     pub advanced: bool,
     pub auto_style: bool,
     pub style_seed: usize,
@@ -822,6 +823,7 @@ pub fn open(
         original_theme: state.theme.clone(),
         error: None,
         edit_id,
+        dlt_saving: false,
         group_name_locked: false,
         advanced: false,
         auto_style: false,
@@ -1282,17 +1284,20 @@ pub fn apply(state: &mut GuiState) -> Effect {
         return Effect::ConnectSource(source);
     }
     if e.action == Action::Dlt {
-        let Some(port) = e.values[1].parse::<u16>().ok().filter(|port| *port > 0) else {
-            state.editor.as_mut().unwrap().error = Some("Enter a port between 1 and 65535.".into());
-            return Effect::None;
+        let device = match dlt_device(&e, false) {
+            Ok(device) => device,
+            Err(error) => {
+                state.editor.as_mut().unwrap().error = Some(error);
+                return Effect::None;
+            }
         };
-        if e.values[0].trim().is_empty() {
-            state.editor.as_mut().unwrap().error = Some("Enter the device host.".into());
-            return Effect::None;
-        }
-        let source = crate::gui::sources::Source::Dlt {
-            host: e.values[0].clone(),
-            port,
+        let source = if device.name.is_empty() {
+            crate::gui::sources::Source::Dlt {
+                host: device.host,
+                port: device.port.unwrap_or(crate::config::DEFAULT_DLT_PORT),
+            }
+        } else {
+            crate::gui::sources::Source::NamedDlt(device)
         };
         close(state, true);
         return Effect::ConnectSource(source);
@@ -1686,6 +1691,31 @@ pub fn configure_export(editor: &mut Editor, name: &str) {
         }
         Err(error) => editor.error = Some(error.to_string()),
     }
+}
+
+pub(super) fn dlt_device(
+    e: &Editor,
+    require_name: bool,
+) -> Result<crate::config::DltDevice, String> {
+    let port = e.values[1]
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port > 0)
+        .ok_or("Enter a port between 1 and 65535.")?;
+    let host = e.values[0].trim();
+    if host.is_empty() {
+        return Err("Enter the device host.".into());
+    }
+    let name = e.values[3].trim();
+    if require_name && name.is_empty() {
+        return Err("Enter a device name to save it.".into());
+    }
+    Ok(crate::config::DltDevice {
+        name: name.into(),
+        host: host.into(),
+        port: Some(port),
+    })
 }
 
 #[cfg(test)]
