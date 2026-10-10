@@ -2429,49 +2429,67 @@ fn loaded_rows_keep_scrollbar_extent_and_end_navigation_after_layout(cx: &mut Te
 
 #[gpui_kit::test]
 fn saved_dlt_device_selection_fills_name_and_connection(cx: &mut TestAppContext) {
-    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
-    cx.update_window(handle.into(), |_, window, cx| {
-        app.update(cx, |app, cx| {
-            app.dispatch(
-                super::message::Message::GuiAction(super::actions::Action::Dlt),
-                window,
-                cx,
+    for dimensions in [(600., 740.), (1000., 900.)] {
+        let (handle, app) = palette_window(cx, dimensions, "dracula");
+        cx.update_window(handle.into(), |_, window, cx| {
+            app.update(cx, |app, cx| {
+                app.dispatch(
+                    super::message::Message::GuiAction(super::actions::Action::Dlt),
+                    window,
+                    cx,
+                );
+                let editor = app.state.editor.as_mut().unwrap();
+                editor.members = vec![(0, "mydevice".into(), true)];
+                editor.conditions = vec![("localhost".into(), "3490".into())];
+                cx.notify();
+            });
+            window.render_frame(cx);
+            let saved = window.find("dlt-saved-devices").bounds();
+            let details = window.find("dlt-device-details").bounds();
+            assert!(saved.origin.x + saved.size.width <= details.origin.x);
+            assert!(window.try_find(("editor-input", 3usize)).is_some());
+            window.click("dlt-save-device", cx);
+            assert!(
+                app.read(cx)
+                    .state
+                    .editor
+                    .as_ref()
+                    .unwrap()
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("name")
             );
-            let editor = app.state.editor.as_mut().unwrap();
-            editor.members = vec![(0, "mydevice".into(), true)];
-            editor.conditions = vec![("localhost".into(), "3490".into())];
-            cx.notify();
-        });
-        window.render_frame(cx);
-        assert!(window.try_find(("editor-input", 3usize)).is_some());
-        window.click("dlt-save-device", cx);
-        assert!(
-            app.read(cx)
-                .state
-                .editor
-                .as_ref()
-                .unwrap()
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("name")
-        );
-        window.render_frame(cx);
-        window.click(("dlt-device", 0usize), cx);
-        assert_eq!(
-            app.read(cx).state.editor.as_ref().unwrap().values[3],
-            "mydevice"
-        );
-        app.update(cx, |app, _| {
-            let super::effect::Effect::ConnectSource(super::sources::Source::NamedDlt(device)) =
-                super::actions::apply(&mut app.state)
-            else {
-                panic!("expected named connection");
-            };
-            assert_eq!(device.name, "mydevice");
-            assert_eq!(device.host, "localhost");
-            assert_eq!(device.port, Some(3490));
-        });
-    })
-    .unwrap();
+            window.render_frame(cx);
+            window.click(("dlt-device", 0usize), cx);
+            assert_eq!(
+                app.read(cx).state.editor.as_ref().unwrap().values[3],
+                "mydevice"
+            );
+            window.render_frame(cx);
+            window.click(("editor-input", 0usize), cx);
+            window.press("ctrl-a", cx);
+            window.input("127.0.0.1", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                app.read(cx).state.editor.as_ref().unwrap().conditions[0].0,
+                "localhost"
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, _window, cx| {
+            app.update(cx, |app, _| {
+                let super::effect::Effect::ConnectSource(super::sources::Source::NamedDlt(device)) =
+                    super::actions::apply(&mut app.state)
+                else {
+                    panic!("expected named connection");
+                };
+                assert_eq!(device.name, "mydevice");
+                assert_eq!(device.host, "127.0.0.1");
+                assert_eq!(device.port, Some(3490));
+            });
+        })
+        .unwrap();
+    }
 }

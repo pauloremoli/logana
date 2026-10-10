@@ -107,3 +107,7 @@ removed at the user’s request.
 Saving uses a background effect and the shared configuration persistence helper.
 The connection endpoint remains the source identity for reconnection and saved
 file context; the device name supplies the visible tab title.
+
+The DLT dialog keeps a searchable, scrollable saved-device list on the left
+and editable connection details on the right. Selecting a saved device fills
+the details without modifying its saved values.

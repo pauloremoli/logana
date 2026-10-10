@@ -319,6 +319,111 @@ fn timestamp_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
     section.into_any_element()
 }
 
+fn dlt_editor(app: &App, width: f32, height: f32, cx: &mut Context<App>) -> AnyElement {
+    let e = app.state.editor.as_ref().unwrap();
+    let mut devices = div()
+        .id("dlt-saved-device-list")
+        .test_support()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .max_h(px((height - 240.).clamp(120., 360.)))
+        .overflow_y_scroll();
+    let query = e.values[2].trim().to_lowercase();
+    let mut count = 0;
+    for (index, label, _) in &e.members {
+        if let Some((host, port)) = e.conditions.get(*index) {
+            if !format!("{label} {host} {port}")
+                .to_lowercase()
+                .contains(&query)
+            {
+                continue;
+            }
+            count += 1;
+            let name = label.clone();
+            let host = host.clone();
+            let port = port.clone();
+            devices = devices.child(
+                ListItem::new(("dlt-device", *index))
+                    .selected(e.values[0] == host && e.values[1] == port && e.values[3] == *label)
+                    .child(
+                        div().flex().flex_col().child(label.clone()).child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("{host}:{port}")),
+                        ),
+                    )
+                    .on_click(cx.listener(move |app, _, window, cx| {
+                        app.dispatch(Message::EditorText(0, host.clone()), window, cx);
+                        app.dispatch(Message::EditorText(1, port.clone()), window, cx);
+                        app.dispatch(Message::EditorText(3, name.clone()), window, cx);
+                    })),
+            );
+        }
+    }
+    if count == 0 {
+        devices = devices.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(if e.members.is_empty() {
+                    "No saved devices yet. Enter details on the right to save one."
+                } else {
+                    "No matching saved devices."
+                }),
+        );
+    }
+    let details = div().id("dlt-device-details").test_support()
+                .flex().flex_col().flex_1().min_w(px(0.)).gap_3()
+                .child(div().font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD).child("Connection details"))
+                .child(text(app, 3, "Device name", cx))
+                .child(text(app, 0, "Device host", cx))
+                .child(text(app, 1, "TCP port", cx))
+                .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                    .child("Select a saved device to fill these fields. Edit them before connecting, or save a new name."))
+                .child(
+                    Button::new("dlt-save-device")
+                        .label(if e.dlt_saving {
+                            "Saving…"
+                        } else {
+                            "Save device"
+                        })
+                        .disabled(e.dlt_saving)
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            app.dispatch(Message::SaveDltDevice, window, cx)
+                        })),
+                ).into_any_element();
+    let saved = div()
+        .id("dlt-saved-devices")
+        .test_support()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .w(px((width * 0.36).min(260.)))
+        .min_w(px(0.))
+        .gap_3()
+        .pr_3()
+        .border_r_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
+                .child("Saved devices"),
+        )
+        .child(text(app, 2, "Search devices", cx))
+        .child(devices)
+        .into_any_element();
+    div()
+        .flex()
+        .items_start()
+        .gap_4()
+        .min_w(px(0.))
+        .child(saved)
+        .child(details)
+        .into_any_element()
+}
+
 pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Option<AnyElement> {
     let e = app.state.editor.as_ref()?;
     let width = (f32::from(viewport.width) - 48.).clamp(
@@ -802,67 +907,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             }
         }
         Action::Dlt => {
-            body = body.child(text(app, 2, "Search saved devices", cx));
-            let query = e.values[2].trim().to_lowercase();
-            let mut count = 0;
-            for (index, label, _) in &e.members {
-                if let Some((host, port)) = e.conditions.get(*index) {
-                    if !format!("{label} {host} {port}")
-                        .to_lowercase()
-                        .contains(&query)
-                    {
-                        continue;
-                    }
-                    count += 1;
-                    let name = label.clone();
-                    let host = host.clone();
-                    let port = port.clone();
-                    body = body.child(
-                        ListItem::new(("dlt-device", *index))
-                            .selected(
-                                e.values[0] == host && e.values[1] == port && e.values[3] == *label,
-                            )
-                            .child(
-                                div().flex().flex_col().child(label.clone()).child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!("{host}:{port}")),
-                                ),
-                            )
-                            .on_click(cx.listener(move |app, _, window, cx| {
-                                app.dispatch(Message::EditorText(0, host.clone()), window, cx);
-                                app.dispatch(Message::EditorText(1, port.clone()), window, cx);
-                                app.dispatch(Message::EditorText(3, name.clone()), window, cx);
-                            })),
-                    );
-                }
-            }
-            if count == 0 {
-                body = body
-                    .child("No matching saved devices. Enter a host and port to connect directly.");
-            }
-            body = body
-                .child(text(app, 0, "Device host", cx))
-                .child(text(app, 1, "TCP port", cx))
-                .child(text(
-                    app,
-                    3,
-                    "Device name (optional for direct connections)",
-                    cx,
-                ))
-                .child(
-                    Button::new("dlt-save-device")
-                        .label(if e.dlt_saving {
-                            "Saving…"
-                        } else {
-                            "Save device"
-                        })
-                        .disabled(e.dlt_saving)
-                        .on_click(cx.listener(|app, _, window, cx| {
-                            app.dispatch(Message::SaveDltDevice, window, cx)
-                        })),
-                );
+            body = body.child(dlt_editor(app, width, height, cx));
         }
         Action::Otel => {
             body = body
