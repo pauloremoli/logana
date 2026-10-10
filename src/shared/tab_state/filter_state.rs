@@ -8,7 +8,16 @@ use crate::filters::FilterManager;
 
 use super::{CachedScanResult, FilterHandle, VisibleLines};
 
+pub type PreparedFilters = (
+    Arc<FilterManager>,
+    Vec<Style>,
+    Vec<DateFilterStyle>,
+    Vec<crate::filters::FieldFilterStyle>,
+);
+
 pub struct FilterState {
+    pub background_preparation: bool,
+    pub prepared: Option<tokio::sync::oneshot::Receiver<PreparedFilters>>,
     pub visible_indices: VisibleLines,
     pub enabled: bool,
     pub show_marks_only: bool,
@@ -69,6 +78,8 @@ pub type FilterViewSnapshot = (
 impl Default for FilterState {
     fn default() -> Self {
         Self {
+            background_preparation: false,
+            prepared: None,
             visible_indices: VisibleLines::default(),
             enabled: true,
             show_marks_only: false,

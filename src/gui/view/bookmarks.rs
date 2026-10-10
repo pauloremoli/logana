@@ -58,7 +58,7 @@ pub fn sync(state: &mut crate::gui::state::GuiState) {
 fn refresh(tab: &mut crate::shared::TabState) {
     let handle = crate::gui::runtime::handle();
     let _guard = handle.enter();
-    tab.begin_filter_refresh();
+    tab.begin_filter_refresh_background();
     if let Some(query) = tab.search.query.get_pattern().map(str::to_owned) {
         tab.begin_search(&query, true, false);
     }

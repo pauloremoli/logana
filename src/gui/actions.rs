@@ -672,7 +672,7 @@ pub fn open(
             } else {
                 tab.filter.show_marks_only = !tab.filter.show_marks_only;
             }
-            tab.begin_filter_refresh();
+            tab.begin_filter_refresh_background();
             return Effect::None;
         }
         Action::ShowLogs => {

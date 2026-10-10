@@ -62,7 +62,7 @@ impl Snapshot {
         tab.filter.saved_view = None;
         tab.filter.cached_scan = None;
         tab.invalidate_parse_cache();
-        tab.begin_filter_refresh();
+        tab.begin_filter_refresh_background();
         crate::gui::effect::FilterEdit::Restore {
             manager: tab.log_manager.clone(),
         }

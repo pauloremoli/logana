@@ -1031,6 +1031,22 @@ impl TabState {
     pub fn advance_filter_computation(&mut self) {
         use tokio::sync::mpsc::error::TryRecvError;
         let tab = self;
+        if let Some(prepared) = &mut tab.filter.prepared {
+            match prepared.try_recv() {
+                Ok((manager, text, date, field)) => {
+                    tab.filter.manager = manager;
+                    tab.filter.text_styles = text;
+                    tab.filter.date_styles = date;
+                    tab.filter.field_styles = field;
+                    tab.filter.prepared = None;
+                    tab.cache.render_gen = tab.cache.render_gen.wrapping_add(1);
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return,
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    tab.filter.prepared = None;
+                }
+            }
+        }
         if tab.filter.handle.is_none() {
             return;
         }
@@ -1836,7 +1852,13 @@ impl TabState {
 
     /// Start a background filter computation over the entire file.
     /// Any in-flight filter computation is cancelled before the new one starts.
+    pub fn begin_filter_refresh_background(&mut self) {
+        self.filter.background_preparation = true;
+        self.begin_filter_refresh();
+    }
+
     pub fn begin_filter_refresh(&mut self) {
+        self.filter.prepared = None;
         if let Some(ref h) = self.filter.handle {
             h.cancel.store(true, Ordering::Relaxed);
         }
@@ -1969,7 +1991,17 @@ impl TabState {
             .filter
             .visible_indices
             .get_opt(self.scroll.scroll_offset);
-        self.rebuild_filter_manager_cache();
+        let compile_manager = if self.filter.background_preparation {
+            Some(self.log_manager.clone())
+        } else {
+            self.rebuild_filter_manager_cache();
+            None
+        };
+        let prepared_tx = compile_manager.as_ref().map(|_| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.filter.prepared = Some(rx);
+            tx
+        });
         // Clear stale counts — the filter order may have changed (e.g. reorder) so old
         // index-based counts would map to the wrong filters until the scan completes.
         self.filter.match_counts = Vec::new();
@@ -1986,11 +2018,6 @@ impl TabState {
 
         let file_reader = self.file_reader.clone();
         let fm_arc = self.filter.manager.clone();
-        let date_filters = crate::filters::extract_date_filters(self.log_manager.get_filters());
-        let (inc_ff, exc_ff) =
-            crate::filters::extract_field_filters(self.log_manager.get_filters());
-        let field_defs =
-            crate::filters::extract_field_filters_ordered(self.log_manager.get_filters());
         let all_filter_defs = self.log_manager.get_filters().to_vec();
         let raw_mode = self.display.raw_mode;
         let parser = if raw_mode {
@@ -2002,7 +2029,6 @@ impl TabState {
         let hidden_fields = self.display.hidden_fields.clone();
         let show_keys = self.display.show_keys;
         let line_count = self.file_reader.line_count();
-        let n_text_filters = self.filter.manager.filter_count();
         let year_map = self.year_map.clone();
         let is_merged_reader = self.merged.is_some();
         let highlight_mode = self.filter.highlight_mode;
@@ -2010,8 +2036,29 @@ impl TabState {
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
 
+            if cancel_clone.load(Ordering::Relaxed) {
+                return;
+            }
+            let fm_arc = if let Some(manager) = compile_manager {
+                let (fm, text, date, field) = manager.build_filter_manager();
+                let fm = Arc::new(fm);
+                if cancel_clone.load(Ordering::Relaxed)
+                    || prepared_tx
+                        .unwrap()
+                        .send((fm.clone(), text, date, field))
+                        .is_err()
+                {
+                    return;
+                }
+                fm
+            } else {
+                fm_arc
+            };
+            let date_filters = crate::filters::extract_date_filters(&all_filter_defs);
+            let (inc_ff, exc_ff) = crate::filters::extract_field_filters(&all_filter_defs);
+            let field_defs = crate::filters::extract_field_filters_ordered(&all_filter_defs);
             let parser_ref: Option<&dyn LogFormatParser> = parser.as_deref();
-            let n_text = n_text_filters;
+            let n_text = fm_arc.filter_count();
             let n_field = field_defs.len();
             let n_date = date_filters.len();
 
@@ -2642,6 +2689,19 @@ impl TabState {
     /// `LogManager` filter definitions.
     #[inline]
     pub fn rebuild_filter_manager_cache(&mut self) {
+        if self.filter.background_preparation {
+            let manager = self.log_manager.clone();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.filter.prepared = Some(rx);
+            tokio::task::spawn_blocking(move || {
+                if tx.is_closed() {
+                    return;
+                }
+                let (fm, text, date, field) = manager.build_filter_manager();
+                let _ = tx.send((Arc::new(fm), text, date, field));
+            });
+            return;
+        }
         let (fm, styles, date_filter_styles, field_filter_styles) =
             self.log_manager.build_filter_manager();
         self.filter.manager = Arc::new(fm);

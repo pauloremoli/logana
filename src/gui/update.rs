@@ -210,7 +210,7 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             match result {
                 Ok(mut tab) => {
                     state.preferences.apply(&mut tab);
-                    tab.begin_filter_refresh();
+                    tab.begin_filter_refresh_background();
                     state.tabs.push(*tab);
                     state.active_tab = state.tabs.len() - 1;
                     state.nav_page = crate::gui::state::NavPage::Logs;
@@ -1665,7 +1665,7 @@ pub fn resolve_pending_selection(state: &mut GuiState) {
 fn force_recompute(tab: &mut TabState) {
     let handle = runtime::handle();
     let _guard = handle.enter();
-    tab.begin_filter_refresh();
+    tab.begin_filter_refresh_background();
 }
 
 // Mode handlers already start background scans. Keep their handle alive.
@@ -2465,7 +2465,7 @@ mod tests {
 
     async fn drain_gui_scan(tab: &mut TabState) {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while tab.filter.handle.is_some() {
+            while tab.filter.handle.is_some() || tab.filter.prepared.is_some() {
                 tab.advance_filter_computation();
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
@@ -2650,6 +2650,52 @@ mod tests {
         force_recompute(&mut tab);
         state.tabs.push(tab);
         (state, file)
+    }
+
+    #[tokio::test]
+    async fn gui_filter_refresh_defers_compilation_and_keeps_latest_request() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let tab = &mut state.tabs[0];
+        tab.log_manager
+            .add_filter_with_color(
+                "line one".into(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        force_recompute(tab);
+        assert_eq!(tab.filter.manager.filter_count(), 0);
+        drain_gui_scan(tab).await;
+        assert_eq!(tab.filter.manager.filter_count(), 1);
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0]
+        );
+        force_recompute(tab);
+        tab.log_manager
+            .add_filter_with_color(
+                "line two".into(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        force_recompute(tab);
+        drain_gui_scan(tab).await;
+        assert_eq!(tab.filter.manager.filter_count(), 2);
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        tab.filter.show_marks_only = true;
+        tab.mark_line(1);
+        force_recompute(tab);
+        assert!(tab.filter.prepared.is_some());
+        drain_gui_scan(tab).await;
+        assert!(tab.filter.prepared.is_none());
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![1]
+        );
     }
 
     #[tokio::test]

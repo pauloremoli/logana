@@ -71,7 +71,7 @@ impl App {
                                 tab.detect_and_apply_format();
                             }
                             // Full background filtering also rechecks a previously incomplete last line.
-                            tab.begin_filter_refresh();
+                            tab.begin_filter_refresh_background();
                             let follow = tab.stream.tail_mode && !tab.stream.paused;
                             if follow {
                                 tab.scroll.scroll_offset =

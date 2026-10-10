@@ -143,7 +143,7 @@ impl App {
                     match result {
                         Ok(Ok(Some(manager))) => {
                             tab.log_manager = manager;
-                            tab.begin_filter_refresh();
+                            tab.begin_filter_refresh_background();
                             cx.notify();
                         }
                         Ok(Ok(None)) => {}

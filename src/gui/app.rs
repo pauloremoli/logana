@@ -155,9 +155,9 @@ impl App {
                         app.poll_mcp(cx);
                         let mut filtering = false;
                         for tab in &mut app.state.tabs {
-                            if tab.filter.handle.is_some() {
+                            if tab.filter.handle.is_some() || tab.filter.prepared.is_some() {
                                 tab.advance_filter_computation();
-                                if tab.filter.handle.is_none() {
+                                if tab.filter.handle.is_none() && tab.filter.prepared.is_none() {
                                     let query = tab.search.query.get_pattern().map(str::to_owned);
                                     if let Some(query) = query {
                                         tab.begin_search(&query, true, false);

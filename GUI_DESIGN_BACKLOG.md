@@ -115,7 +115,11 @@ the details without modifying its saved values.
 ## GUI background processing
 
 - [x] Discover filter field names and observed values in a background task.
-- [ ] Move filter preparation and remaining file-size work off the UI thread.
+- [x] Compile GUI filter expressions and prepare field/date conditions in workers.
+- [ ] Move remaining file-size completion and rendering preparation off the UI thread.
 
 Field suggestions preserve editor drafts and reject results from a superseded
 editor, parser generation, or file snapshot.
+
+Filter-file results and direct filter edits start cancellable background preparation.
+Marks-only and style-only refreshes use the same worker preparation path.

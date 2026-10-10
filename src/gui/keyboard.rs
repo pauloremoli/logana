@@ -198,7 +198,7 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
         if let Some(tab) = state.active_tab_mut() {
             tab.mark_manager.clear();
             tab.comment_manager.clear();
-            tab.begin_filter_refresh();
+            tab.begin_filter_refresh_background();
         }
         return Effect::None;
     }
@@ -263,7 +263,7 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
     if kb.normal.toggle_highlight_mode.matches(key, modifiers) {
         if let Some(tab) = state.active_tab_mut() {
             tab.filter.highlight_mode = !tab.filter.highlight_mode;
-            tab.begin_filter_refresh();
+            tab.begin_filter_refresh_background();
         }
         return Effect::None;
     }

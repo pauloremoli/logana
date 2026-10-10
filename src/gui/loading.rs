@@ -350,7 +350,7 @@ fn expand_preview(
     tab.filter.saved_view = None;
     tab.filter.handle = full.filter.handle.take();
     if refresh {
-        tab.begin_filter_refresh();
+        tab.begin_filter_refresh_background();
     }
     if let Some(handle) = &mut tab.filter.handle {
         handle.scroll_anchor = anchor;
