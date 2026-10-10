@@ -1006,8 +1006,20 @@ fn filter_editor_timestamp_components_prefill_and_save(cx: &mut TestAppContext) 
             expected
         );
         app.update(cx, |app, _| {
+            let crate::gui::effect::Effect::ValidateFilterPattern {
+                epoch,
+                pattern,
+                timestamp,
+            } = crate::gui::update::update(&mut app.state, Message::EditorApply)
+            else {
+                panic!("expected date validation task");
+            };
+            let result = crate::gui::actions::validate_filter_pattern(&pattern, timestamp);
             let crate::gui::effect::Effect::SaveGuiFilter { pattern, .. } =
-                crate::gui::update::update(&mut app.state, Message::EditorApply)
+                crate::gui::update::update(
+                    &mut app.state,
+                    Message::FilterPatternValidated(epoch, pattern, timestamp, result),
+                )
             else {
                 panic!("expected date filter save")
             };
@@ -2616,6 +2628,57 @@ fn table_preparation_defers_sampling_until_the_worker_runs(cx: &mut TestAppConte
         assert!(app.read(cx).state.tabs[0].cache.field_names.is_some());
         assert!(app.read(cx).field_widths.is_some());
         assert_eq!(app.read(cx).state.column_widths.time, 123.);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn invalid_regex_worker_keeps_the_editor_interactive(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx);
+            app.dispatch(Message::EditorText(0, "[".into()), window, cx);
+            app.dispatch(Message::EditorToggle(0), window, cx);
+            app.dispatch(Message::EditorApply, window, cx);
+            assert!(
+                app.state
+                    .editor
+                    .as_ref()
+                    .unwrap()
+                    .validation_pending
+                    .is_some()
+            );
+            app.dispatch(Message::EditorAdvanced, window, cx);
+            assert!(app.state.editor.as_ref().unwrap().advanced);
+            app.dispatch(Message::EditorAdvanced, window, cx);
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        cx.run_until_parked();
+        if cx.update(|cx| app.read(cx).state.editor.as_ref().unwrap().error.is_some()) {
+            break;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        runtime::handle().block_on(async {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        });
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let editor = app.read(cx).state.editor.as_ref().unwrap();
+        assert_eq!(
+            editor.error.as_deref(),
+            Some("The regular expression is invalid.")
+        );
+        assert!(window.try_find("filter-validation").is_some());
+        assert_eq!(editor.values[0], "[");
+        assert!(editor.validation_pending.is_none());
     })
     .unwrap();
 }

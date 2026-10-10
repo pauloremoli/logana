@@ -9,6 +9,11 @@ use std::path::PathBuf;
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum Effect {
+    ValidateFilterPattern {
+        epoch: u64,
+        pattern: String,
+        timestamp: bool,
+    },
     ScrollHorizontal(usize),
     SavePreferences(crate::gui::persistence::Preferences),
     MergeTabs(Vec<crate::shared::TabId>),

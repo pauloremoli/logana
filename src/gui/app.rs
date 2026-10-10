@@ -596,6 +596,28 @@ impl App {
             }
             Effect::ListDocker { epoch } => self.list_docker(epoch, cx),
             Effect::ConnectSource(source) => self.connect_source(source, cx),
+            Effect::ValidateFilterPattern {
+                epoch,
+                pattern,
+                timestamp,
+            } => {
+                let saved = pattern.clone();
+                let worker = cx.background_executor().spawn(async move {
+                    crate::gui::actions::validate_filter_pattern(&saved, timestamp)
+                });
+                cx.spawn(async move |this, cx| {
+                    let result = worker.await;
+                    this.update_in(cx, |app, window, cx| {
+                        app.dispatch(
+                            Message::FilterPatternValidated(epoch, pattern, timestamp, result),
+                            window,
+                            cx,
+                        );
+                    })
+                    .ok();
+                })
+                .detach();
+            }
             Effect::SaveDltDevice { epoch, device } => {
                 cx.spawn(async move |this, cx| {
                     let saved = device.clone();

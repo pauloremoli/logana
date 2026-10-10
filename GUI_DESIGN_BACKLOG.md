@@ -118,7 +118,8 @@ the details without modifying its saved values.
 - [x] Compile GUI filter expressions and prepare field/date conditions in workers.
 - [x] Finalize multiline, bookmark, collapse, and unfiltered views in workers.
 - [x] Move rendering field discovery and column fitting out of render callbacks.
-- [ ] Finish the audit of filter validation and schema-dependent preparation.
+- [x] Validate regex and timestamp filter patterns in background tasks.
+- [ ] Move schema-dependent maps and remaining display commands out of UI handlers.
 
 Field suggestions preserve editor drafts and reject results from a superseded
 editor, parser generation, or file snapshot.
@@ -134,3 +135,7 @@ in the worker to prevent full-vector reallocations during frame updates.
 Table preparation runs against captured readers and parsers. Rendering reads
 prepared metadata; delayed results preserve manual column resizing and column
 editor choices. Tab switches schedule fitting without reading file contents.
+
+Pattern validation keeps the editor open, displays checking feedback, preserves
+validation errors, and ignores results for changed or closed editors. Saving
+starts only after the current pattern passes validation.

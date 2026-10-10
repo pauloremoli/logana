@@ -69,6 +69,14 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
         .and_then(|id| state.tabs.iter().find(|tab| tab.id == id))
         .map(crate::gui::history::Snapshot::new);
     let effect = update_inner(state, message);
+    if let Some(editor) = state.editor.as_mut()
+        && editor
+            .validation_pending
+            .as_ref()
+            .is_some_and(|key| !editor.validation_is_current(key))
+    {
+        editor.validation_pending = None;
+    }
     if let Some(before) = before
         && state
             .tabs
@@ -82,6 +90,28 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
 }
 fn update_inner(state: &mut GuiState, message: Message) -> Effect {
     match message {
+        Message::FilterPatternValidated(epoch, pattern, timestamp, result) => {
+            let key = (pattern, timestamp);
+            let Some(editor) = state.editor.as_mut().filter(|e| {
+                e.epoch == epoch
+                    && e.action == crate::gui::actions::Action::Filter
+                    && e.validation_pending.as_ref() == Some(&key)
+                    && e.validation_is_current(&key)
+            }) else {
+                return Effect::None;
+            };
+            editor.validation_pending = None;
+            match result {
+                Ok(()) => {
+                    editor.validated_pattern = Some(key);
+                    crate::gui::actions::apply(state)
+                }
+                Err(error) => {
+                    editor.error = Some(error);
+                    Effect::None
+                }
+            }
+        }
         Message::SaveDltDevice => {
             let Some(e) = state
                 .editor
@@ -293,6 +323,9 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
         }
         Message::EditorText(index, value) => {
             if let Some(e) = &mut state.editor {
+                if e.values.get(index) == Some(&value) {
+                    return Effect::None;
+                }
                 if e.action == crate::gui::actions::Action::DefaultFilters && index == 0 {
                     e.values[1] = e
                         .conditions

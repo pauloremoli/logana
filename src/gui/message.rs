@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 #[allow(clippy::large_enum_variant)]
 pub enum Message {
+    FilterPatternValidated(u64, String, bool, Result<(), String>),
     MergeSource(crate::shared::TabId),
     DefaultMappingsLoaded(u64, std::collections::HashMap<String, String>),
     BrowseDefaultMapping,

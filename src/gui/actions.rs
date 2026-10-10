@@ -536,6 +536,8 @@ pub struct Editor {
     pub values: Vec<String>,
     pub kind: FilterType,
     pub regex: bool,
+    pub validation_pending: Option<(String, bool)>,
+    pub validated_pattern: Option<(String, bool)>,
     pub ignore_case: bool,
     pub whole_line: bool,
     pub fields: Vec<(String, bool)>,
@@ -558,6 +560,11 @@ pub struct Editor {
     pub merge_sources: Vec<(TabId, bool)>,
 }
 impl Editor {
+    pub fn validation_is_current(&self, key: &(String, bool)) -> bool {
+        let timestamp = self.values[0].starts_with(crate::filters::DATE_PREFIX);
+        self.values[0] == key.0 && timestamp == key.1 && (timestamp || self.regex)
+    }
+
     /// The pattern/field key auto style colors are derived from: the field
     /// value when matching on a specific field, otherwise the raw pattern.
     fn style_pattern_key(&self) -> String {
@@ -808,6 +815,8 @@ pub fn open(
         values: vec![String::new(); 6],
         kind: FilterType::Include,
         regex: false,
+        validation_pending: None,
+        validated_pattern: None,
         ignore_case: false,
         whole_line: false,
         fields: Vec::new(),
@@ -1090,6 +1099,21 @@ pub fn close(state: &mut GuiState, applied: bool) {
 pub fn otel_default_port(protocol: &str) -> &'static str {
     if protocol == "grpc" { "4317" } else { "4318" }
 }
+pub fn validate_filter_pattern(pattern: &str, timestamp: bool) -> Result<(), String> {
+    if timestamp {
+        crate::filters::parse_date_filter(
+            pattern
+                .strip_prefix(crate::filters::DATE_PREFIX)
+                .unwrap_or(pattern),
+        )
+        .map(|_| ())
+    } else {
+        regex::Regex::new(pattern)
+            .map(|_| ())
+            .map_err(|_| "The regular expression is invalid.".to_string())
+    }
+}
+
 pub fn apply(state: &mut GuiState) -> Effect {
     let Some(mut e) = state.editor.clone() else {
         return Effect::None;
@@ -1207,25 +1231,11 @@ pub fn apply(state: &mut GuiState) -> Effect {
             Some(s.clone())
         }
     };
-    let timestamp_error = if timestamp {
-        crate::filters::parse_date_filter(
-            e.values[0]
-                .strip_prefix(crate::filters::DATE_PREFIX)
-                .unwrap(),
-        )
-        .err()
-    } else {
-        None
-    };
     let invalid = if matches!(e.action, Action::Filter | Action::Group) {
         if e.action == Action::Group && e.values[0].trim().is_empty() {
             Some("Enter a group name.".into())
         } else if e.action == Action::Filter && e.values[0].is_empty() && e.conditions.is_empty() {
             Some("Enter text or add a field condition.".into())
-        } else if timestamp_error.is_some() {
-            timestamp_error
-        } else if !timestamp && e.regex && regex::Regex::new(&e.values[0]).is_err() {
-            Some("The regular expression is invalid.".into())
         } else {
             e.values[4..6]
                 .iter()
@@ -1238,6 +1248,22 @@ pub fn apply(state: &mut GuiState) -> Effect {
     if let Some(error) = invalid {
         state.editor.as_mut().unwrap().error = Some(error);
         return Effect::None;
+    }
+    if e.action == Action::Filter && (timestamp || e.regex && e.conditions.is_empty()) {
+        let key = (e.values[0].clone(), timestamp);
+        if e.validated_pattern.as_ref() != Some(&key) {
+            if e.validation_pending.as_ref() == Some(&key) {
+                return Effect::None;
+            }
+            let editor = state.editor.as_mut().unwrap();
+            editor.validation_pending = Some(key);
+            editor.error = None;
+            return Effect::ValidateFilterPattern {
+                epoch: e.epoch,
+                pattern: e.values[0].clone(),
+                timestamp,
+            };
+        }
     }
     if e.action == Action::EnableMcp {
         let Some(port) = e.values[0].parse::<u16>().ok().filter(|p| *p > 0) else {
@@ -1982,6 +2008,54 @@ mod tests {
         state
     }
     #[tokio::test]
+    async fn filter_pattern_validation_is_deferred_without_closing_the_editor() {
+        let mut state = state().await;
+        open(&mut state, Action::Filter, None, None);
+        let editor = state.editor.as_mut().unwrap();
+        editor.values[0] = "[".into();
+        editor.regex = true;
+        let first = apply(&mut state);
+        let Effect::ValidateFilterPattern { epoch, .. } = &first else {
+            panic!("expected validation task");
+        };
+        let epoch = *epoch;
+        assert!(state.editor.as_ref().unwrap().error.is_none());
+        assert!(matches!(apply(&mut state), Effect::None));
+        assert!(matches!(finish_validation(&mut state, first), Effect::None));
+        assert!(state.editor.as_ref().unwrap().error.is_some());
+        update(&mut state, Message::EditorText(0, "[".into()));
+        assert!(state.editor.as_ref().unwrap().error.is_some());
+        update(&mut state, Message::EditorText(0, "^hello".into()));
+        let next = apply(&mut state);
+        update(
+            &mut state,
+            Message::FilterPatternValidated(epoch, "[".into(), false, Err("stale".into())),
+        );
+        assert!(state.editor.as_ref().unwrap().error.is_none());
+        assert!(matches!(
+            finish_validation(&mut state, next),
+            Effect::SaveGuiFilter { .. }
+        ));
+        assert!(state.editor.is_none());
+    }
+
+    fn finish_validation(state: &mut GuiState, effect: Effect) -> Effect {
+        let Effect::ValidateFilterPattern {
+            epoch,
+            pattern,
+            timestamp,
+        } = effect
+        else {
+            return effect;
+        };
+        let result = validate_filter_pattern(&pattern, timestamp);
+        update(
+            state,
+            Message::FilterPatternValidated(epoch, pattern, timestamp, result),
+        )
+    }
+
+    #[tokio::test]
     async fn opening_filter_editor_defers_field_discovery() {
         let mut state = state().await;
         let row = br#"{"key1":"value1"}"#;
@@ -2108,7 +2182,10 @@ mod tests {
                 pattern: saved,
                 options,
                 ..
-            } = apply(&mut state)
+            } = ({
+                let effect = apply(&mut state);
+                finish_validation(&mut state, effect)
+            })
             else {
                 panic!("expected timestamp save")
             };
@@ -2122,7 +2199,11 @@ mod tests {
         }
         open(&mut state, Action::Filter, None, None);
         state.editor.as_mut().unwrap().values[0] = format!("{}>= ", crate::filters::DATE_PREFIX);
-        assert!(matches!(apply(&mut state), Effect::None));
+        let effect = apply(&mut state);
+        assert!(matches!(
+            finish_validation(&mut state, effect),
+            Effect::None
+        ));
         assert!(state.editor.as_ref().unwrap().error.is_some());
     }
 

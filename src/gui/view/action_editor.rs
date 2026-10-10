@@ -706,6 +706,20 @@ fn filter_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
     body.into_any_element()
 }
 
+fn validation_error(editor: &Editor, error: &str) -> AnyElement {
+    let id = if editor.action == Action::Filter {
+        "filter-validation"
+    } else {
+        "editor-validation"
+    };
+    div()
+        .id(id)
+        .w_full()
+        .test_support()
+        .child(Alert::error("validation-alert", error.to_string()).small())
+        .into_any_element()
+}
+
 pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Option<AnyElement> {
     let e = app.state.editor.as_ref()?;
     let width = (f32::from(viewport.width) - 48.).clamp(
@@ -1791,17 +1805,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         );
     }
     if let Some(error) = &e.error {
-        body = body.child(
-            Alert::error(
-                if e.action == Action::Filter {
-                    "filter-validation"
-                } else {
-                    "editor-validation"
-                },
-                error.clone(),
-            )
-            .small(),
-        );
+        body = body.child(validation_error(e, error));
     }
     let footer =
         div()
@@ -1830,7 +1834,9 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     } else if e.action == Action::Merge {
                         "Merge files"
                     } else if e.action == Action::Filter {
-                        if e.edit_id.is_some() {
+                        if e.validation_pending.is_some() {
+                            "Checking filter…"
+                        } else if e.edit_id.is_some() {
                             "Save filter"
                         } else {
                             "Add filter"
