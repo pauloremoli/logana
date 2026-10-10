@@ -37,7 +37,7 @@ pub struct GuiState {
         crate::shared::TabId,
         u64,
         usize,
-        crate::commands::auto_complete::FieldIndex,
+        Arc<crate::commands::auto_complete::FieldIndex>,
     )>,
     pub palette: crate::gui::palette::Palette,
     pub db: Arc<Database>,

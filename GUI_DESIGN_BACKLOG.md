@@ -111,3 +111,11 @@ file context; the device name supplies the visible tab title.
 The DLT dialog keeps a searchable, scrollable saved-device list on the left
 and editable connection details on the right. Selecting a saved device fills
 the details without modifying its saved values.
+
+## GUI background processing
+
+- [x] Discover filter field names and observed values in a background task.
+- [ ] Move filter preparation and remaining file-size work off the UI thread.
+
+Field suggestions preserve editor drafts and reject results from a superseded
+editor, parser generation, or file snapshot.

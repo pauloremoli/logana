@@ -542,7 +542,7 @@ pub struct Editor {
     pub defaults: Vec<(String, bool)>,
     pub conditions: Vec<(String, String)>,
     pub members: Vec<(usize, String, bool)>,
-    pub discovery: crate::commands::auto_complete::FieldIndex,
+    pub discovery: std::sync::Arc<crate::commands::auto_complete::FieldIndex>,
     pub original_theme: crate::theme::Theme,
     pub error: Option<String>,
     pub edit_id: Option<usize>,
@@ -782,25 +782,20 @@ pub fn open(
     if let Some(cmd) = cmd {
         return crate::gui::update::perform_gui(state, cmd, descriptor.label.into());
     }
-    let discovery = if action == Action::Filter {
-        let tab = state.active_tab().unwrap();
-        let key = (tab.id, tab.cache.parse_gen, tab.file_reader.line_count());
-        if let Some((id, generation, count, fields)) = &state.field_discovery {
-            if (*id, *generation, *count) == key {
-                fields.clone()
-            } else {
-                let fields = tab.build_field_index();
-                state.field_discovery = Some((key.0, key.1, key.2, fields.clone()));
-                fields
-            }
-        } else {
-            let fields = tab.build_field_index();
-            state.field_discovery = Some((key.0, key.1, key.2, fields.clone()));
-            fields
-        }
-    } else {
-        Default::default()
-    };
+    let discovery = state
+        .field_discovery
+        .as_ref()
+        .and_then(|(id, generation, count, fields)| {
+            state
+                .active_tab()
+                .filter(|tab| {
+                    action == Action::Filter
+                        && (*id, *generation, *count)
+                            == (tab.id, tab.cache.parse_gen, tab.file_reader.line_count())
+                })
+                .map(|_| fields.clone())
+        })
+        .unwrap_or_default();
     let mut e = Editor {
         action,
         source: if descriptor.tab {
@@ -1985,6 +1980,17 @@ mod tests {
             "source.log".into(),
         ));
         state
+    }
+    #[tokio::test]
+    async fn opening_filter_editor_defers_field_discovery() {
+        let mut state = state().await;
+        let row = br#"{"key1":"value1"}"#;
+        state.tabs[0].file_reader = crate::ingestion::FileReader::from_bytes(row.to_vec());
+        state.tabs[0].display.format =
+            crate::parser::detect_format(&[row]).map(std::sync::Arc::from);
+        open(&mut state, Action::Filter, None, None);
+        assert!(state.editor.as_ref().unwrap().discovery.names.is_empty());
+        assert!(state.field_discovery.is_none());
     }
     #[test]
     fn fuzzy_labels_aliases_and_empty_catalog() {

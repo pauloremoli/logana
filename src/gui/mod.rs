@@ -49,3 +49,5 @@ mod startup;
 mod merge;
 
 mod history;
+
+mod field_discovery;

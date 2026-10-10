@@ -424,6 +424,288 @@ fn dlt_editor(app: &App, width: f32, height: f32, cx: &mut Context<App>) -> AnyE
         .into_any_element()
 }
 
+fn filter_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
+    let e = app.state.editor.as_ref().unwrap();
+    let mut body = div().flex().flex_col().gap_3();
+    let timestamp = e.values[0].starts_with(crate::filters::DATE_PREFIX);
+    if !timestamp {
+        let mut kinds = ButtonGroup::new("filter-behavior").outline().small();
+        for (i, (kind, label)) in [
+            (FilterType::Include, "Include"),
+            (FilterType::Exclude, "Exclude"),
+            (FilterType::Highlight, "Highlight"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            kinds = kinds.child(
+                Button::new(("filter-kind", i))
+                    .label(label)
+                    .selected(e.kind == kind)
+                    .on_click(cx.listener(move |app, _, window, cx| {
+                        app.dispatch(Message::EditorKind(kind.clone()), window, cx)
+                    })),
+            );
+        }
+        body = body.child(kinds);
+        body = body.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(if app.field_discovery_task.is_some() {
+                    "Match in · loading fields…"
+                } else {
+                    "Match in"
+                })
+                .children(app.editor_field_select.as_ref().map(|state| {
+                    Select::new(state)
+                        .id("filter-field-select")
+                        .w_full()
+                        .placeholder("All text")
+                        .search_placeholder("Search fields…")
+                        .accessibility_label("Match in")
+                        .cleanable(true)
+                })),
+        );
+        body = body.child(if e.values[1].is_empty() {
+            text(app, 0, "Contains", cx)
+        } else {
+            text(app, 2, "Contains", cx)
+        });
+        if e.conditions.len() > 1 || (!e.conditions.is_empty() && e.condition_edit.is_none()) {
+            body = body.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!(
+                        "{} additional field conditions",
+                        e.conditions.len() - usize::from(e.condition_edit.is_some())
+                    )),
+            );
+        }
+    } else {
+        body = body.child(timestamp_editor(app, cx));
+    }
+    if e.kind != FilterType::Exclude || timestamp {
+        let (color, background) = crate::gui::actions::automatic_filter_colors(
+            &e.style_key,
+            &app.state.theme,
+            e.style_seed,
+        );
+        body = body.child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(
+                    Button::new("filter-auto-style")
+                        .small()
+                        .selected(e.auto_style)
+                        .label("Auto style")
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            app.dispatch(Message::EditorStyle(true), window, cx)
+                        })),
+                )
+                .when(e.auto_style, |d| {
+                    d.child(
+                        Button::new("filter-regenerate-style")
+                            .ghost()
+                            .small()
+                            .label("Generate another")
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.dispatch(Message::EditorRegenerateStyle, window, cx)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .px_2()
+                            .py_1()
+                            .when_some(crate::gui::color::color_to_gpui(background), |d, bg| {
+                                d.bg(bg)
+                            })
+                            .when_some(crate::gui::color::color_to_gpui(color), |d, color| {
+                                d.text_color(color)
+                            })
+                            .child("Matched log text"),
+                    )
+                })
+                .child(
+                    Button::new("filter-custom-style")
+                        .ghost()
+                        .small()
+                        .label("Custom…")
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            app.dispatch(Message::EditorStyle(false), window, cx)
+                        })),
+                ),
+        );
+    }
+    body = body.child(
+        div()
+            .flex()
+            .justify_between()
+            .items_center()
+            .child(
+                Button::new("filter-advanced")
+                    .ghost()
+                    .small()
+                    .icon(if e.advanced {
+                        IconName::ChevronUp
+                    } else {
+                        IconName::ChevronDown
+                    })
+                    .label(
+                        if e.regex
+                            || e.ignore_case
+                            || !e.values[3].is_empty()
+                            || e.conditions.len() > 1
+                        {
+                            "Advanced · active"
+                        } else {
+                            "Advanced"
+                        },
+                    )
+                    .on_click(cx.listener(|app, _, window, cx| {
+                        app.dispatch(Message::EditorAdvanced, window, cx)
+                    })),
+            )
+            .child(
+                Button::new(if timestamp {
+                    "filter-target-text"
+                } else {
+                    "filter-target-timestamp"
+                })
+                .ghost()
+                .small()
+                .label(if timestamp {
+                    "Use text filter"
+                } else {
+                    "Use timestamp"
+                })
+                .on_click(cx.listener(move |app, _, window, cx| {
+                    app.dispatch(
+                        Message::EditorText(
+                            0,
+                            if timestamp {
+                                String::new()
+                            } else {
+                                format!("{}>= ", crate::filters::DATE_PREFIX)
+                            },
+                        ),
+                        window,
+                        cx,
+                    )
+                })),
+            ),
+    );
+    if e.advanced {
+        let mut advanced = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .pt_3()
+            .border_t_1()
+            .border_color(cx.theme().border);
+        if !timestamp {
+            if !e.values[1].is_empty() {
+                advanced = advanced.child(text(app, 0, "Also contains text (optional)", cx));
+            }
+            let mut options = div().flex().flex_wrap().gap_4();
+            for (i, (label, on)) in [
+                ("Regular expression", e.regex),
+                ("Ignore case", e.ignore_case),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                options = options.child(
+                    Switch::new(("filter-option", i))
+                        .small()
+                        .label(label)
+                        .checked(on)
+                        .disabled(!e.values[1].is_empty() || !e.conditions.is_empty())
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.dispatch(Message::EditorToggle(i), window, cx)
+                        })),
+                );
+            }
+            advanced = advanced.child(options);
+            if !e.values[1].is_empty() {
+                advanced = advanced.child(
+                    button(
+                        "condition-add",
+                        "Keep condition and add another",
+                        || Message::EditorConditionAdd,
+                        cx,
+                    )
+                    .small()
+                    .outline()
+                    .icon(IconName::Plus)
+                    .disabled(e.values[2].is_empty()),
+                );
+            }
+            for (i, (field, value)) in e.conditions.iter().enumerate() {
+                advanced = advanced.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_sm()
+                                .child(format!("{field} contains {value}")),
+                        )
+                        .child(
+                            Button::new(("condition-edit", i))
+                                .ghost()
+                                .small()
+                                .icon(IconName::Pencil)
+                                .accessibility_label("Edit condition")
+                                .tooltip("Edit condition")
+                                .on_click(cx.listener(move |app, _, window, cx| {
+                                    app.dispatch(Message::EditorConditionEdit(i), window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new(("condition-remove", i))
+                                .ghost()
+                                .small()
+                                .icon(IconName::X)
+                                .accessibility_label("Remove condition")
+                                .tooltip("Remove condition")
+                                .on_click(cx.listener(move |app, _, window, cx| {
+                                    app.dispatch(Message::EditorConditionRemove(i), window, cx)
+                                })),
+                        ),
+                );
+            }
+        }
+        advanced = advanced.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child("Group (optional)")
+                .children(app.editor_group_select.as_ref().map(|state| {
+                    Select::new(state)
+                        .id("filter-group-select")
+                        .w_full()
+                        .placeholder("No group")
+                        .search_placeholder("Search groups…")
+                        .accessibility_label("Group")
+                        .cleanable(true)
+                })),
+        );
+        body = body.child(advanced);
+    }
+    body.into_any_element()
+}
+
 pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Option<AnyElement> {
     let e = app.state.editor.as_ref()?;
     let width = (f32::from(viewport.width) - 48.).clamp(
@@ -990,288 +1272,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 .child(text(app, 0, "Annotation", cx));
         }
         Action::Filter => {
-            let timestamp = e.values[0].starts_with(crate::filters::DATE_PREFIX);
-            if !timestamp {
-                let mut kinds = ButtonGroup::new("filter-behavior").outline().small();
-                for (i, (kind, label)) in [
-                    (FilterType::Include, "Include"),
-                    (FilterType::Exclude, "Exclude"),
-                    (FilterType::Highlight, "Highlight"),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    kinds = kinds.child(
-                        Button::new(("filter-kind", i))
-                            .label(label)
-                            .selected(e.kind == kind)
-                            .on_click(cx.listener(move |app, _, window, cx| {
-                                app.dispatch(Message::EditorKind(kind.clone()), window, cx)
-                            })),
-                    );
-                }
-                body = body.child(kinds);
-                body = body.child(div().flex().flex_col().gap_1().child("Match in").children(
-                    app.editor_field_select.as_ref().map(|state| {
-                        Select::new(state)
-                            .id("filter-field-select")
-                            .w_full()
-                            .placeholder("All text")
-                            .search_placeholder("Search fields…")
-                            .accessibility_label("Match in")
-                            .cleanable(true)
-                    }),
-                ));
-                body = body.child(if e.values[1].is_empty() {
-                    text(app, 0, "Contains", cx)
-                } else {
-                    text(app, 2, "Contains", cx)
-                });
-                if e.conditions.len() > 1
-                    || (!e.conditions.is_empty() && e.condition_edit.is_none())
-                {
-                    body = body.child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} additional field conditions",
-                                e.conditions.len() - usize::from(e.condition_edit.is_some())
-                            )),
-                    );
-                }
-            } else {
-                body = body.child(timestamp_editor(app, cx));
-            }
-            if e.kind != FilterType::Exclude || timestamp {
-                let (color, background) = crate::gui::actions::automatic_filter_colors(
-                    &e.style_key,
-                    &app.state.theme,
-                    e.style_seed,
-                );
-                body = body.child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            Button::new("filter-auto-style")
-                                .small()
-                                .selected(e.auto_style)
-                                .label("Auto style")
-                                .on_click(cx.listener(|app, _, window, cx| {
-                                    app.dispatch(Message::EditorStyle(true), window, cx)
-                                })),
-                        )
-                        .when(e.auto_style, |d| {
-                            d.child(
-                                Button::new("filter-regenerate-style")
-                                    .ghost()
-                                    .small()
-                                    .label("Generate another")
-                                    .on_click(cx.listener(|app, _, window, cx| {
-                                        app.dispatch(Message::EditorRegenerateStyle, window, cx)
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .px_2()
-                                    .py_1()
-                                    .when_some(
-                                        crate::gui::color::color_to_gpui(background),
-                                        |d, bg| d.bg(bg),
-                                    )
-                                    .when_some(
-                                        crate::gui::color::color_to_gpui(color),
-                                        |d, color| d.text_color(color),
-                                    )
-                                    .child("Matched log text"),
-                            )
-                        })
-                        .child(
-                            Button::new("filter-custom-style")
-                                .ghost()
-                                .small()
-                                .label("Custom…")
-                                .on_click(cx.listener(|app, _, window, cx| {
-                                    app.dispatch(Message::EditorStyle(false), window, cx)
-                                })),
-                        ),
-                );
-            }
-            body = body.child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .items_center()
-                    .child(
-                        Button::new("filter-advanced")
-                            .ghost()
-                            .small()
-                            .icon(if e.advanced {
-                                IconName::ChevronUp
-                            } else {
-                                IconName::ChevronDown
-                            })
-                            .label(
-                                if e.regex
-                                    || e.ignore_case
-                                    || !e.values[3].is_empty()
-                                    || e.conditions.len() > 1
-                                {
-                                    "Advanced · active"
-                                } else {
-                                    "Advanced"
-                                },
-                            )
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                app.dispatch(Message::EditorAdvanced, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new(if timestamp {
-                            "filter-target-text"
-                        } else {
-                            "filter-target-timestamp"
-                        })
-                        .ghost()
-                        .small()
-                        .label(if timestamp {
-                            "Use text filter"
-                        } else {
-                            "Use timestamp"
-                        })
-                        .on_click(cx.listener(
-                            move |app, _, window, cx| {
-                                app.dispatch(
-                                    Message::EditorText(
-                                        0,
-                                        if timestamp {
-                                            String::new()
-                                        } else {
-                                            format!("{}>= ", crate::filters::DATE_PREFIX)
-                                        },
-                                    ),
-                                    window,
-                                    cx,
-                                )
-                            },
-                        )),
-                    ),
-            );
-            if e.advanced {
-                let mut advanced = div()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .pt_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border);
-                if !timestamp {
-                    if !e.values[1].is_empty() {
-                        advanced =
-                            advanced.child(text(app, 0, "Also contains text (optional)", cx));
-                    }
-                    let mut options = div().flex().flex_wrap().gap_4();
-                    for (i, (label, on)) in [
-                        ("Regular expression", e.regex),
-                        ("Ignore case", e.ignore_case),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
-                        options = options.child(
-                            Switch::new(("filter-option", i))
-                                .small()
-                                .label(label)
-                                .checked(on)
-                                .disabled(!e.values[1].is_empty() || !e.conditions.is_empty())
-                                .on_click(cx.listener(move |app, _, window, cx| {
-                                    app.dispatch(Message::EditorToggle(i), window, cx)
-                                })),
-                        );
-                    }
-                    advanced = advanced.child(options);
-                    if !e.values[1].is_empty() {
-                        advanced = advanced.child(
-                            button(
-                                "condition-add",
-                                "Keep condition and add another",
-                                || Message::EditorConditionAdd,
-                                cx,
-                            )
-                            .small()
-                            .outline()
-                            .icon(IconName::Plus)
-                            .disabled(e.values[2].is_empty()),
-                        );
-                    }
-                    for (i, (field, value)) in e.conditions.iter().enumerate() {
-                        advanced = advanced.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(0.))
-                                        .text_sm()
-                                        .child(format!("{field} contains {value}")),
-                                )
-                                .child(
-                                    Button::new(("condition-edit", i))
-                                        .ghost()
-                                        .small()
-                                        .icon(IconName::Pencil)
-                                        .accessibility_label("Edit condition")
-                                        .tooltip("Edit condition")
-                                        .on_click(cx.listener(move |app, _, window, cx| {
-                                            app.dispatch(
-                                                Message::EditorConditionEdit(i),
-                                                window,
-                                                cx,
-                                            )
-                                        })),
-                                )
-                                .child(
-                                    Button::new(("condition-remove", i))
-                                        .ghost()
-                                        .small()
-                                        .icon(IconName::X)
-                                        .accessibility_label("Remove condition")
-                                        .tooltip("Remove condition")
-                                        .on_click(cx.listener(move |app, _, window, cx| {
-                                            app.dispatch(
-                                                Message::EditorConditionRemove(i),
-                                                window,
-                                                cx,
-                                            )
-                                        })),
-                                ),
-                        );
-                    }
-                }
-                advanced = advanced.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child("Group (optional)")
-                        .children(app.editor_group_select.as_ref().map(|state| {
-                            Select::new(state)
-                                .id("filter-group-select")
-                                .w_full()
-                                .placeholder("No group")
-                                .search_placeholder("Search groups…")
-                                .accessibility_label("Group")
-                                .cleanable(true)
-                        })),
-                );
-                body = body.child(advanced);
-            }
+            body = body.child(filter_editor(app, cx));
         }
         Action::Group => {
             body = body

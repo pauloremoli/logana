@@ -49,6 +49,8 @@ pub struct App {
     pub editor_members: Option<Entity<ComboboxState<SearchableVec<String>>>>,
     pub editor_choice_select: Option<Entity<SelectState<SearchableVec<String>>>>,
     pub editor_field_select: Option<Entity<SelectState<SearchableVec<String>>>>,
+    pub(super) field_discovery_key: Option<crate::gui::field_discovery::Key>,
+    pub(super) field_discovery_task: Option<gpui_kit::gpui::Task<()>>,
     editor_epoch: u64,
     editor_synced: Vec<String>,
     filter_edits: tokio::sync::mpsc::UnboundedSender<crate::gui::effect::FilterEdit>,
@@ -243,6 +245,8 @@ impl App {
             editor_members: None,
             editor_choice_select: None,
             editor_field_select: None,
+            field_discovery_key: None,
+            field_discovery_task: None,
             editor_epoch: 0,
             editor_synced: Vec::new(),
             horizontal_scroll: gpui_kit::gpui::ScrollHandle::new(),
@@ -1712,6 +1716,7 @@ impl Render for App {
                 .unwrap_or_default();
             self.text_context = text_context;
         }
+        self.sync_field_discovery(cx);
         self.sync_schema_preview(cx);
         self.sync_export_preview(cx);
         let focused = |input: &Option<Entity<InputState>>| {

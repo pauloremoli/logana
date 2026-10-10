@@ -873,7 +873,15 @@ fn filter_editor_selects_fields_and_clears_groups(cx: &mut TestAppContext) {
             app.dispatch(Message::GuiAction(Action::Filter), window, cx);
             let editor = app.state.editor.as_mut().unwrap();
             editor.values[3] = "Existing group".into();
-            editor.discovery.names = vec!["level".into(), "service".into()];
+            Arc::make_mut(&mut editor.discovery).names = vec!["level".into(), "service".into()];
+            let fields = editor.discovery.clone();
+            let tab = &app.state.tabs[0];
+            app.state.field_discovery = Some((
+                tab.id,
+                tab.cache.parse_gen,
+                tab.file_reader.line_count(),
+                fields,
+            ));
             cx.notify();
         });
         window.render_frame(cx);
@@ -2492,4 +2500,78 @@ fn saved_dlt_device_selection_fills_name_and_connection(cx: &mut TestAppContext)
         })
         .unwrap();
     }
+}
+
+#[gpui_kit::test]
+fn field_discovery_finishes_without_replacing_filter_drafts(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            let row = br#"{"key1":"value1"}"#;
+            app.state.tabs[0].file_reader = crate::ingestion::FileReader::from_bytes(row.to_vec());
+            app.state.tabs[0].display.format = crate::parser::detect_format(&[row]).map(Arc::from);
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx);
+            assert!(
+                app.state
+                    .editor
+                    .as_ref()
+                    .unwrap()
+                    .discovery
+                    .names
+                    .is_empty()
+            );
+            app.dispatch(Message::EditorText(0, "draft".into()), window, cx);
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let editor = app.read(cx).state.editor.as_ref().unwrap();
+        assert_eq!(editor.values[0], "draft");
+        assert!(editor.discovery.names.contains(&"key1".into()));
+        assert_eq!(editor.discovery.values["key1"], vec!["value1"]);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::EditorCancel, window, cx);
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx);
+        });
+        window.render_frame(cx);
+        assert!(
+            app.read(cx)
+                .state
+                .editor
+                .as_ref()
+                .unwrap()
+                .discovery
+                .names
+                .contains(&"key1".into())
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn closing_filter_editor_discards_pending_field_discovery(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx)
+        });
+        window.render_frame(cx);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::EditorCancel, window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(app.read(cx).state.editor.is_none());
+        assert!(app.read(cx).state.field_discovery.is_none());
+    });
 }

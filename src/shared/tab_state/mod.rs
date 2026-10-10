@@ -3003,22 +3003,27 @@ impl TabState {
     /// - Names are returned sorted by frequency (fields present in the most lines first), with
     ///   ties broken alphabetically, so the most universal fields appear first in autocomplete.
     pub fn build_field_index(&self) -> crate::commands::auto_complete::FieldIndex {
+        Self::build_field_index_for(&self.file_reader, self.display.format.as_deref())
+    }
+
+    pub fn build_field_index_for(
+        reader: &FileReader,
+        parser: Option<&dyn LogFormatParser>,
+    ) -> crate::commands::auto_complete::FieldIndex {
         use std::collections::HashSet;
 
-        let Some(parser) = &self.display.format else {
+        let Some(parser) = parser else {
             return crate::commands::auto_complete::FieldIndex::default();
         };
 
         const SAMPLE_LIMIT: usize = 5_000;
-        let total = self.file_reader.line_count();
+        let total = reader.line_count();
         let limit = total.min(SAMPLE_LIMIT);
 
         // Step 1: Discover canonical names from raw file lines.
         const NAME_SAMPLE: usize = 200;
         let name_sample = total.min(NAME_SAMPLE);
-        let owned_name_lines: Vec<_> = (0..name_sample)
-            .map(|i| self.file_reader.get_line(i))
-            .collect();
+        let owned_name_lines: Vec<_> = (0..name_sample).map(|i| reader.get_line(i)).collect();
         let name_lines: Vec<&[u8]> = owned_name_lines.iter().map(|l| &**l).collect();
         let names = parser.collect_field_names(&name_lines);
         // Step 2: Scan raw lines to collect values and per-name frequency counts.
@@ -3026,7 +3031,7 @@ impl TabState {
         let mut value_map: HashMap<String, HashSet<String>> = HashMap::new();
 
         for i in 0..limit {
-            let owned_line = self.file_reader.get_line(i);
+            let owned_line = reader.get_line(i);
             let line: &[u8] = &owned_line;
             let Some(parts) = parser.parse_line(line) else {
                 continue;
