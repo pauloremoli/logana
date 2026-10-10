@@ -2361,3 +2361,52 @@ fn inspector_controls_fit_narrow_and_wide_windows_in_both_themes(cx: &mut TestAp
         }
     }
 }
+
+#[gpui_kit::test]
+fn loaded_rows_keep_scrollbar_extent_and_end_navigation_after_layout(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 500.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        for count in [100, 2000] {
+            app.update(cx, |app, cx| {
+                let tab = &mut app.state.tabs[0];
+                tab.file_reader = crate::ingestion::FileReader::from_bytes(b"row\n".repeat(count));
+                tab.filter.visible_indices = crate::shared::VisibleLines::All(count);
+                tab.display.raw_mode = true;
+                tab.display.wrap = false;
+                app.state.column_widths.line_no = if count == 100 { 50. } else { 500. };
+                cache_log_facets(app);
+                cx.notify();
+            });
+            window.render_frame(cx);
+            let scroll = &app.read(cx).log_scroll;
+            assert_eq!(scroll.item_count(), count);
+            assert!(
+                f32::from(scroll.max_offset_for_scrollbar().y) > count as f32 * 20.,
+                "offscreen rows lost their estimated height after layout"
+            );
+        }
+        let scroll = app.read(cx).log_scroll.clone();
+        scroll.set_offset_from_scrollbar(point(px(0.), -scroll.max_offset_for_scrollbar().y));
+        window.render_frame(cx);
+        assert!(
+            scroll.bounds_for_item(1999).is_some(),
+            "dragging the scrollbar to the bottom must render the last loaded row"
+        );
+        for shortcut in ["end", "shift-g"] {
+            scroll.scroll_to(gpui::ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.),
+            });
+            window.render_frame(cx);
+            window.press(shortcut, cx);
+            window.render_frame(cx);
+            assert_eq!(app.read(cx).state.tabs[0].scroll.scroll_offset, 1999);
+            assert!(
+                app.read(cx).log_scroll.bounds_for_item(1999).is_some(),
+                "{shortcut} must render the last loaded row"
+            );
+        }
+    })
+    .unwrap();
+}

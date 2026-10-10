@@ -171,6 +171,7 @@ pub fn log_pane(
                     document: text_document,
                     handle: text_handle,
                     scroll: log_scroll.clone(),
+                    row_height: px(ROW_HEIGHT_PX * font_scale),
                     child: list(
                         log_scroll.clone(),
                         move |pos, _window, cx| view.update(cx, |app, cx| {

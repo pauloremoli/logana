@@ -86,3 +86,12 @@ The running GUI was launched with an isolated temporary profile and sample log.
 GNOME denied automated window capture (`ScreenshotWindow is not allowed`), so
 fresh screenshot-based inspection remains pending. Geometry and interaction
 checks do not substitute for that visual review.
+
+## Loading scrollbar regression
+
+- [x] Preserve offscreen row height estimates after table width changes.
+- [x] Navigate to the bottom of the last loaded row with End.
+
+Native layout regression coverage replaces a 100-row preview with 2,000 rows
+and refits the table width, then checks the scrollbar extent, scrollbar bottom
+navigation, and End navigation after rendering.

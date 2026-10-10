@@ -563,8 +563,14 @@ impl App {
     /// Scroll only for explicit navigation, preserving mouse scrolling during edits.
     pub(super) fn sync_log_scroll(&self) {
         if let Some(tab) = self.state.active_tab() {
-            self.log_scroll
-                .scroll_to_reveal_item(tab.scroll.scroll_offset);
+            if !tab.filter.visible_indices.is_empty()
+                && tab.scroll.scroll_offset == tab.filter.visible_indices.len() - 1
+            {
+                self.log_scroll.scroll_to_end();
+            } else {
+                self.log_scroll
+                    .scroll_to_reveal_item(tab.scroll.scroll_offset);
+            }
         }
     }
 

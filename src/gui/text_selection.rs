@@ -218,6 +218,7 @@ pub struct TableSelection {
     pub document: SharedDocument,
     pub handle: TextSelectionHandle,
     pub scroll: gpui_kit::gpui::ListState,
+    pub row_height: Pixels,
 }
 impl IntoElement for TableSelection {
     type Element = Self;
@@ -257,7 +258,14 @@ impl Element for TableSelection {
             doc.origin = bounds.origin;
             doc.runs.clear();
         }
+        let previous_width = self.scroll.viewport_bounds().size.width;
         self.child.prepaint(window, cx);
+        if previous_width != self.scroll.viewport_bounds().size.width {
+            // GPUI clears offscreen height hints when the list width changes.
+            self.scroll
+                .clone()
+                .with_uniform_item_height(self.row_height);
+        }
         self.document.borrow_mut().origin =
             bounds.origin + self.scroll.scroll_px_offset_for_scrollbar();
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
