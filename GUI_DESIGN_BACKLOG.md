@@ -95,3 +95,6 @@ checks do not substitute for that visual review.
 Native layout regression coverage replaces a 100-row preview with 2,000 rows
 and refits the table width, then checks the scrollbar extent, scrollbar bottom
 navigation, and End navigation after rendering.
+
+The row inspector opens from the row context menu; its standalone button was
+removed at the user’s request.

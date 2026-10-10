@@ -200,15 +200,6 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                         .pb(px(8.))
                         .child(log_content),
                 )
-                .child(Button::new("inspect-selected-row").ghost().label("Inspect selected row")
-                    .on_click(cx.listener(|app, _, _, cx| {
-                        if let Some(line) = annotations::selected_lines(&app.state).first().copied()
-                            && let Some(tab) = app.state.active_tab() {
-                            app.inspected_row = Some((tab.id, line));
-                            app.inspector_raw = false;
-                            cx.notify();
-                        }
-                    })))
                 .child(status_bar::status_bar(Some(tab), app.state.nav_page, cx))
                 .into_any_element();
             let sidebar = {

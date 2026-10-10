@@ -2163,7 +2163,15 @@ fn row_inspector_copies_raw_and_attaches_notes_to_the_source_row(cx: &mut TestAp
     cx.update_window(handle.into(), |_, window, cx| {
         add_log_tab(&app, cx, true);
         window.render_frame(cx);
-        window.click("inspect-selected-row", cx);
+        assert!(window.try_find("inspect-selected-row").is_none());
+        window.right_click(("log-row", 0usize), cx);
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click(8usize, cx);
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find("row-inspector").is_some());
         assert!(window.try_find("inspector-fields").is_some());
@@ -2325,7 +2333,11 @@ fn inspector_controls_fit_narrow_and_wide_windows_in_both_themes(cx: &mut TestAp
             cx.update_window(handle.into(), |_, window, cx| {
                 add_log_tab(&app, cx, true);
                 window.render_frame(cx);
-                window.click("inspect-selected-row", cx);
+                assert!(window.try_find("inspect-selected-row").is_none());
+                app.update(cx, |app, cx| {
+                    app.inspected_row = Some((app.state.tabs[0].id, 0));
+                    cx.notify();
+                });
                 window.render_frame(cx);
                 let panel = window.find("row-inspector").bounds();
                 assert!(panel.origin.x >= px(0.));
@@ -2348,7 +2360,11 @@ fn inspector_controls_fit_narrow_and_wide_windows_in_both_themes(cx: &mut TestAp
                 window.click("inspector-close", cx);
                 window.render_frame(cx);
                 assert!(window.try_find("row-inspector").is_none());
-                window.click("inspect-selected-row", cx);
+                assert!(window.try_find("inspect-selected-row").is_none());
+                app.update(cx, |app, cx| {
+                    app.inspected_row = Some((app.state.tabs[0].id, 0));
+                    cx.notify();
+                });
                 app.update(cx, |app, cx| {
                     app.state.tabs.clear();
                     cx.notify();
