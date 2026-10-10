@@ -120,7 +120,7 @@ the details without modifying its saved values.
 - [x] Move rendering field discovery and column fitting out of render callbacks.
 - [x] Validate regex and timestamp filter patterns in background tasks.
 - [x] Move schema-dependent maps out of UI handlers.
-- [ ] Move continuation display commands out of UI handlers.
+- [x] Move continuation display commands out of UI handlers.
 
 Field suggestions preserve editor drafts and reject results from a superseded
 editor, parser generation, or file snapshot.
@@ -143,3 +143,7 @@ starts only after the current pattern passes validation.
 
 Schema changes build parser metadata against a captured source in the background.
 Results for changed readers restart preparation; closed tabs cannot receive them.
+
+Collapse and expand keep the current rows until background masking finishes.
+Pending scans honor newer keyboard, mouse, search, and bookmark navigation; End
+targets the complete source rather than the first available results.

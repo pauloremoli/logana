@@ -606,9 +606,11 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
                     tab.scroll.scroll_offset = tab
                         .filter
                         .visible_indices
-                        .iter()
-                        .position(|i| i == line)
+                        .position_of(line)
                         .unwrap_or(tab.scroll.scroll_offset);
+                    if let Some(handle) = &mut tab.filter.handle {
+                        handle.scroll_anchor = Some(line);
+                    }
                 }
             }
             Effect::None
@@ -627,6 +629,10 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
                 // navigation does, so the status bar's "Ln N" follows it.
                 tab.scroll.scroll_offset =
                     index.min(tab.filter.visible_indices.len().saturating_sub(1));
+                if let Some(handle) = &mut tab.filter.handle {
+                    handle.scroll_anchor =
+                        tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset);
+                }
                 let anchor = if extend {
                     existing_anchor.unwrap_or(index)
                 } else {
@@ -1471,25 +1477,10 @@ fn apply_display_command(tab: &mut TabState, command: &Commands) -> bool {
     true
 }
 
-/// Mirrors the TUI's `App::set_collapse_continuations` body for a single
-/// tab (the TUI's own version loops every open tab and persists to the
-/// DB — see `apply_display_command`'s doc comment for why the GUI scopes
-/// this to the active tab only): restores the pristine pre-collapse
-/// baseline, clears per-group `<`/`>` overrides, and re-derives
-/// visibility from scratch, since `:collapse`/`:expand` are bulk,
-/// idempotent resets rather than a toggle relative to whatever was
-/// individually flipped. Re-pins the cursor to the nearest still-visible
-/// line afterward, since collapsing/expanding can hide or reveal the line
-/// it was on.
 fn set_collapse_continuations(tab: &mut TabState, enabled: bool) {
-    let current_line = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset);
     tab.display.collapse_continuations = enabled;
-    if let Some(baseline) = tab.filter.pre_collapse_visible.take() {
-        tab.filter.visible_indices = baseline;
-    }
     tab.filter.overridden_groups.clear();
-    tab.sync_collapse_mask();
-    tab.restore_scroll_to_line(current_line);
+    tab.begin_filter_refresh_background();
 }
 
 /// Whether `tab` is actively tailing its source: a watcher is running and
@@ -2093,6 +2084,7 @@ fn handle_command_string(state: &mut GuiState, input: String) -> Effect {
 mod tests {
     use super::*;
     use crate::db::Database;
+    use crate::input::KeyModifiers;
 
     /// Arbitrary theme background for tests that don't care what `--auto`/
     /// `--fga` resolve against, only that a color comes out.
@@ -2959,6 +2951,56 @@ mod tests {
         let effect = handle_command_string(&mut state, "raw".to_string());
         assert!(matches!(effect, Effect::None));
         assert_eq!(state.tabs[0].display.raw_mode, !before);
+    }
+
+    #[tokio::test]
+    async fn continuation_commands_defer_masking_and_preserve_latest_navigation() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let tab = &mut state.tabs[0];
+        tab.file_reader = FileReader::from_bytes(b"one\nchild\ntwo\nchild\n".to_vec());
+        tab.display.format = Some(Arc::new(crate::parser::SyslogParser::default()));
+        tab.continuation_map = Some(Arc::new(vec![0, 0, 2, 2]));
+        tab.filter.visible_indices = VisibleLines::All(4);
+        tab.display.collapse_continuations = false;
+        handle_command_string(&mut state, "collapse".into());
+        assert_eq!(state.tabs[0].filter.visible_indices.len(), 4);
+        assert!(state.tabs[0].filter.handle.is_some());
+        super::super::keyboard::apply(&mut state, KeyCode::End, KeyModifiers::NONE);
+        drain_gui_scan(&mut state.tabs[0]).await;
+        assert_eq!(
+            state.tabs[0]
+                .filter
+                .visible_indices
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        assert_eq!(state.tabs[0].scroll.scroll_offset, 1);
+        super::super::keyboard::apply(&mut state, KeyCode::Char('>'), KeyModifiers::NONE);
+        assert_eq!(state.tabs[0].filter.visible_indices.len(), 2);
+        drain_gui_scan(&mut state.tabs[0]).await;
+        assert_eq!(
+            state.tabs[0]
+                .filter
+                .visible_indices
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![0, 2, 3]
+        );
+        assert_eq!(state.tabs[0].scroll.scroll_offset, 1);
+    }
+
+    #[tokio::test]
+    async fn end_during_pending_filtering_targets_the_complete_file() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let tab = &mut state.tabs[0];
+        tab.file_reader = FileReader::from_bytes(b"row\n".repeat(10_000));
+        tab.display.format = Some(Arc::new(crate::parser::SyslogParser::default()));
+        tab.filter.visible_indices = VisibleLines::Filtered(vec![0]);
+        force_recompute(tab);
+        super::super::keyboard::apply(&mut state, KeyCode::End, KeyModifiers::NONE);
+        drain_gui_scan(&mut state.tabs[0]).await;
+        assert_eq!(state.tabs[0].scroll.scroll_offset, 9_999);
     }
 
     #[tokio::test]

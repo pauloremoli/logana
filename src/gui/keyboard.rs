@@ -253,10 +253,16 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
                 .and_then(|map| map.get(line))
                 .copied()
         {
-            tab.set_continuation_collapsed(
-                parent,
-                kb.normal.collapse_continuation.matches(key, modifiers),
-            );
+            let collapsed = kb.normal.collapse_continuation.matches(key, modifiers);
+            if tab.display.collapse_continuations != collapsed {
+                tab.filter.overridden_groups.insert(parent);
+            } else {
+                tab.filter.overridden_groups.remove(&parent);
+            }
+            tab.begin_filter_refresh_background();
+            if let Some(handle) = &mut tab.filter.handle {
+                handle.scroll_anchor = Some(parent);
+            }
         }
         return Effect::None;
     }
@@ -402,8 +408,16 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
         return Effect::None;
     };
     tab.interaction.g_key_pressed = false;
+    let to_end = row == usize::MAX;
     let row = row.min(tab.filter.visible_indices.len().saturating_sub(1));
     tab.scroll.scroll_offset = row;
+    if let Some(handle) = &mut tab.filter.handle {
+        handle.scroll_anchor = if to_end {
+            tab.file_reader.line_count().checked_sub(1)
+        } else {
+            tab.filter.visible_indices.get_opt(row)
+        };
+    }
     tab.stream.tail_mode = false;
     let id = tab.id;
     let anchor = if extend {

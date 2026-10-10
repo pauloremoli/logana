@@ -87,8 +87,14 @@ impl TabState {
         self.filter.pre_collapse_visible = result.baseline;
         self.filter.match_counts = result.counts;
         self.filter.cached_scan = None;
+        let anchor = self
+            .filter
+            .handle
+            .as_ref()
+            .and_then(|handle| handle.scroll_anchor)
+            .or(result.anchor);
         self.filter.handle = None;
-        self.restore_scroll_to_line(result.anchor);
+        self.restore_scroll_to_line(anchor);
         true
     }
 

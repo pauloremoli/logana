@@ -16,6 +16,9 @@ pub fn jump(app: &mut App, line: usize) -> bool {
         return false;
     };
     tab.scroll.scroll_offset = row;
+    if let Some(handle) = &mut tab.filter.handle {
+        handle.scroll_anchor = Some(line);
+    }
     let source = tab.id;
     app.state.log_selection = Some((source, row, row));
     app.state.nav_page = NavPage::Logs;
