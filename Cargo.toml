@@ -23,7 +23,7 @@ anyhow = { version = "1.0", default-features = false, features = ["std"] }
 libc = { version = "0.2", default-features = false }
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
 regex = { version = "1.10", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
-ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
 crossterm = "0.29"
 unicode-width = { version = "0.2", default-features = false, features = ["cjk"] }
 serde = { version = "1.0", default-features = false, features = ["std", "derive"] }

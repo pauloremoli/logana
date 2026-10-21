@@ -88,10 +88,7 @@ impl Mode for NormalMode {
         if kb.navigation.half_page_down.matches(key, modifiers) {
             let half = (tab.scroll.visible_height / 2).max(1);
             let count = self.count.take().unwrap_or(1);
-            tab.scroll.scroll_offset = tab
-                .scroll
-                .scroll_offset
-                .saturating_add(half.saturating_mul(count));
+            tab.scroll_rows(true, half.saturating_mul(count));
             tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
@@ -99,10 +96,7 @@ impl Mode for NormalMode {
         if kb.navigation.half_page_up.matches(key, modifiers) {
             let half = (tab.scroll.visible_height / 2).max(1);
             let count = self.count.take().unwrap_or(1);
-            tab.scroll.scroll_offset = tab
-                .scroll
-                .scroll_offset
-                .saturating_sub(half.saturating_mul(count));
+            tab.scroll_rows(false, half.saturating_mul(count));
             tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
@@ -110,10 +104,7 @@ impl Mode for NormalMode {
         if kb.navigation.page_down.matches(key, modifiers) {
             let page = tab.scroll.visible_height.max(1);
             let count = self.count.take().unwrap_or(1);
-            tab.scroll.scroll_offset = tab
-                .scroll
-                .scroll_offset
-                .saturating_add(page.saturating_mul(count));
+            tab.scroll_rows(true, page.saturating_mul(count));
             tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
@@ -121,10 +112,7 @@ impl Mode for NormalMode {
         if kb.navigation.page_up.matches(key, modifiers) {
             let page = tab.scroll.visible_height.max(1);
             let count = self.count.take().unwrap_or(1);
-            tab.scroll.scroll_offset = tab
-                .scroll
-                .scroll_offset
-                .saturating_sub(page.saturating_mul(count));
+            tab.scroll_rows(false, page.saturating_mul(count));
             tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
@@ -234,14 +222,14 @@ impl Mode for NormalMode {
 
         if kb.navigation.scroll_down.matches(key, modifiers) {
             let count = self.count.take().unwrap_or(1);
-            tab.scroll.scroll_offset = tab.scroll.scroll_offset.saturating_add(count);
+            tab.scroll_rows(true, count);
             tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
 
         if kb.navigation.scroll_up.matches(key, modifiers) {
             let count = self.count.take().unwrap_or(1);
-            tab.scroll.scroll_offset = tab.scroll.scroll_offset.saturating_sub(count);
+            tab.scroll_rows(false, count);
             tab.interaction.g_key_pressed = false;
             return (self, KeyResult::Handled);
         }
@@ -299,6 +287,7 @@ impl Mode for NormalMode {
         // gg chord: first press sets the flag; second press jumps to top.
         if kb.normal.go_to_top_chord.matches(key, modifiers) {
             if tab.interaction.g_key_pressed {
+                tab.scroll.wrapped_row = 0;
                 // With a count, `{count}gg` jumps to that line number.
                 if let Some(count) = self.count.take() {
                     let _ = tab.goto_line(count);
@@ -739,6 +728,64 @@ mod tests {
         Box::new(NormalMode::default())
             .handle_key(tab, code, modifiers)
             .await
+    }
+
+    #[tokio::test]
+    async fn test_wrapped_row_navigation_and_selected_entry_actions() {
+        let long = "x".repeat(100);
+        let mut tab = make_tab(&["hidden", "before", &long, "after"]).await;
+        tab.filter.visible_indices = VisibleLines::Filtered(vec![1, 2, 3]);
+        tab.scroll.scroll_offset = 1;
+        tab.display.wrap = true;
+        tab.scroll.wrapped_width = 10;
+        tab.scroll.visible_height = 4;
+        press(&mut tab, KeyCode::Down, KeyModifiers::NONE).await;
+        press(&mut tab, KeyCode::Char('j'), KeyModifiers::NONE).await;
+        assert_eq!((tab.scroll.scroll_offset, tab.scroll.wrapped_row), (1, 2));
+
+        press(&mut tab, KeyCode::Char('m'), KeyModifiers::NONE).await;
+        assert_eq!(tab.mark_manager.get_indices(), vec![2]);
+        let (_, result) = press(&mut tab, KeyCode::Char('y'), KeyModifiers::NONE).await;
+        assert!(matches!(result, KeyResult::CopyToClipboard(text) if text == long));
+        let (mode, _) = press(&mut tab, KeyCode::Char('c'), KeyModifiers::NONE).await;
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('n'), KeyModifiers::NONE)
+            .await;
+        mode.handle_key(&mut tab, KeyCode::Char('s'), KeyModifiers::CONTROL)
+            .await;
+        assert_eq!(tab.comment_manager.get()[0].line_indices, vec![2]);
+
+        tab.scroll_rows(true, 8);
+        assert_eq!((tab.scroll.scroll_offset, tab.scroll.wrapped_row), (2, 0));
+        press(&mut tab, KeyCode::Up, KeyModifiers::NONE).await;
+        assert_eq!((tab.scroll.scroll_offset, tab.scroll.wrapped_row), (1, 9));
+        press(&mut tab, KeyCode::Char('k'), KeyModifiers::NONE).await;
+        assert_eq!((tab.scroll.scroll_offset, tab.scroll.wrapped_row), (1, 8));
+    }
+
+    #[tokio::test]
+    async fn test_wrapped_page_navigation_with_single_huge_entry() {
+        let long = "x".repeat(100);
+        let mut tab = make_tab(&[&long]).await;
+        tab.display.wrap = true;
+        tab.scroll.wrapped_width = 10;
+        tab.scroll.visible_height = 4;
+        for (key, modifiers, expected_row) in [
+            (KeyCode::PageDown, KeyModifiers::NONE, 4),
+            (KeyCode::Char('d'), KeyModifiers::CONTROL, 6),
+            (KeyCode::Char('u'), KeyModifiers::CONTROL, 4),
+            (KeyCode::PageUp, KeyModifiers::NONE, 0),
+        ] {
+            press(&mut tab, key, modifiers).await;
+            assert_eq!(
+                (tab.scroll.scroll_offset, tab.scroll.wrapped_row),
+                (0, expected_row)
+            );
+        }
+        tab.scroll_rows(true, usize::MAX);
+        assert_eq!(tab.scroll.wrapped_row, 9);
+        tab.scroll_rows(false, usize::MAX);
+        assert_eq!(tab.scroll.wrapped_row, 0);
     }
 
     #[tokio::test]

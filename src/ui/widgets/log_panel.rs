@@ -295,7 +295,7 @@ fn compute_viewport(
         h
     };
     // Grows a window forward from `from`, returning the exclusive end that
-    // still fits within `visible_height` rows (always at least one line).
+    // fills `visible_height` rows, including a partially visible wrapped entry.
     let forward_fill = |from: usize| -> usize {
         let mut rows = 0usize;
         let mut seen: HashSet<usize> = HashSet::new();
@@ -303,6 +303,9 @@ fn compute_viewport(
         while e < num_visible {
             let h = row_height(e, &mut seen);
             if rows + h > visible_height {
+                if use_wrap && rows < visible_height {
+                    e += 1;
+                }
                 break;
             }
             rows += h;
@@ -364,6 +367,71 @@ fn compute_viewport(
     } else {
         (new_viewport, end)
     }
+}
+
+/// Keep the selected screen row visible without moving the viewport until an edge is crossed.
+fn compute_wrapped_viewport(
+    tab: &TabState,
+    visible_height: usize,
+    comments: &[(Vec<usize>, String)],
+) -> (usize, usize, usize) {
+    let count = tab.filter.visible_indices.len();
+    if count == 0 {
+        return (0, 0, 0);
+    }
+    let selected = tab.scroll.scroll_offset.min(count - 1);
+    let comment_map = build_line_comment_map(comments);
+    let row_height = |pos: usize, seen: &mut HashSet<usize>| {
+        let li = tab.filter.visible_indices.get(pos);
+        let banner = comment_map
+            .get(&li)
+            .filter(|&&idx| seen.insert(idx))
+            .map(|&idx| comment_banner_row_count(&comments[idx].1))
+            .unwrap_or(0);
+        (tab.wrapped_rows_for_line(li), banner)
+    };
+    let mut start = tab.scroll.viewport_offset.min(count - 1);
+    let mut top_row = tab.scroll.viewport_wrapped_row;
+    if selected < start {
+        start = selected;
+        let (_, banner) = row_height(start, &mut HashSet::new());
+        top_row = banner + tab.scroll.wrapped_row;
+    } else if selected.saturating_sub(start) > visible_height {
+        start = selected.saturating_sub(visible_height);
+        top_row = 0;
+    }
+    let mut seen = HashSet::new();
+    let mut selected_row = tab.scroll.wrapped_row;
+    for pos in start..=selected {
+        let (content, banner) = row_height(pos, &mut seen);
+        selected_row += banner;
+        if pos < selected {
+            selected_row += content;
+        }
+    }
+    if selected_row < top_row {
+        top_row = selected_row;
+    } else if selected_row >= top_row.saturating_add(visible_height.max(1)) {
+        top_row = selected_row.saturating_sub(visible_height.saturating_sub(1));
+    }
+    let mut seen = HashSet::new();
+    while start < selected {
+        let (content, banner) = row_height(start, &mut seen);
+        if top_row < content + banner {
+            break;
+        }
+        top_row -= content + banner;
+        start += 1;
+    }
+    let mut seen = HashSet::new();
+    let mut rows = 0usize;
+    let mut end = start;
+    while end < count && rows < top_row.saturating_add(visible_height) {
+        let (content, banner) = row_height(end, &mut seen);
+        rows += content + banner;
+        end += 1;
+    }
+    (start, end.max(start + 1), top_row)
 }
 
 fn populate_parse_cache(
@@ -546,6 +614,8 @@ pub struct LogPanelData {
     pub visible_height: usize,
     pub start: usize,
     pub horizontal_scroll: usize,
+    pub vertical_scroll: usize,
+    pub selected_row: Option<usize>,
     pub logs_title: String,
     pub show_borders: bool,
     pub show_tab_bar: bool,
@@ -600,6 +670,15 @@ pub fn prepare_log_panel(
     let inner_width =
         (logs_area.width as usize).saturating_sub(horizontal_shrink + ln_prefix_width);
     tab.scroll.visible_width = inner_width;
+    tab.scroll.wrapped_width = inner_width + ln_prefix_width;
+    tab.scroll.wrapped_prefix_width = ln_prefix_width;
+    if !tab.display.wrap || tab.scroll.wrapped_line != tab.scroll.scroll_offset {
+        tab.scroll.wrapped_row = 0;
+    }
+    tab.scroll.wrapped_line = tab.scroll.scroll_offset;
+    if tab.display.wrap && tab.scroll.wrapped_row > 0 {
+        tab.scroll_rows(true, 0);
+    }
 
     let wrap = tab.display.wrap;
     let hidden_fields = tab.display.hidden_fields.clone();
@@ -638,22 +717,27 @@ pub fn prepare_log_panel(
         .map(|a| (a.line_indices.clone(), a.text.clone()))
         .collect();
 
-    let (new_viewport, end) = compute_viewport(
-        tab,
-        scroll_offset,
-        viewport_offset,
-        num_visible,
-        visible_height,
-        wrap,
-        inner_width,
-        &hidden_fields,
-        &field_layout,
-        show_keys,
-        raw_mode,
-        &comments_for_render,
-    );
-
+    let (new_viewport, end, viewport_row) = if wrap {
+        compute_wrapped_viewport(tab, visible_height, &comments_for_render)
+    } else {
+        let (start, end) = compute_viewport(
+            tab,
+            scroll_offset,
+            viewport_offset,
+            num_visible,
+            visible_height,
+            false,
+            inner_width,
+            &hidden_fields,
+            &field_layout,
+            show_keys,
+            raw_mode,
+            &comments_for_render,
+        );
+        (start, end, 0)
+    };
     tab.scroll.viewport_offset = new_viewport;
+    tab.scroll.viewport_wrapped_row = viewport_row;
     let start = new_viewport;
 
     #[cfg(unix)]
@@ -744,6 +828,18 @@ pub fn prepare_log_panel(
 
     let mut render_cache_misses: Vec<(usize, Option<usize>, Line<'static>)> = Vec::new();
     let mut log_lines: Vec<Line> = Vec::new();
+    let vertical_scroll = viewport_row;
+    let mut row_runs = Vec::new();
+    let rendered_row_count = |line: &Line<'static>| {
+        if wrap {
+            Paragraph::new(line.clone())
+                .wrap(Wrap { trim: false })
+                .line_count((inner_width + ln_prefix_width) as u16)
+                .max(1)
+        } else {
+            1
+        }
+    };
 
     for abs_vis_idx in start..end {
         let line_idx = tab.filter.visible_indices.get(abs_vis_idx);
@@ -830,7 +926,7 @@ pub fn prepare_log_panel(
             base_style = visual_style;
         }
 
-        let render_style = if is_current && visual_char_selection.is_none() {
+        let render_style = if is_current && !wrap && visual_char_selection.is_none() {
             base_style
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED)
@@ -1044,11 +1140,34 @@ pub fn prepare_log_panel(
                 banner_text_style,
                 banner_cont_style,
             ) {
+                row_runs.push((rendered_row_count(&banner_line), None));
                 log_lines.push(banner_line);
             }
         }
+        row_runs.push((rendered_row_count(&line), Some(abs_vis_idx)));
         log_lines.push(line);
     }
+    let selected_row = if wrap && visual_char_selection.is_none() {
+        let mut row = 0usize;
+        row_runs.iter().find_map(|&(rows, index)| {
+            let selected = (index == Some(current_scroll))
+                .then(|| row + tab.scroll.wrapped_row)
+                .and_then(|row| row.checked_sub(vertical_scroll))
+                .filter(|&row| row < visible_height);
+            row += rows;
+            selected
+        })
+    } else {
+        None
+    };
+    tab.scroll.rendered_rows = Some(
+        row_runs
+            .into_iter()
+            .flat_map(|(rows, index)| std::iter::repeat_n(index, rows))
+            .skip(if wrap { vertical_scroll } else { 0 })
+            .take(visible_height)
+            .collect(),
+    );
 
     for (line_idx, current_occ, content_line) in render_cache_misses {
         tab.cache.render_line.insert(
@@ -1090,6 +1209,8 @@ pub fn prepare_log_panel(
         visible_height,
         start,
         horizontal_scroll: tab.scroll.horizontal_scroll,
+        vertical_scroll: if wrap { vertical_scroll } else { 0 },
+        selected_row,
         logs_title,
         show_borders,
         show_tab_bar,
@@ -1138,15 +1259,33 @@ impl<'a> Widget for LogPanel<'a> {
             }
         };
 
+        let content_area = logs_block.inner(area);
         let mut paragraph = Paragraph::new(d.log_lines.clone())
             .block(logs_block)
-            .scroll((0, d.horizontal_scroll as u16));
+            .scroll((
+                d.vertical_scroll.min(u16::MAX as usize) as u16,
+                d.horizontal_scroll as u16,
+            ));
 
         if d.wrap {
             paragraph = paragraph.wrap(Wrap { trim: false });
         }
 
         paragraph.render(area, buf);
+        if let Some(row) = d
+            .selected_row
+            .filter(|&row| row < content_area.height as usize)
+        {
+            buf.set_style(
+                Rect::new(
+                    content_area.x,
+                    content_area.y + row as u16,
+                    content_area.width,
+                    1,
+                ),
+                Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            );
+        }
 
         let inner = if d.show_borders {
             area.inner(ratatui::layout::Margin {
@@ -1507,6 +1646,169 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_wrapped_navigation_renders_entire_huge_entry() {
+        let tokens: Vec<String> = (0..500).map(|i| format!("chunk{i:04}")).collect();
+        let long = tokens.join(" ");
+        let mut app = make_app(&[&long, "AFTER_HUGE_ENTRY"]).await;
+        app.tabs[0].display.wrap = true;
+        let mut terminal = make_terminal();
+        let mut seen = String::new();
+        for _ in 0..200 {
+            terminal.draw(|f| app.ui(f)).unwrap();
+            seen.extend(
+                terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|c| c.symbol()),
+            );
+            if app.tabs[0].scroll.wrapped_row > 0 {
+                let area = app.input.log_panel_area;
+                assert_eq!(
+                    app.input
+                        .hit_test_log_panel(area.x + 2, area.y, &app.tabs[0]),
+                    Some(0),
+                    "clicking a wrapped continuation must select its original entry",
+                );
+            }
+            if app.tabs[0].scroll.scroll_offset == 1 {
+                break;
+            }
+            app.tabs[0].scroll_rows(true, 1);
+        }
+        for token in tokens {
+            assert!(seen.contains(&token), "missing wrapped content: {token}");
+        }
+        assert!(seen.contains("AFTER_HUGE_ENTRY"));
+        app.tabs[0].scroll_rows(false, 1);
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(content.contains("chunk0499"));
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn test_wrapped_cursor_scrolls_only_at_viewport_edges() {
+        let long = "x".repeat(500);
+        let mut app = make_app(&["before", &long, "after"]).await;
+        app.tabs[0].display.wrap = true;
+        app.tabs[0].display.show_line_numbers = false;
+        app.tabs[0].display.show_borders = false;
+        let area = Rect::new(0, 0, 20, 6);
+        let prepare = |tab: &mut TabState| {
+            prepare_log_panel(tab, area, None, None, None, true, false, &app.theme)
+        };
+        let tab = &mut app.tabs[0];
+        let initial = prepare(tab);
+        assert_eq!(initial.selected_row, Some(0));
+        for row in 1..initial.visible_height {
+            tab.scroll_rows(true, 1);
+            let data = prepare(tab);
+            assert_eq!(data.selected_row, Some(row));
+            assert_eq!((data.start, data.vertical_scroll), (0, 0));
+        }
+        tab.scroll_rows(true, 1);
+        let scrolled = prepare(tab);
+        assert_eq!(scrolled.selected_row, Some(initial.visible_height - 1));
+        assert_eq!((scrolled.start, scrolled.vertical_scroll), (1, 0));
+        tab.scroll_rows(true, 1);
+        let scrolled = prepare(tab);
+        assert_eq!((scrolled.start, scrolled.vertical_scroll), (1, 1));
+        for row in (0..initial.visible_height - 1).rev() {
+            tab.scroll_rows(false, 1);
+            let data = prepare(tab);
+            assert_eq!(data.selected_row, Some(row));
+            assert_eq!((data.start, data.vertical_scroll), (1, 1));
+        }
+        tab.scroll_rows(false, 1);
+        let data = prepare(tab);
+        assert_eq!(data.selected_row, Some(0));
+        assert_eq!((data.start, data.vertical_scroll), (1, 0));
+        tab.scroll_rows(false, 1);
+        let data = prepare(tab);
+        assert_eq!(data.selected_row, Some(0));
+        assert_eq!((data.start, data.vertical_scroll), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn test_wrapped_selection_highlights_only_current_screen_row() {
+        let long = "x".repeat(300);
+        let mut app = make_app(&["before", &long]).await;
+        app.tabs[0].display.wrap = true;
+        app.tabs[0].display.show_line_numbers = false;
+        app.tabs[0].scroll.scroll_offset = 1;
+        let area = Rect::new(0, 0, 40, 12);
+        for wrapped_row in [0, 1, 3] {
+            let _ = prepare_log_panel(
+                &mut app.tabs[0],
+                area,
+                None,
+                None,
+                None,
+                true,
+                false,
+                &app.theme,
+            );
+            app.tabs[0].scroll.wrapped_row = wrapped_row;
+            let data = prepare_log_panel(
+                &mut app.tabs[0],
+                area,
+                None,
+                None,
+                None,
+                true,
+                false,
+                &app.theme,
+            );
+            let selected_row = data.selected_row.expect("selected wrapped row is visible");
+            let mut buffer = Buffer::empty(area);
+            LogPanel { data: &data }.render(area, &mut buffer);
+            let highlighted_rows: Vec<usize> = (0..area.height)
+                .filter(|&y| buffer[(2, y)].modifier.contains(Modifier::UNDERLINED))
+                .map(usize::from)
+                .collect();
+            assert_eq!(highlighted_rows, vec![selected_row]);
+            assert_eq!(app.tabs[0].scroll.scroll_offset, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wrapped_entry_partially_fills_remaining_viewport() {
+        let long = format!("PARTIAL_START {} PARTIAL_END", "x".repeat(1000));
+        let mut app = make_app(&["before", &long, "after"]).await;
+        app.tabs[0].display.wrap = true;
+        app.tabs[0].display.show_line_numbers = false;
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(content.contains("before"));
+        assert!(content.contains("PARTIAL_START"));
+        assert!(!content.contains("PARTIAL_END"));
+        assert_eq!(app.tabs[0].scroll.scroll_offset, 0);
+        assert!(
+            app.tabs[0]
+                .scroll
+                .rendered_rows
+                .as_ref()
+                .unwrap()
+                .contains(&Some(1))
+        );
+    }
+
+    #[tokio::test]
     async fn test_log_panel_with_horizontal_scroll() {
         let long_line = "A".repeat(200);
         let mut app = make_app(&[&long_line]).await;
@@ -1727,6 +2029,8 @@ mod tests {
             visible_height: 10,
             start: 0,
             horizontal_scroll: 0,
+            vertical_scroll: 0,
+            selected_row: None,
             logs_title: String::new(),
             show_borders: false,
             show_tab_bar: false,
@@ -1750,6 +2054,8 @@ mod tests {
             visible_height: 4,
             start: 1,
             horizontal_scroll: 0,
+            vertical_scroll: 0,
+            selected_row: None,
             logs_title: String::new(),
             show_borders: true,
             show_tab_bar: true,
@@ -1773,6 +2079,8 @@ mod tests {
             visible_height: 10,
             start: 0,
             horizontal_scroll: 0,
+            vertical_scroll: 0,
+            selected_row: None,
             logs_title: "myfile.log (0)".to_string(),
             show_borders: false,
             show_tab_bar: false,
@@ -1796,6 +2104,8 @@ mod tests {
             visible_height: 5,
             start: 2,
             horizontal_scroll: 5,
+            vertical_scroll: 0,
+            selected_row: None,
             logs_title: "app.log (10)".to_string(),
             show_borders: true,
             show_tab_bar: false,
@@ -2102,8 +2412,9 @@ mod tests {
 
         // Recompute the rows the renderer will actually use for [start, end)
         // — content rows plus the banner, counted once at its first line —
-        // and confirm it never exceeds what actually fits on screen.
+        // and confirm the jump target fits, allowing the last entry to clip.
         let mut total_rows = 0usize;
+        let mut rows_through_target = 0usize;
         let mut seen_comment = false;
         for i in start..end {
             let li = tab.filter.visible_indices.get(i);
@@ -2119,10 +2430,14 @@ mod tests {
                 total_rows += comment_banner_row_count("note");
                 seen_comment = true;
             }
+            if i == scroll_offset {
+                rows_through_target = total_rows;
+            }
         }
+        assert!(rows_through_target <= visible_height);
         assert!(
-            total_rows <= visible_height,
-            "window [{start}, {end}) needs {total_rows} rows, more than fits in visible_height {visible_height}"
+            total_rows.saturating_sub(2) < visible_height,
+            "only the final wrapped entry may extend past the viewport"
         );
     }
 
@@ -2410,6 +2725,8 @@ mod tests {
             visible_height: 5,
             start: 0,
             horizontal_scroll: 0,
+            vertical_scroll: 0,
+            selected_row: None,
             logs_title: String::new(),
             show_borders: false,
             show_tab_bar: false,
@@ -2435,6 +2752,8 @@ mod tests {
             visible_height: 8,
             start: 0,
             horizontal_scroll: 0,
+            vertical_scroll: 0,
+            selected_row: None,
             logs_title: String::new(),
             show_borders: false,
             show_tab_bar: false,

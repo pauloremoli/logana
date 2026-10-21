@@ -276,19 +276,9 @@ impl App {
     pub(super) fn mouse_scroll(&mut self, delta: i32) {
         let tab = &mut self.tabs[self.active_tab];
         let max_scroll = tab.filter.visible_indices.len().saturating_sub(1);
-        if delta < 0 {
-            tab.stream.tail_mode = false;
-            tab.scroll.scroll_offset = tab
-                .scroll
-                .scroll_offset
-                .saturating_sub(delta.unsigned_abs() as usize);
-        } else {
-            let new_offset = (tab.scroll.scroll_offset + delta as usize).min(max_scroll);
-            tab.scroll.scroll_offset = new_offset;
-            if new_offset >= max_scroll {
-                tab.stream.tail_mode = true;
-            }
-        }
+        tab.scroll_rows(delta >= 0, delta.unsigned_abs() as usize);
+        tab.clamp_scroll_offset();
+        tab.stream.tail_mode = delta >= 0 && tab.scroll.scroll_offset >= max_scroll;
         if matches!(
             tab.interaction.mode.render_state(),
             crate::mode::app_mode::ModeRenderState::Visual { .. }

@@ -132,6 +132,9 @@ impl InputHandler {
             return None;
         }
         let visual_row = (row - inner.y) as usize;
+        if let Some(rows) = &tab.scroll.rendered_rows {
+            return rows.get(visual_row).copied().flatten();
+        }
         let wrap = tab.display.wrap;
         let inner_width = tab.scroll.visible_width;
         let parser = tab.display.format.as_deref();

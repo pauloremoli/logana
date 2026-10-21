@@ -15,8 +15,10 @@ All notable changes to logana will be documented in this file.
 ### Changed
 - Archive and directory extraction now always writes real files to disk instead of temp files.
 - Rebind the keybindings help overlay from `F1` to `?`, freeing `F1` and dropping `?`'s default backward-search binding (still reachable via `/` then `N`, or by rebinding `search_backward`).
+- Do not apply bookmark visual in marks only view
 
 ### Fixed
+- Navigation and rendering of multiline wrapped log, navigation is now row based.
 - Close the empty placeholder tab after decompression.
 - Fix field and date filters passed on the command line showing the wrong lines at startup.
 
