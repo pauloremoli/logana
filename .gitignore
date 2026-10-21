@@ -6,3 +6,4 @@ docs/book/
 perf.data*
 report.txt
 .worktrees/
+.codegraph/

@@ -823,7 +823,7 @@ pub fn prepare_log_panel(
                 _ => {}
             }
         }
-        if is_marked {
+        if is_marked && !tab.filter.show_marks_only {
             base_style = base_style.fg(theme.mark_fg).bg(theme.mark_bg);
         }
         if is_visual_selected {
@@ -1532,6 +1532,46 @@ mod tests {
         app.tabs[0].mark_manager.toggle(0);
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_log_panel_marks_only_preserves_normal_style() {
+        let mut app = make_app(&["INFO line one"]).await;
+        app.theme.mark_fg = Color::Magenta;
+        app.theme.mark_bg = Color::Blue;
+        let area = Rect::new(0, 0, 80, 24);
+        let normal = prepare_log_panel(
+            &mut app.tabs[0],
+            area,
+            None,
+            None,
+            None,
+            false,
+            false,
+            &app.theme,
+        )
+        .log_lines;
+        app.tabs[0].mark_manager.toggle(0);
+        for marks_only in [false, true, false] {
+            app.tabs[0].filter.show_marks_only = marks_only;
+            let lines = prepare_log_panel(
+                &mut app.tabs[0],
+                area,
+                None,
+                None,
+                None,
+                false,
+                false,
+                &app.theme,
+            )
+            .log_lines;
+            if marks_only {
+                assert_eq!(lines, normal);
+            } else {
+                assert_eq!(lines[0].style.fg, Some(app.theme.mark_fg));
+                assert_eq!(lines[0].style.bg, Some(app.theme.mark_bg));
+            }
+        }
     }
 
     #[tokio::test]
