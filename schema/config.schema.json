@@ -147,9 +147,9 @@
             "l",
             "Right"
           ],
-          "search_backward": "?",
+          "search_backward": [],
           "search_forward": "/",
-          "show_keybindings": "F1",
+          "show_keybindings": "?",
           "start_of_line": "0",
           "toggle_filtering": "F",
           "toggle_highlight_mode": "H",
@@ -420,9 +420,9 @@
               "l",
               "Right"
             ],
-            "search_backward": "?",
+            "search_backward": [],
             "search_forward": "/",
-            "show_keybindings": "F1",
+            "show_keybindings": "?",
             "start_of_line": "0",
             "toggle_filtering": "F",
             "toggle_highlight_mode": "H",
@@ -928,7 +928,7 @@
           ]
         },
         "search_backward": {
-          "default": "?",
+          "default": [],
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"
@@ -992,7 +992,7 @@
           ]
         },
         "show_keybindings": {
-          "default": "F1",
+          "default": "?",
           "allOf": [
             {
               "$ref": "#/definitions/KeyBindings"

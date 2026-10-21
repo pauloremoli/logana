@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-10-22
+
 ### Added
 - Add `--fga` to `:filter`/`:highlight` to auto-pick a random, colorful foreground color readable against the current theme background.
 - Add tab-completion for `--regex`/`-r`, `--ignore-case`/`-i`, `--auto`/`-a`, and `--fga` on `:filter`/`:exclude`/`:highlight`, and `-a` on `:group`.
