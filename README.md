@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/src/filters-marks-comments.png" alt="logana TUI showing colored, grouped filters alongside marked lines and inline comments" />
+  <img src="docs/src/logana.png" alt="logana TUI showing colored, grouped filters alongside marked lines and inline comments" />
 </p>
 
 - Native desktop GUI built with GPUI, plus a keyboard-driven terminal UI
