@@ -80,13 +80,13 @@ brew tap pauloremoli/logana && brew install logana
 Install only the desktop GUI:
 
 ```sh
-brew tap pauloremoli/logana
-brew install logana-gui
-logana-gui
+brew tap pauloremoli/logana && brew install logana-gui
 ```
 
 
 ### Cargo
+
+Cargo by default will run/install only the TUI (`logana`). 
 
 ```sh
 # Run the TUI
@@ -95,8 +95,7 @@ cargo install logana
 # or install the latest binary directly
 cargo binstall logana
 ```
-
-Cargo installs the TUI (`logana`). For the desktop GUI, use the pre-built
+For the desktop GUI, use the pre-built
 GUI or full installers above, or build from a checkout of this repository:
 
 ```sh
@@ -104,12 +103,7 @@ GUI or full installers above, or build from a checkout of this repository:
 cargo run -p logana-gui
 # Install only the desktop GUI from this checkout
 cargo install --path crates/logana-gui --locked
-# Build both the terminal and desktop applications
-cargo build -p logana-full
 ```
-
-Source builds enable `tui` by default. See
-[frontend build configurations](CONTRIBUTING.md#frontend-features) for details.
 
 
 ## Documentation
