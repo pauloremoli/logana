@@ -19,6 +19,7 @@
 </p>
 
 ### TUI application
+
 <p align="center">
   <img src="docs/src/logana.png" alt="logana TUI showing colored, grouped filters alongside marked lines and inline comments" />
 </p>
