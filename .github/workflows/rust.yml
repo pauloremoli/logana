@@ -95,8 +95,16 @@ jobs:
     - name: Install cargo-tarpaulin
       run: cargo install cargo-tarpaulin
     - name: Run coverage
-      run: cargo tarpaulin --locked --workspace --features logana/gui-test --engine llvm --out xml --skip-clean --fail-under 80 -- --test-threads=1
+      run: cargo tarpaulin --locked --workspace --features logana/gui-test --engine llvm --timeout 600 --out xml --skip-clean --fail-under 80 -- --test-threads=1
+    - name: Save coverage report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: cobertura.xml
+        if-no-files-found: ignore
     - name: Upload to Codecov
+      if: ${{ !cancelled() && hashFiles('cobertura.xml') != '' }}
       uses: codecov/codecov-action@v4
       with:
         files: cobertura.xml

@@ -3,8 +3,12 @@
 A fast terminal log viewer for files of any size — including multi-GB logs. Built on SIMD-accelerated line indexing, search, and filtering. Auto-detects log formats, filters by pattern, regex, field value, or date range — bookmark lines, add annotations, and export your analysis.
 
 <p align="center">
-  <img src="demo.gif" alt="logana demo" />
+  <a href="demo.gif">
+    <img src="filters-marks-comments.png" alt="Logana terminal UI with filters, bookmarks, and annotations. Open the animated demo." />
+  </a>
 </p>
+
+[Watch the animated demo](demo.gif) (12 MB).
 
 
 ## What is it for

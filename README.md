@@ -13,6 +13,10 @@
 </p>
 
 <p align="center">
+  <img src="docs/src/logana-gui.png" alt="Logana desktop GUI screenshot" />
+</p>
+
+<p align="center">
   <img src="docs/src/filters-marks-comments.png" alt="logana TUI showing colored, grouped filters alongside marked lines and inline comments" />
 </p>
 
