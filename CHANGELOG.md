@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-23
+
 ### Added
 - Logana GUI application
 
