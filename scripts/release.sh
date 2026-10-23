@@ -30,7 +30,10 @@ fi
 
 TODAY=$(date +%Y-%m-%d)
 
-sed -i "s/^version = \".*\"$/version = \"$VERSION\"/" Cargo.toml
+MANIFESTS=(Cargo.toml crates/logana-gui/Cargo.toml crates/logana-full/Cargo.toml)
+for manifest in "${MANIFESTS[@]}"; do
+    sed -i "0,/^version = /s/^version = \".*\"$/version = \"$VERSION\"/" "$manifest"
+done
 
 cargo update --workspace
 
@@ -39,7 +42,7 @@ cargo run --bin schema -- custom-schema 2>/dev/null > schema/custom-schema.schem
 
 sed -i "s|^## \[Unreleased\]$|## [Unreleased]\n\n## [$VERSION] - $TODAY|" CHANGELOG.md
 
-git add Cargo.toml Cargo.lock CHANGELOG.md schema/config.schema.json schema/custom-schema.schema.json
+git add "${MANIFESTS[@]}" Cargo.lock CHANGELOG.md schema/config.schema.json schema/custom-schema.schema.json
 git commit -m "version v$VERSION"
 git tag "v$VERSION"
 

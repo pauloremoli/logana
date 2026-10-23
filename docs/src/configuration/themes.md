@@ -1,6 +1,6 @@
 # Themes
 
-logana ships with 22 bundled themes and supports fully custom themes via JSON files.
+logana ships with 23 bundled themes and supports fully custom themes via JSON files.
 
 ## Switching Themes
 
@@ -44,6 +44,7 @@ To pin a theme permanently (overriding any runtime changes), add it to `~/.confi
 
 | Name | Description |
 |---|---|
+| `alucard` | Dracula light palette on a warm cream background |
 | `catppuccin-latte` | Pastel, warm cream background |
 | `everforest-light` | Earthy green, warm paper background |
 | `github-light` | GitHub light — clean white with blue accents |
@@ -74,42 +75,87 @@ Only five fields are required — everything else falls back to built-in default
 
 ```json
 {
-  "root_bg":          "#282a36",
-  "border":           "#6272a4",
-  "cursor_bg":        "#6272a4",
-  "border_title":     "#f8f8f2",
-  "text":             "#f8f8f2",
+  "root_bg": "#282a36",
+  "border": "#6272a4",
+  "cursor_bg": "#6272a4",
+  "border_title": "#f8f8f2",
+  "inactive_tab_fg": "#6272a4",
+  "comment_fg": "#6272a4",
+  "text": "#f8f8f2",
   "text_highlight_fg": "#ffb86c",
-  "text_highlight_bg": "#7a4a10",
-  "cursor_fg":        "#1c1c1c",
-  "trace_fg":         "#6272a4",
-  "debug_fg":         "#8be9fd",
-  "notice_fg":        "#f8f8f2",
-  "warning_fg":       "#f1fa8c",
-  "error_fg":         "#ff5555",
-  "fatal_fg":         "#ff5555",
-  "search_fg":        "#1c1c1c",
+  "text_highlight_bg": "#44475a",
+  "cursor_fg": "#f8f8f2",
+  "info_fg": "#f8f8f2",
+  "error_fg": "#ff5555",
+  "warning_fg": "#ff5555",
+  "warning_bg": "#44475a",
+  "error_bg": "#44475a",
+  "fatal_bg": "#44475a",
+  "search_fg": "#282a36",
   "visual_select_bg": "#44475a",
   "visual_select_fg": "#f8f8f2",
-  "mark_bg":          "#463c0f",
-  "mark_fg":          "#f8f8f2",
-  "process_colors":   ["#ff5555", "#50fa7b", "#ffb86c", "#bd93f9", "#ff79c6", "#8be9fd"],
+  "mark_bg": "#44475a",
+  "mark_fg": "#ffb86c",
+  "process_colors": [
+    "#ff5555",
+    "#50fa7b",
+    "#ffb86c",
+    "#bd93f9",
+    "#ff79c6",
+    "#8be9fd",
+    "#f1fa8c"
+  ],
+  "gui": {
+    "surface": "#21222c",
+    "elevated": "#343746",
+    "control": "#44475a",
+    "border": "#6272a4",
+    "muted": "#6272a4",
+    "primary": "#bd93f9"
+  },
+  "trace_fg": "#6272a4",
+  "debug_fg": "#8be9fd",
+  "notice_fg": "#50fa7b",
+  "fatal_fg": "#ff5555",
   "value_colors": {
-    "http_get":    "#50fa7b",
-    "http_post":   "#8be9fd",
-    "http_put":    "#ffb86c",
+    "http_get": "#50fa7b",
+    "http_post": "#8be9fd",
+    "http_put": "#ffb86c",
     "http_delete": "#ff5555",
-    "http_patch":  "#bd93f9",
-    "http_other":  "#6272a4",
-    "status_2xx":  "#50fa7b",
-    "status_3xx":  "#8be9fd",
-    "status_4xx":  "#ffb86c",
-    "status_5xx":  "#ff5555",
-    "ip_address":  "#bd93f9",
-    "uuid":        "#6c71c4"
+    "http_patch": "#ff79c6",
+    "http_other": "#6272a4",
+    "status_2xx": "#50fa7b",
+    "status_3xx": "#8be9fd",
+    "status_4xx": "#ffb86c",
+    "status_5xx": "#ff5555",
+    "ip_address": "#bd93f9",
+    "uuid": "#bd93f9"
   }
 }
 ```
+
+## GUI palettes
+
+All 23 bundled themes include desktop colors for panels, popovers, controls,
+separators, secondary text, and the main action accent. The GUI derives hover,
+pressed, and selection states from this palette and adjusts text contrast for
+readability. Terminal and log syntax colors retain their existing styling.
+
+Custom themes can add a `gui` object. If present, provide all six colors:
+
+```json
+"gui": {
+  "surface": "#21222c",
+  "elevated": "#343746",
+  "control": "#44475a",
+  "border": "#565b73",
+  "muted": "#9aa5ce",
+  "primary": "#bd93f9"
+}
+```
+
+The main canvas and text still use `root_bg` and `text`. Themes without `gui`
+continue to work: the GUI derives desktop colors from the terminal palette.
 
 ## Color Formats
 

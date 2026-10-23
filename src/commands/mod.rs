@@ -11,3 +11,5 @@ pub use export::{
 pub use info::{COMMANDS, CommandInfo, FILE_PATH_COMMANDS, command_names, find_matching_command};
 pub use npp_import::convert_npp_xml;
 pub use parser::{CommandLine, Commands};
+
+pub mod completion;

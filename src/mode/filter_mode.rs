@@ -1,14 +1,20 @@
 use crate::config::Keybindings;
 use crate::filters::{ColorConfig, FilterType};
-use crate::mode::app_mode::{Mode, ModeRenderState, status_entry};
+use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+use crate::mode::app_mode::{Mode, ModeRenderState};
 use crate::mode::command_mode::CommandMode;
 use crate::mode::normal_mode::NormalMode;
-use crate::theme::{Theme, color_to_string};
-use crate::ui::KeyResult;
-use crate::ui::TabState;
+use crate::shared::KeyResult;
+use crate::shared::TabState;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
+use crate::theme::color_to_string;
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 #[derive(Debug)]
@@ -222,7 +228,7 @@ impl FilterManagementMode {
     /// Indices (into the full filter list) of entries matching the current
     /// search query — everything, when not searching or the query is empty.
     fn narrowed_indices(&self, tab: &TabState) -> Vec<usize> {
-        crate::ui::widgets::sidebar::narrowed_filter_indices(
+        crate::shared::sidebar::narrowed_filter_indices(
             tab.log_manager.get_filters(),
             &tab.filter.match_counts,
             &self.search,
@@ -574,6 +580,7 @@ impl Mode for FilterManagementMode {
         (self, KeyResult::Ignored)
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[FILTER]  ",
@@ -730,6 +737,7 @@ impl Mode for FilterEditMode {
         }
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[FILTER EDIT]  ",
@@ -754,7 +762,7 @@ mod tests {
     use crate::db::LogManager;
     use crate::filters::FilterOptions;
     use crate::ingestion::FileReader;
-    use crate::ui::{KeyResult, TabState};
+    use crate::shared::{KeyResult, TabState};
     use std::sync::Arc;
 
     async fn make_tab(lines: &[&str]) -> TabState {
@@ -1391,6 +1399,50 @@ mod tests {
         assert_eq!(tab.log_manager.get_filters().len(), 0);
     }
 
+    /// Regression test for a real GUI bug: `delete_filter` calls
+    /// `tab.log_manager.remove_filter(id).await` (a real sqlx DB write)
+    /// *before* `tab.begin_filter_refresh()`. The GUI used to drive every
+    /// `Mode::handle_key` with `futures::FutureExt::now_or_never()`, which
+    /// polls a future exactly once and discards it if that single poll
+    /// doesn't finish — a real DB call essentially never finishes on its
+    /// very first poll, so `now_or_never()` returned `None`: the in-memory
+    /// `filter_defs.retain` (synchronous, before the `.await`) still ran,
+    /// but `begin_filter_refresh()` — which comes after — never did,
+    /// leaving `visible_indices` stale and the log pane showing the old,
+    /// filtered view even with every filter gone. `gui::update::
+    /// dispatch_key` now drives the future to completion with `Handle::
+    /// block_on` instead, which this test exercises directly (a plain,
+    /// non-`#[tokio::test]` fn with a runtime only *entered*, mirroring
+    /// the real call site exactly) to prove the fix.
+    #[test]
+    fn deleting_the_last_filter_refreshes_visible_indices() {
+        let setup_rt = tokio::runtime::Runtime::new().unwrap();
+        let mut tab = setup_rt.block_on(async {
+            let mut tab = make_tab(&["a", "b"]).await;
+            add_filter(&mut tab, "a", FilterType::Include).await;
+            tab
+        });
+        assert_eq!(tab.log_manager.get_filters().len(), 1);
+        assert_eq!(
+            tab.filter.visible_indices.len(),
+            1,
+            "the include filter should have narrowed the view before deletion"
+        );
+
+        setup_rt.block_on(Box::new(filter_mode(0)).handle_key(
+            &mut tab,
+            KeyCode::Char('d'),
+            KeyModifiers::NONE,
+        ));
+
+        assert_eq!(tab.log_manager.get_filters().len(), 0);
+        assert_eq!(
+            tab.filter.visible_indices.len(),
+            2,
+            "both lines should be visible again now that no filter is active"
+        );
+    }
+
     #[tokio::test]
     async fn test_d_with_no_filters_no_panic() {
         let mut tab = make_tab(&["line"]).await;
@@ -1577,6 +1629,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_mode_bar_content_shows_configured_search_shortcut() {
         let m = filter_mode(0);
         let mut kb = Keybindings::default();

@@ -45,5 +45,13 @@
     "status_5xx": "#d1242f",
     "ip_address": "#0550ae",
     "uuid": "#656d76"
+  },
+  "gui": {
+    "surface": "#f6f8fa",
+    "elevated": "#ffffff",
+    "control": "#eaeef2",
+    "border": "#d0d7de",
+    "muted": "#656d76",
+    "primary": "#0969da"
   }
 }

@@ -174,14 +174,71 @@ impl Storage {
     }
 }
 
+/// GUI raw copying retains original text only when ingestion normalizes it.
+#[cfg(feature = "gui")]
+#[derive(Clone)]
+struct RawBuffer {
+    data: Vec<u8>,
+    line_starts: Vec<usize>,
+}
+#[cfg(feature = "gui")]
+impl RawBuffer {
+    fn new(data: Vec<u8>) -> Self {
+        let mut line_starts = vec![0];
+        line_starts.extend(memchr_iter(b'\n', &data).map(|pos| pos + 1));
+        Self { data, line_starts }
+    }
+    fn line(&self, index: usize) -> &[u8] {
+        let start = self.line_starts[index];
+        let end = self
+            .line_starts
+            .get(index + 1)
+            .copied()
+            .unwrap_or(self.data.len());
+        let bytes = &self.data[start..end];
+        let bytes = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+        if end > start && self.data[end - 1] == b'\n' {
+            bytes.strip_suffix(b"\r").unwrap_or(bytes)
+        } else {
+            bytes
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct FileReader {
+    #[cfg(feature = "gui")]
+    raw_buffer: Option<Arc<RawBuffer>>,
     storage: Storage,
     line_starts: std::sync::Arc<Vec<usize>>,
     pub is_binary: bool,
 }
 
 impl FileReader {
+    /// Whether two readers share the same immutable content snapshot.
+    #[cfg(feature = "gui")]
+    pub(crate) fn same_snapshot(&self, other: &Self) -> bool {
+        if !Arc::ptr_eq(&self.line_starts, &other.line_starts) {
+            return false;
+        }
+        match (&self.storage, &other.storage) {
+            (Storage::File { data: a, .. }, Storage::File { data: b, .. })
+            | (Storage::Bytes(a), Storage::Bytes(b)) => Arc::ptr_eq(a, b),
+            (Storage::Paged { paged: a, .. }, Storage::Paged { paged: b, .. }) => Arc::ptr_eq(a, b),
+            (
+                Storage::Merged {
+                    entries: a,
+                    sources: sa,
+                },
+                Storage::Merged {
+                    entries: b,
+                    sources: sb,
+                },
+            ) => Arc::ptr_eq(a, b) && Arc::ptr_eq(sa, sb),
+            _ => false,
+        }
+    }
+
     pub fn new(path: &str) -> io::Result<Self> {
         let canonical_path = Arc::new(
             std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path)),
@@ -219,7 +276,8 @@ impl FileReader {
                     let offset = (i * chunk_size) as u64;
                     let mut filled = 0;
                     while filled < chunk.len() {
-                        match file.read_at(&mut chunk[filled..], offset + filled as u64) {
+                        let end = (filled + 64 * 1024).min(chunk.len());
+                        match file.read_at(&mut chunk[filled..end], offset + filled as u64) {
                             Ok(0) => break,
                             Ok(n) => filled += n,
                             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -235,7 +293,18 @@ impl FileReader {
         let data: Vec<u8> = {
             use std::io::Read;
             let mut v = Vec::with_capacity(size);
-            (&*file).read_to_end(&mut v)?;
+            let mut reader = &*file;
+            let mut chunk = vec![0; 64 * 1024];
+            loop {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "load cancelled"));
+                }
+                let read = reader.read(&mut chunk)?;
+                if read == 0 {
+                    break;
+                }
+                v.extend_from_slice(&chunk[..read]);
+            }
             v
         };
 
@@ -266,6 +335,8 @@ impl FileReader {
         if has_ansi {
             let (stripped, line_starts) = strip_ansi_and_index(&data);
             return Ok(FileReader {
+                #[cfg(feature = "gui")]
+                raw_buffer: Some(Arc::new(RawBuffer::new(data))),
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
                 line_starts: std::sync::Arc::new(line_starts),
                 is_binary: false,
@@ -287,6 +358,8 @@ impl FileReader {
         );
 
         Ok(FileReader {
+            #[cfg(feature = "gui")]
+            raw_buffer: None,
             storage: Storage::File {
                 data: Arc::new(data),
                 file,
@@ -312,6 +385,15 @@ impl FileReader {
         path: &str,
         canonical_path: Arc<std::path::PathBuf>,
     ) -> io::Result<Option<Self>> {
+        Self::try_new_paged_controlled(path, canonical_path, &AtomicBool::new(false), None)
+    }
+
+    fn try_new_paged_controlled(
+        path: &str,
+        canonical_path: Arc<std::path::PathBuf>,
+        cancel: &AtomicBool,
+        progress: Option<&watch::Sender<f64>>,
+    ) -> io::Result<Option<Self>> {
         use crate::ingestion::paged_file::{PagedFile, pread};
         use rayon::prelude::*;
 
@@ -326,20 +408,28 @@ impl FileReader {
         // file size, instead of needing the whole file resident.
         let chunk_size = PAGED_INDEX_SCAN_CHUNK_SIZE;
         let num_chunks = total.div_ceil(chunk_size).max(1);
+        let bytes_done = std::sync::atomic::AtomicUsize::new(0);
 
         // Each element: (needs full-materialization fallback, i.e. DLT/ANSI
         // detected, absolute next-line offsets for this chunk).
         let chunk_results: Vec<io::Result<(bool, Vec<usize>)>> = (0..num_chunks)
             .into_par_iter()
             .map(|chunk_idx| -> io::Result<(bool, Vec<usize>)> {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "load cancelled"));
+                }
                 let chunk_start = chunk_idx * chunk_size;
                 let this_len = chunk_size.min(total - chunk_start);
                 let mut buf = vec![0u8; this_len];
                 let mut filled = 0usize;
                 while filled < buf.len() {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(io::Error::new(io::ErrorKind::Interrupted, "load cancelled"));
+                    }
+                    let end = (filled + 64 * 1024).min(buf.len());
                     match pread(
                         &file_handle,
-                        &mut buf[filled..],
+                        &mut buf[filled..end],
                         (chunk_start + filled) as u64,
                     ) {
                         Ok(0) => break,
@@ -360,6 +450,10 @@ impl FileReader {
                         }
                     }
                 }
+                let done = bytes_done.fetch_add(filled, Ordering::Relaxed) + filled;
+                if let Some(tx) = progress {
+                    let _ = tx.send(done as f64 / total.max(1) as f64 * 0.5);
+                }
                 Ok((needs_fallback, local_starts))
             })
             .collect();
@@ -378,6 +472,9 @@ impl FileReader {
             Vec::with_capacity(1 + chunk_results.iter().map(|(_, v)| v.len()).sum::<usize>());
         starts.push(0usize);
         for (_, local) in chunk_results {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "load cancelled"));
+            }
             starts.extend(local);
         }
 
@@ -395,6 +492,8 @@ impl FileReader {
         );
 
         Ok(Some(FileReader {
+            #[cfg(feature = "gui")]
+            raw_buffer: None,
             storage: Storage::Paged {
                 paged: Arc::new(paged),
                 path: canonical_path,
@@ -423,6 +522,8 @@ impl FileReader {
         if has_ansi {
             let (stripped, line_starts) = strip_ansi_and_index(&data);
             return FileReader {
+                #[cfg(feature = "gui")]
+                raw_buffer: Some(Arc::new(RawBuffer::new(data))),
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
                 line_starts: std::sync::Arc::new(line_starts),
                 is_binary: false,
@@ -430,6 +531,8 @@ impl FileReader {
         }
 
         FileReader {
+            #[cfg(feature = "gui")]
+            raw_buffer: None,
             storage: Storage::Bytes(std::sync::Arc::new(data)),
             line_starts: std::sync::Arc::new(starts),
             is_binary: false,
@@ -442,6 +545,8 @@ impl FileReader {
     pub fn from_merged(entries: Arc<Vec<MergedEntry>>, sources: Arc<Vec<FileReader>>) -> Self {
         let line_count = entries.len();
         FileReader {
+            #[cfg(feature = "gui")]
+            raw_buffer: None,
             storage: Storage::Merged { entries, sources },
             line_starts: Arc::new((0..=line_count).collect()),
             is_binary: false,
@@ -831,7 +936,9 @@ impl FileReader {
         let canonical_path = Arc::new(
             std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path)),
         );
-        let Some(reader) = Self::try_new_paged(path, canonical_path)? else {
+        let Some(reader) =
+            Self::try_new_paged_controlled(path, canonical_path, cancel, Some(progress_tx))?
+        else {
             return Ok(None);
         };
         let _ = progress_tx.send(0.5);
@@ -948,73 +1055,13 @@ impl FileReader {
 
         let len = file_data.len();
 
-        if is_any_dlt_binary(&file_data) {
-            let text = dlt_binary::convert_dlt_binary_to_text(&file_data);
-            drop(file_data);
-            let _ = progress_tx.send(1.0);
-            let mut reader = Self::from_bytes(text);
-            reader.is_binary = true;
-
-            let (precomputed_visible, precomputed_text_counts) = if let Some(pred) = predicate {
-                let count = reader.line_count();
-                let n = pred.fm.filter_count();
-                let has_include = pred.fm.has_include();
-                if tail {
-                    let mut text_counts = vec![0usize; n];
-                    let mut visible: Vec<usize> = (0..count)
-                        .rev()
-                        .filter(|&i| {
-                            pred.fm
-                                .evaluate_and_count(&reader.get_line(i), &mut text_counts)
-                                .to_visibility(has_include)
-                        })
-                        .collect();
-                    visible.reverse();
-                    (Some(visible), Some(text_counts))
-                } else {
-                    use rayon::prelude::*;
-                    let (visible, text_counts) = (0..count)
-                        .into_par_iter()
-                        .fold(
-                            || (Vec::new(), vec![0usize; n]),
-                            |(mut vis, mut tc), i| {
-                                let dec = pred.fm.evaluate_and_count(&reader.get_line(i), &mut tc);
-                                if dec.to_visibility(has_include) {
-                                    vis.push(i);
-                                }
-                                (vis, tc)
-                            },
-                        )
-                        .reduce(
-                            || (Vec::new(), vec![0usize; n]),
-                            |(mut va, mut ta), (vb, tb)| {
-                                va.extend(vb);
-                                for (a, b) in ta.iter_mut().zip(tb) {
-                                    *a += b;
-                                }
-                                (va, ta)
-                            },
-                        );
-                    (Some(visible), Some(text_counts))
-                }
-            } else {
-                (None, None)
-            };
-
-            return Ok(FileLoadResult {
-                reader,
-                precomputed_visible,
-                precomputed_text_counts,
-            });
-        }
-
         // Phase 1: parallel pread + scan for '\n', '\x1b', '\r' in one pass.
         // Each worker fills its chunk via pread (parallel I/O) then scans it
         // while hot in cache — same parallelism as mmap page-faulting, but
         // without the SIGBUS risk. chunk_size is one slice per rayon thread
         // (min 4 MiB); bytes_done is a shared counter for progress updates.
         let num_threads = rayon::current_num_threads().max(1);
-        let chunk_size = len.div_ceil(num_threads).max(4 * 1024 * 1024);
+        let chunk_size = len.div_ceil(num_threads).clamp(64 * 1024, 4 * 1024 * 1024);
         let bytes_done = AtomicUsize::new(0);
 
         // Each element: (has_ansi, Vec<absolute next-line offsets for this chunk>)
@@ -1032,7 +1079,14 @@ impl FileReader {
                     let offset = (chunk_idx * chunk_size) as u64;
                     let mut filled = 0;
                     while filled < chunk.len() {
-                        match file.read_at(&mut chunk[filled..], offset + filled as u64) {
+                        if cancel.load(Ordering::Relaxed) {
+                            return Err(io::Error::new(
+                                io::ErrorKind::Interrupted,
+                                "load cancelled",
+                            ));
+                        }
+                        let end = (filled + 64 * 1024).min(chunk.len());
+                        match file.read_at(&mut chunk[filled..end], offset + filled as u64) {
                             Ok(0) => break, // EOF before expected — file shrank
                             Ok(n) => filled += n,
                             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -1091,13 +1145,76 @@ impl FileReader {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "load cancelled"));
         }
 
+        if is_any_dlt_binary(&file_data) {
+            let text = dlt_binary::convert_dlt_binary_to_text_controlled(&file_data, cancel)?;
+            drop(file_data);
+            let _ = progress_tx.send(1.0);
+            let mut reader = Self::from_bytes(text);
+            reader.is_binary = true;
+
+            let (precomputed_visible, precomputed_text_counts) = if let Some(pred) = predicate {
+                let count = reader.line_count();
+                let n = pred.fm.filter_count();
+                let has_include = pred.fm.has_include();
+                if tail {
+                    let mut text_counts = vec![0usize; n];
+                    let mut visible: Vec<usize> = (0..count)
+                        .rev()
+                        .filter(|&i| {
+                            pred.fm
+                                .evaluate_and_count(&reader.get_line(i), &mut text_counts)
+                                .to_visibility(has_include)
+                        })
+                        .collect();
+                    visible.reverse();
+                    (Some(visible), Some(text_counts))
+                } else {
+                    use rayon::prelude::*;
+                    let (visible, text_counts) = (0..count)
+                        .into_par_iter()
+                        .fold(
+                            || (Vec::new(), vec![0usize; n]),
+                            |(mut vis, mut tc), i| {
+                                let dec = pred.fm.evaluate_and_count(&reader.get_line(i), &mut tc);
+                                if dec.to_visibility(has_include) {
+                                    vis.push(i);
+                                }
+                                (vis, tc)
+                            },
+                        )
+                        .reduce(
+                            || (Vec::new(), vec![0usize; n]),
+                            |(mut va, mut ta), (vb, tb)| {
+                                va.extend(vb);
+                                for (a, b) in ta.iter_mut().zip(tb) {
+                                    *a += b;
+                                }
+                                (va, ta)
+                            },
+                        );
+                    (Some(visible), Some(text_counts))
+                }
+            } else {
+                (None, None)
+            };
+
+            return Ok(FileLoadResult {
+                reader,
+                precomputed_visible,
+                precomputed_text_counts,
+            });
+        }
+
         let has_ansi = chunk_results.iter().any(|(a, _)| *a);
 
         let reader = if has_ansi {
-            let (stripped, line_starts) = strip_ansi_and_index(&file_data);
+            let (stripped, line_starts) = strip_ansi_and_index_controlled(&file_data, cancel)?;
+            #[cfg(not(feature = "gui"))]
             drop(file_data);
             let _ = progress_tx.send(1.0);
             FileReader {
+                #[cfg(feature = "gui")]
+                raw_buffer: Some(Arc::new(RawBuffer::new(file_data))),
                 storage: Storage::Bytes(std::sync::Arc::new(stripped)),
                 line_starts: std::sync::Arc::new(line_starts),
                 is_binary: false,
@@ -1127,6 +1244,8 @@ impl FileReader {
             );
 
             FileReader {
+                #[cfg(feature = "gui")]
+                raw_buffer: None,
                 storage: Storage::File {
                     data: Arc::new(file_data),
                     file,
@@ -1309,6 +1428,72 @@ impl FileReader {
         LineBytes::Borrowed(&self.storage.as_bytes()[self.line_byte_range(idx)])
     }
 
+    /// Check normalized line emptiness from the index, without fetching a page.
+    pub fn line_is_empty(&self, idx: usize) -> bool {
+        if let Storage::Merged { entries, sources } = &self.storage {
+            let entry = &entries[idx];
+            return sources[entry.source_idx].line_is_empty(entry.line_idx);
+        }
+        self.line_byte_range(idx).is_empty()
+    }
+
+    #[cfg(feature = "gui")]
+    pub fn get_raw_line_prefix(&self, index: usize, limit: usize) -> (LineBytes<'_>, bool) {
+        if let Storage::Merged { entries, sources } = &self.storage {
+            let entry = &entries[index];
+            return sources[entry.source_idx].get_raw_line_prefix(entry.line_idx, limit);
+        }
+        if matches!(self.storage, Storage::Paged { .. }) {
+            let range = self.line_byte_range(index);
+            let truncated = range.len() > limit;
+            let end = range.start.saturating_add(limit).min(range.end);
+            return (
+                LineBytes::Owned(self.materialize_range(range.start..end)),
+                truncated,
+            );
+        }
+        let LineBytes::Borrowed(bytes) = self.get_raw_line(index) else {
+            unreachable!()
+        };
+        (
+            LineBytes::Borrowed(&bytes[..bytes.len().min(limit)]),
+            bytes.len() > limit,
+        )
+    }
+
+    /// Original text for GUI copying, without its terminating LF or CRLF.
+    /// Parsing and filtering continue to use the normalized `get_line` view.
+    #[cfg(feature = "gui")]
+    pub fn get_raw_line(&self, index: usize) -> LineBytes<'_> {
+        if let Storage::Merged { entries, sources } = &self.storage {
+            let entry = &entries[index];
+            return sources[entry.source_idx].get_raw_line(entry.line_idx);
+        }
+        if let Some(raw) = &self.raw_buffer {
+            return LineBytes::Borrowed(raw.line(index));
+        }
+        match self.get_line(index) {
+            LineBytes::Borrowed(bytes) => {
+                let bytes = bytes
+                    .strip_suffix(b"\r\n")
+                    .or_else(|| bytes.strip_suffix(b"\n"))
+                    .unwrap_or(bytes);
+                LineBytes::Borrowed(bytes)
+            }
+            LineBytes::Owned(bytes) => {
+                let clean = bytes
+                    .strip_suffix(b"\r\n")
+                    .or_else(|| bytes.strip_suffix(b"\n"))
+                    .unwrap_or(&bytes);
+                if clean.len() == bytes.len() {
+                    LineBytes::Owned(bytes)
+                } else {
+                    LineBytes::Owned(Arc::from(clean))
+                }
+            }
+        }
+    }
+
     /// Byte range of line `idx` within [`data()`] (without the trailing
     /// newline). Only meaningful for non-`Merged` storage — a `Merged`
     /// reader has no single flat buffer for `idx` to index into (see
@@ -1460,6 +1645,15 @@ impl FileReader {
             return;
         }
 
+        #[cfg(feature = "gui")]
+        if let Some(raw) = &mut self.raw_buffer {
+            let raw = Arc::make_mut(raw);
+            let offset = raw.data.len();
+            raw.data.extend_from_slice(effective_data);
+            raw.line_starts
+                .extend(memchr_iter(b'\n', effective_data).map(|pos| offset + pos + 1));
+        }
+
         let old_storage = std::mem::replace(
             &mut self.storage,
             Storage::Bytes(std::sync::Arc::new(Vec::new())),
@@ -1508,7 +1702,14 @@ impl FileReader {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .stdin(std::process::Stdio::null())
-            .spawn()?;
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("Cannot start executable {program:?}: {error}"),
+                )
+            })?;
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -1604,6 +1805,11 @@ impl FileReader {
 
             loop {
                 tokio::select! {
+                    _ = tx.closed() => {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        return;
+                    }
                     chunk = line_rx.recv() => {
                         match chunk {
                             Some((data, is_stderr)) => {
@@ -1636,6 +1842,7 @@ impl FileReader {
                                     let _ = f.flush();
                                 }
                                 let _ = tx.send(());
+                                let _ = child.wait().await;
                                 return;
                             }
                         }
@@ -1940,15 +2147,27 @@ fn strip_ansi_escapes(input: &[u8]) -> Vec<u8> {
 /// Returns `(stripped_bytes, line_starts)` where `line_starts[i]` is the byte
 /// offset of the first byte of line `i` in the returned `Vec<u8>`.
 fn strip_ansi_and_index(input: &[u8]) -> (Vec<u8>, Vec<usize>) {
+    strip_ansi_and_index_controlled(input, &AtomicBool::new(false))
+        .expect("uncanceled normalization")
+}
+
+fn strip_ansi_and_index_controlled(
+    input: &[u8],
+    cancel: &AtomicBool,
+) -> io::Result<(Vec<u8>, Vec<usize>)> {
     let mut out = Vec::with_capacity(input.len());
     let mut starts = vec![0usize];
     let mut i = 0;
 
     while i < input.len() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "load cancelled"));
+        }
         // Fast path: scan ahead for the next ESC or CR, bulk-copy everything before it.
-        let safe_end = memchr2(b'\x1b', b'\r', &input[i..])
+        let chunk_end = (i + 64 * 1024).min(input.len());
+        let safe_end = memchr2(b'\x1b', b'\r', &input[i..chunk_end])
             .map(|p| i + p)
-            .unwrap_or(input.len());
+            .unwrap_or(chunk_end);
 
         if safe_end > i {
             let segment = &input[i..safe_end];
@@ -1965,6 +2184,9 @@ fn strip_ansi_and_index(input: &[u8]) -> (Vec<u8>, Vec<usize>) {
             break;
         }
 
+        if i == chunk_end && !matches!(input[i], b'\x1b' | b'\r') {
+            continue;
+        }
         // Slow path: handle the control byte at `i`.
         match input[i] {
             b'\x1b' => {
@@ -1977,6 +2199,12 @@ fn strip_ansi_and_index(input: &[u8]) -> (Vec<u8>, Vec<usize>) {
                         // CSI: ESC [ {param/intermediate bytes} {final byte 0x40–0x7E}
                         i += 1;
                         while i < input.len() {
+                            if i % (64 * 1024) == 0 && cancel.load(Ordering::Relaxed) {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::Interrupted,
+                                    "load cancelled",
+                                ));
+                            }
                             let b = input[i];
                             i += 1;
                             if (0x40..=0x7E).contains(&b) {
@@ -1988,6 +2216,12 @@ fn strip_ansi_and_index(input: &[u8]) -> (Vec<u8>, Vec<usize>) {
                         // OSC: ESC ] … BEL  or  ESC ] … ESC \
                         i += 1;
                         while i < input.len() {
+                            if i % (64 * 1024) == 0 && cancel.load(Ordering::Relaxed) {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::Interrupted,
+                                    "load cancelled",
+                                ));
+                            }
                             let b = input[i];
                             i += 1;
                             if b == b'\x07' {
@@ -2011,7 +2245,7 @@ fn strip_ansi_and_index(input: &[u8]) -> (Vec<u8>, Vec<usize>) {
         }
     }
 
-    (out, starts)
+    Ok((out, starts))
 }
 
 /// Computes the byte offsets of the start of every line in `data`.
@@ -2040,6 +2274,42 @@ mod tests {
 
     fn make(content: &[u8]) -> FileReader {
         FileReader::from_bytes(content.to_vec())
+    }
+
+    #[test]
+    fn indexed_emptiness_matches_line_bytes_for_all_storage_kinds() {
+        for content in [
+            b"".as_slice(),
+            b"\ntext\n\n \nlast",
+            b"text\n\n",
+            b"\r\n\x1b[31m\x1b[0m\nend\r\n",
+        ] {
+            let reader = make(content);
+            for idx in 0..reader.line_count() {
+                assert_eq!(reader.line_is_empty(idx), reader.get_line(idx).is_empty());
+            }
+        }
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(b"\ntext\n\n \nlast").unwrap();
+        let canonical = Arc::new(file.path().canonicalize().unwrap());
+        let paged = FileReader::try_new_paged(file.path().to_str().unwrap(), canonical)
+            .unwrap()
+            .unwrap();
+        assert!(paged.is_paged());
+        let entries = (0..paged.line_count())
+            .rev()
+            .map(|line_idx| MergedEntry {
+                source_idx: 0,
+                line_idx,
+                sort_key: [0; 23],
+            })
+            .collect();
+        let merged = FileReader::from_merged(Arc::new(entries), Arc::new(vec![paged.clone()]));
+        for reader in [&paged, &merged] {
+            for idx in 0..reader.line_count() {
+                assert_eq!(reader.line_is_empty(idx), reader.get_line(idx).is_empty());
+            }
+        }
     }
 
     #[test]
@@ -2891,6 +3161,7 @@ mod tests {
     /// byte-identical to the same filter run against a fully-resident
     /// reader over the same content.
     #[tokio::test]
+    #[cfg(feature = "tui")]
     async fn test_run_headless_wholefile_paged_matches_non_paged_across_chunks() {
         use crate::db::{Database, LogManager};
         use crate::filters::{FilterOptions, FilterType};
@@ -3052,6 +3323,18 @@ mod tests {
         assert_eq!(collected.len(), 1);
         assert_eq!(collected[0].0, 0);
         assert_eq!(collected[0].1, b"only".as_ref());
+    }
+
+    #[tokio::test]
+    async fn test_spawn_process_stream_missing_executable_names_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("missing-executable");
+        let program = program.to_str().unwrap();
+        let error = FileReader::spawn_process_stream(program, &[], false)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().contains(program));
     }
 
     #[tokio::test]
@@ -3676,6 +3959,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn background_load_decodes_dlt_after_reading_source_bytes() {
+        let data = make_dlt_binary_data(3);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), &data).unwrap();
+        let handle = FileReader::load(
+            file.path().to_string_lossy().into_owned(),
+            None,
+            false,
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .await
+        .unwrap();
+        let reader = handle.result_rx.await.unwrap().unwrap().reader;
+        assert!(reader.is_binary);
+        assert_eq!(reader.line_count(), 3);
+    }
+
+    #[tokio::test]
     async fn test_from_file_head_with_dlt_binary() {
         let dlt_data = make_dlt_binary_data(5);
         let mut f = NamedTempFile::new().unwrap();
@@ -3702,5 +4004,55 @@ mod tests {
         let more_data = make_dlt_binary_data(1);
         reader.append_bytes(&more_data);
         assert_eq!(reader.line_count(), 3);
+    }
+}
+
+#[cfg(test)]
+mod interactive_load_tests {
+    use super::*;
+    #[tokio::test]
+    async fn multi_gigabyte_paged_index_cancels_after_progress() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(2 * 1024 * 1024 * 1024).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut handle = FileReader::load(
+            file.path().to_string_lossy().into_owned(),
+            None,
+            false,
+            cancel.clone(),
+            false,
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            handle.progress_rx.changed(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(*handle.progress_rx.borrow() > 0.);
+        cancel.store(true, Ordering::Relaxed);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle.result_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.err().unwrap().kind(), io::ErrorKind::Interrupted);
+    }
+    #[test]
+    fn normalization_cancellation_does_not_return_a_partial_reader() {
+        let cancel = AtomicBool::new(true);
+        assert_eq!(
+            strip_ansi_and_index_controlled(b"\x1b[31mhello\n", &cancel)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert_eq!(
+            dlt_binary::convert_dlt_binary_to_text_controlled(b"DLT\x01", &cancel)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
     }
 }

@@ -2,10 +2,10 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use logana::filters::{FilterDecision, FilterManager, MatchCollector, build_filter, render_line};
 use logana::ingestion::file_reader::FileReader;
 use logana::parser::detect_format;
+use logana::style::Style;
 use logana::theme::ValueColors;
 use logana::ui::VisibleLines;
 use logana::value_colors::collect_value_color_spans;
-use ratatui::style::Style;
 use std::hint::black_box;
 
 fn json_log_bytes(lines: usize) -> Vec<u8> {

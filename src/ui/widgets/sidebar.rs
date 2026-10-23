@@ -1,10 +1,12 @@
+#[cfg(test)]
+use crate::style::Color;
+use crate::style::{Modifier, Style};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 
-use crate::commands::auto_complete::regex_search_match;
-use crate::filters::{FilterDef, FilterType, GroupDef};
+use crate::filters::{FilterDef, GroupDef};
 use crate::theme::Theme;
 use crate::ui::field_layout::line_row_count;
 
@@ -53,120 +55,10 @@ pub struct Sidebar<'a> {
     pub theme: &'a Theme,
 }
 
-/// Splits a filter row into `(prefix, group_tag, value, suffix)`, where
-/// `value` is the filter's pattern text (the part the filter's color
-/// highlight should apply to), `group_tag` is the `[name] ` tag (styled with
-/// the group's own predefined color, if any — kept separate from `prefix` so
-/// it can be colored independently), and `prefix`/`suffix` are the remaining
-/// metadata (checkbox, type, field tag, match count).
-fn filter_row_parts(
-    filter: &FilterDef,
-    idx: usize,
-    selected: usize,
-    match_counts: &[usize],
-) -> (String, String, String, String) {
-    let status = if filter.enabled { "[x]" } else { "[ ]" };
-    let selected_prefix = if idx == selected { ">" } else { " " };
-    let is_date = filter.pattern.starts_with(crate::filters::DATE_PREFIX);
-    let is_field = filter.pattern.starts_with(crate::filters::FIELD_PREFIX);
-    let filter_type_str = if is_date {
-        "Date"
-    } else {
-        match filter.filter_type {
-            FilterType::Include => "In",
-            FilterType::Exclude => "Out",
-            FilterType::Highlight => "H",
-        }
-    };
-    let (display_pattern, field_tag) = if is_date {
-        (
-            filter.pattern[crate::filters::DATE_PREFIX.len()..].to_string(),
-            "",
-        )
-    } else if is_field {
-        let expr = &filter.pattern[crate::filters::FIELD_PREFIX.len()..];
-        let value = match crate::filters::parse_field_filter_expr(expr) {
-            Ok((conditions, text)) => {
-                let mut parts: Vec<String> =
-                    conditions.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                if let Some(t) = text {
-                    parts.push(t);
-                }
-                parts.join(", ")
-            }
-            Err(_) => expr.to_string(),
-        };
-        (value, " [field]")
-    } else {
-        (filter.pattern.clone(), "")
-    };
-    let group_tag = filter
-        .group
-        .as_deref()
-        .map(|g| format!("[{g}] "))
-        .unwrap_or_default();
-    let ignore_case_tag = if filter.ignore_case { " [i]" } else { "" };
-    let count_str = if filter.enabled {
-        let count = match_counts.get(idx).copied().unwrap_or(0);
-        format!(" ({})", count)
-    } else {
-        String::new()
-    };
-    let prefix = format!("{}{} {}: ", selected_prefix, status, filter_type_str);
-    let suffix = format!("{}{}{}", field_tag, ignore_case_tag, count_str);
-    (prefix, group_tag, display_pattern, suffix)
-}
-
-/// Returns the plain display text for a filter row (no styling).
-/// Used both for rendering and for hit-testing wrapped sidebar rows.
-pub fn filter_row_display_text(
-    filter: &FilterDef,
-    idx: usize,
-    selected: usize,
-    match_counts: &[usize],
-) -> String {
-    let (prefix, group_tag, value, suffix) = filter_row_parts(filter, idx, selected, match_counts);
-    format!("{prefix}{group_tag}{value}{suffix}")
-}
-
-/// Indices (into `filters`) of entries whose rendered row text matches the
-/// `search` regex, in original list order. Empty `search` means "everything
-/// matches" — used both to narrow what the sidebar shows while searching,
-/// and by `FilterManagementMode` to interpret navigation keys against the
-/// same narrowed list while searching.
-pub fn narrowed_filter_indices(
-    filters: &[FilterDef],
-    match_counts: &[usize],
-    search: &str,
-) -> Vec<usize> {
-    if search.is_empty() {
-        return (0..filters.len()).collect();
-    }
-    filters
-        .iter()
-        .enumerate()
-        .filter(|(idx, filter)| {
-            let text = filter_row_display_text(filter, *idx, *idx, match_counts);
-            regex_search_match(search, &text)
-        })
-        .map(|(idx, _)| idx)
-        .collect()
-}
-
-/// Names (from `group_names`) matching the `search` regex, in original list
-/// order. Empty `search` means "everything matches" — `GroupManagementMode`'s
-/// counterpart to `narrowed_filter_indices`, returning names directly since
-/// groups are selected by name rather than index.
-pub fn narrowed_group_names(group_names: &[String], search: &str) -> Vec<String> {
-    if search.is_empty() {
-        return group_names.to_vec();
-    }
-    group_names
-        .iter()
-        .filter(|name| regex_search_match(search, name))
-        .cloned()
-        .collect()
-}
+use crate::shared::sidebar::filter_row_parts;
+pub use crate::shared::sidebar::{
+    filter_row_display_text, narrowed_filter_indices, narrowed_group_names,
+};
 
 fn build_filter_row(
     filter: &FilterDef,
@@ -899,7 +791,12 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("type to search"))
             .expect("placeholder span should be present while searching with an empty query");
-        assert!(placeholder_span.style.add_modifier.contains(Modifier::DIM));
+        assert!(
+            placeholder_span
+                .style
+                .add_modifier
+                .contains((Modifier::DIM).into())
+        );
     }
 
     #[test]
@@ -911,7 +808,12 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("/err"))
             .expect("query span should be present while searching with a non-empty query");
-        assert!(!query_span.style.add_modifier.contains(Modifier::DIM));
+        assert!(
+            !query_span
+                .style
+                .add_modifier
+                .contains((Modifier::DIM).into())
+        );
     }
 
     #[test]
@@ -943,7 +845,7 @@ mod tests {
         let theme = Theme::default();
         let mut filter = make_filter("hello", true, FilterType::Include);
         filter.color_config = Some(ColorConfig {
-            fg: Some(ratatui::style::Color::Red),
+            fg: Some(crate::style::Color::Red),
             bg: None,
             match_only: true,
         });
@@ -954,12 +856,12 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == "hello")
             .expect("value span present");
-        assert_eq!(value_span.style.fg, Some(ratatui::style::Color::Red));
+        assert_eq!(value_span.style.fg, Some(crate::style::Color::Red.into()));
 
         for span in line.spans.iter().filter(|s| s.content.as_ref() != "hello") {
             assert_ne!(
                 span.style.fg,
-                Some(ratatui::style::Color::Red),
+                Some(crate::style::Color::Red.into()),
                 "non-value span should not be colored: {:?}",
                 span.content
             );
@@ -975,7 +877,7 @@ mod tests {
         let groups = vec![GroupDef {
             name: "errs".to_string(),
             color_config: Some(ColorConfig {
-                fg: Some(ratatui::style::Color::Red),
+                fg: Some(crate::style::Color::Red),
                 bg: None,
                 match_only: true,
             }),
@@ -988,7 +890,7 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == "hello")
             .expect("value span present");
-        assert_eq!(value_span.style.fg, Some(ratatui::style::Color::Red));
+        assert_eq!(value_span.style.fg, Some(crate::style::Color::Red.into()));
     }
 
     #[test]
@@ -999,14 +901,14 @@ mod tests {
         filter.group = Some("errs".to_string());
         filter.color_config = Some(ColorConfig {
             fg: None,
-            bg: Some(ratatui::style::Color::Green),
+            bg: Some(crate::style::Color::Green),
             match_only: true,
         });
         let groups = vec![GroupDef {
             name: "errs".to_string(),
             color_config: Some(ColorConfig {
-                fg: Some(ratatui::style::Color::Red),
-                bg: Some(ratatui::style::Color::Black),
+                fg: Some(crate::style::Color::Red),
+                bg: Some(crate::style::Color::Black),
                 match_only: true,
             }),
             ..Default::default()
@@ -1020,8 +922,8 @@ mod tests {
             .expect("value span present");
         // Filter's own (partial) color_config wins outright — no merge with
         // the group's fg, even though the filter didn't set its own fg.
-        assert_eq!(value_span.style.bg, Some(ratatui::style::Color::Green));
-        assert_ne!(value_span.style.fg, Some(ratatui::style::Color::Red));
+        assert_eq!(value_span.style.bg, Some(crate::style::Color::Green.into()));
+        assert_ne!(value_span.style.fg, Some(crate::style::Color::Red.into()));
     }
 
     #[test]
@@ -1033,8 +935,8 @@ mod tests {
         let groups = vec![GroupDef {
             name: "errs".to_string(),
             color_config: Some(ColorConfig {
-                fg: Some(ratatui::style::Color::Red),
-                bg: Some(ratatui::style::Color::Black),
+                fg: Some(crate::style::Color::Red),
+                bg: Some(crate::style::Color::Black),
                 match_only: true,
             }),
             ..Default::default()
@@ -1046,8 +948,14 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == "[errs] ")
             .expect("group tag span present");
-        assert_eq!(group_tag_span.style.fg, Some(ratatui::style::Color::Red));
-        assert_eq!(group_tag_span.style.bg, Some(ratatui::style::Color::Black));
+        assert_eq!(
+            group_tag_span.style.fg,
+            Some(crate::style::Color::Red.into())
+        );
+        assert_eq!(
+            group_tag_span.style.bg,
+            Some(crate::style::Color::Black.into())
+        );
     }
 
     #[test]
@@ -1057,14 +965,14 @@ mod tests {
         let mut filter = make_filter("hello", true, FilterType::Include);
         filter.group = Some("errs".to_string());
         filter.color_config = Some(ColorConfig {
-            fg: Some(ratatui::style::Color::Green),
+            fg: Some(crate::style::Color::Green),
             bg: None,
             match_only: true,
         });
         let groups = vec![GroupDef {
             name: "errs".to_string(),
             color_config: Some(ColorConfig {
-                fg: Some(ratatui::style::Color::Red),
+                fg: Some(crate::style::Color::Red),
                 bg: None,
                 match_only: true,
             }),
@@ -1079,14 +987,17 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == "[errs] ")
             .expect("group tag span present");
-        assert_eq!(group_tag_span.style.fg, Some(ratatui::style::Color::Red));
+        assert_eq!(
+            group_tag_span.style.fg,
+            Some(crate::style::Color::Red.into())
+        );
 
         let value_span = line
             .spans
             .iter()
             .find(|s| s.content.as_ref() == "hello")
             .expect("value span present");
-        assert_eq!(value_span.style.fg, Some(ratatui::style::Color::Green));
+        assert_eq!(value_span.style.fg, Some(crate::style::Color::Green.into()));
     }
 
     #[test]
@@ -1101,7 +1012,7 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == "[errs] ")
             .expect("group tag span present");
-        assert_eq!(group_tag_span.style.fg, Some(theme.text));
+        assert_eq!(group_tag_span.style.fg, Some(theme.text.into()));
         assert_eq!(group_tag_span.style.bg, None);
     }
 
@@ -1112,12 +1023,14 @@ mod tests {
         let selected_line = build_filter_row(&filter, 0, 0, &[3], &theme, &[]);
         for span in &selected_line.spans {
             assert!(
-                span.style.add_modifier.contains(Modifier::BOLD),
+                span.style.add_modifier.contains((Modifier::BOLD).into()),
                 "selected row span {:?} should be bold",
                 span.content
             );
             assert!(
-                span.style.add_modifier.contains(Modifier::UNDERLINED),
+                span.style
+                    .add_modifier
+                    .contains((Modifier::UNDERLINED).into()),
                 "selected row span {:?} should be underlined",
                 span.content
             );
@@ -1126,12 +1039,15 @@ mod tests {
         let unselected_line = build_filter_row(&filter, 1, 0, &[3], &theme, &[]);
         for span in &unselected_line.spans {
             assert!(
-                !span.style.add_modifier.contains(Modifier::BOLD),
+                !span.style.add_modifier.contains((Modifier::BOLD).into()),
                 "unselected row span {:?} should not be bold",
                 span.content
             );
             assert!(
-                !span.style.add_modifier.contains(Modifier::UNDERLINED),
+                !span
+                    .style
+                    .add_modifier
+                    .contains((Modifier::UNDERLINED).into()),
                 "unselected row span {:?} should not be underlined",
                 span.content
             );
@@ -1472,21 +1388,24 @@ mod tests {
         let groups = vec![GroupDef {
             name: "net".to_string(),
             color_config: Some(ColorConfig {
-                fg: Some(ratatui::style::Color::Red),
+                fg: Some(crate::style::Color::Red),
                 bg: None,
                 match_only: true,
             }),
             ..Default::default()
         }];
         let line = build_group_row("net", &[], &groups, false, &theme);
-        assert_eq!(line.spans[1].style.fg, Some(ratatui::style::Color::Red));
+        assert_eq!(
+            line.spans[1].style.fg,
+            Some(crate::style::Color::Red.into())
+        );
     }
 
     #[test]
     fn test_build_group_row_no_style_uses_theme_default() {
         let theme = Theme::default();
         let line = build_group_row("net", &[], &[], false, &theme);
-        assert_eq!(line.spans[1].style.fg, Some(theme.text));
+        assert_eq!(line.spans[1].style.fg, Some(theme.text.into()));
     }
 
     #[test]
@@ -1497,14 +1416,14 @@ mod tests {
             selected.spans[0]
                 .style
                 .add_modifier
-                .contains(Modifier::BOLD | Modifier::UNDERLINED)
+                .contains((Modifier::BOLD | Modifier::UNDERLINED).into())
         );
         let unselected = build_group_row("net", &[], &[], false, &theme);
         assert!(
             !unselected.spans[0]
                 .style
                 .add_modifier
-                .contains(Modifier::BOLD)
+                .contains((Modifier::BOLD).into())
         );
     }
 
@@ -1647,7 +1566,12 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("type to search"))
             .expect("placeholder span should be present while searching with an empty query");
-        assert!(placeholder_span.style.add_modifier.contains(Modifier::DIM));
+        assert!(
+            placeholder_span
+                .style
+                .add_modifier
+                .contains((Modifier::DIM).into())
+        );
     }
 
     #[test]
@@ -1839,11 +1763,11 @@ mod tests {
             panic!("{needle:?} row must render");
         };
         assert!(
-            find_cell_style("sys").contains(Modifier::BOLD),
+            find_cell_style("sys").contains((Modifier::BOLD).into()),
             "selected group row should be bold"
         );
         assert!(
-            !find_cell_style("net").contains(Modifier::BOLD),
+            !find_cell_style("net").contains((Modifier::BOLD).into()),
             "unselected group row should not be bold"
         );
     }

@@ -252,7 +252,7 @@ async fn apply_inline_filters(
         {
             let pattern = pattern.join(" ");
             let stored = if !field.is_empty() {
-                crate::ui::build_field_filter_pattern(&field, &pattern)
+                crate::shared::command_helpers::build_field_filter_pattern(&field, &pattern)
                     .map_err(|e| anyhow::anyhow!(e))?
             } else {
                 pattern
@@ -287,7 +287,7 @@ async fn apply_inline_filters(
         {
             let pattern = pattern.join(" ");
             let stored = if !field.is_empty() {
-                crate::ui::build_field_filter_pattern(&field, &pattern)
+                crate::shared::command_helpers::build_field_filter_pattern(&field, &pattern)
                     .map_err(|e| anyhow::anyhow!(e))?
             } else {
                 pattern
@@ -548,9 +548,9 @@ pub fn run_headless_to_writer(
                                 && synthetic_level
                                 && let Some(p) = parts.as_ref()
                             {
-                                let display = crate::ui::field_layout::apply_field_layout(
+                                let display = crate::shared::field_layout::apply_field_layout(
                                     p,
-                                    &crate::ui::FieldLayout::default(),
+                                    &crate::shared::FieldLayout::default(),
                                     &std::collections::HashSet::new(),
                                     false,
                                     None,
@@ -561,7 +561,7 @@ pub fn run_headless_to_writer(
                                     text_dec = dec;
                                 }
                             }
-                            let mut ctx = crate::ui::FilterEvalContext::new(
+                            let mut ctx = crate::shared::FilterEvalContext::new(
                                 has_text_includes,
                                 &date_filters,
                                 &mut dc,
@@ -569,8 +569,12 @@ pub fn run_headless_to_writer(
                                 &exc_ff,
                                 None,
                             );
-                            if crate::ui::line_is_visible(text_dec, &mut ctx, parts.as_ref(), line)
-                            {
+                            if crate::shared::line_is_visible(
+                                text_dec,
+                                &mut ctx,
+                                parts.as_ref(),
+                                line,
+                            ) {
                                 vis.push(idx);
                             }
                         }

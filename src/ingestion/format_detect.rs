@@ -3,11 +3,11 @@ use std::sync::Arc;
 use crate::filters::system_time_to_date;
 use crate::ingestion::FileReader;
 use crate::parser::{LogFormatParser, detect_format};
-use crate::ui::{YearMap, build_continuation_map};
+use crate::shared::{YearMap, build_continuation_map};
 
 /// A source's detected format plus the derived structures ([`YearMap`],
 /// continuation map) needed to merge-sort it against other sources —
-/// everything [`crate::ui::TabState::detect_and_apply_format`] computes,
+/// everything [`crate::shared::TabState::detect_and_apply_format`] computes,
 /// minus the tab-only side effects (default hidden fields, notifications)
 /// that don't apply to a source that's about to be merged rather than
 /// opened on its own.

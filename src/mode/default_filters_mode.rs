@@ -1,14 +1,20 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
+use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
 use crate::{
     commands::auto_complete::{complete_file_path, fuzzy_match, schema_completion_names},
-    config::Keybindings,
-    mode::app_mode::{Mode, ModeRenderState, status_entry},
+    mode::app_mode::{Mode, ModeRenderState},
     mode::normal_mode::NormalMode,
-    theme::Theme,
-    ui::{KeyResult, TabState},
+    shared::{KeyResult, TabState},
 };
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 use std::collections::HashMap;
 
@@ -295,6 +301,7 @@ impl Mode for DefaultFiltersMode {
         }
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, _kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let title_style = Style::default()
             .fg(theme.text_highlight_fg)
@@ -720,6 +727,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "tui")]
     async fn test_mode_bar_content_list_state() {
         let mode = sample_mode();
         let kb = Keybindings::default();
@@ -730,6 +738,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "tui")]
     async fn test_mode_bar_content_edit_state() {
         let mut mode = sample_mode();
         mode.editing = Some(PathEditState {

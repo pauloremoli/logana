@@ -531,6 +531,7 @@ struct ListingState {
     entry_count: usize,
     cached_bytes_used: u64,
     limits: ListLimits,
+    control: Option<super::archive_job::Control>,
 }
 
 impl ListingState {
@@ -539,6 +540,7 @@ impl ListingState {
             entry_count: 0,
             cached_bytes_used: 0,
             limits,
+            control: None,
         }
     }
 
@@ -557,6 +559,25 @@ impl ListingState {
         self.cached_bytes_used += len;
         Some(Arc::new(bytes))
     }
+}
+
+/// GUI listing keeps entry content on disk and expands nested archives on demand.
+pub fn list_archive_tree_controlled(
+    path: &str,
+    control: super::archive_job::Control,
+) -> Result<ArchiveTree, String> {
+    control.check().map_err(|e| e.to_string())?;
+    let archive_type = detect_archive_type(path).ok_or("Unsupported archive")?;
+    let mut nodes = Vec::new();
+    let mut state = ListingState::new(ListLimits {
+        max_cached_bytes: 0,
+        auto_expand_depth: 0,
+        ..ListLimits::default()
+    });
+    state.control = Some(control.clone());
+    let roots = list_top_level(path, &archive_type, None, 0, &mut nodes, &mut state)?;
+    control.check().map_err(|e| e.to_string())?;
+    Ok(ArchiveTree { nodes, roots })
 }
 
 pub fn list_archive_tree(path: &str) -> Result<ArchiveTree, String> {
@@ -617,6 +638,9 @@ fn list_directory_entries(
     let mut children = Vec::new();
 
     for subdir_path in subdirs {
+        if let Some(control) = &state.control {
+            control.check().map_err(|e| e.to_string())?;
+        }
         if state.entry_budget_exhausted() {
             children.push(push_truncated_marker(parent, depth, nodes));
             break;
@@ -641,6 +665,9 @@ fn list_directory_entries(
     }
 
     for file_path in files {
+        if let Some(control) = &state.control {
+            control.check().map_err(|e| e.to_string())?;
+        }
         if state.entry_budget_exhausted() {
             children.push(push_truncated_marker(parent, depth, nodes));
             break;
@@ -808,9 +835,13 @@ fn list_zip_entries<R: Read + Seek>(
     nodes: &mut Vec<ArchiveNode>,
     state: &mut ListingState,
 ) -> Result<Vec<NodeId>, String> {
+    let reader = super::archive_job::CheckedReader::new(reader, state.control.clone());
     let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
     let mut children = Vec::new();
     for i in 0..archive.len() {
+        if let Some(control) = &state.control {
+            control.check().map_err(|e| e.to_string())?;
+        }
         if state.entry_budget_exhausted() {
             children.push(push_truncated_marker(parent, depth, nodes));
             break;
@@ -900,10 +931,14 @@ fn list_tar_entries<R: Read>(
     state: &mut ListingState,
     should_cache: bool,
 ) -> Result<Vec<NodeId>, String> {
+    let reader = super::archive_job::CheckedReader::new(reader, state.control.clone());
     let mut archive = tar::Archive::new(reader);
     let mut children = Vec::new();
     let entries = archive.entries().map_err(|e| e.to_string())?;
     for entry in entries {
+        if let Some(control) = &state.control {
+            control.check().map_err(|e| e.to_string())?;
+        }
         if state.entry_budget_exhausted() {
             children.push(push_truncated_marker(parent, depth, nodes));
             break;
@@ -958,14 +993,18 @@ fn list_tar_entries<R: Read>(
             // Cached (budget permitting) so expand needn't re-decompress.
             Some(nested_type) => {
                 let mut buf = Vec::new();
-                let read_result = entry.read_to_end(&mut buf).map_err(|e| e.to_string());
+                let read_result = if state.limits.max_cached_bytes == 0 {
+                    Ok(0)
+                } else {
+                    entry.read_to_end(&mut buf).map_err(|e| e.to_string())
+                };
                 let id = nodes.len();
                 state.entry_count += 1;
                 match read_result {
                     Ok(_) => {
                         let mut node =
                             lazy_container_node(id, parent, name, full_path, depth, nested_type);
-                        if should_cache {
+                        if should_cache && state.limits.max_cached_bytes > 0 {
                             node.cached_bytes = state.cache_bytes(buf);
                         }
                         nodes.push(node);
@@ -978,7 +1017,7 @@ fn list_tar_entries<R: Read>(
                 let id = nodes.len();
                 state.entry_count += 1;
                 let mut node = file_node(id, parent, name, full_path, depth, false);
-                if should_cache {
+                if should_cache && state.limits.max_cached_bytes > 0 {
                     let mut buf = Vec::new();
                     if entry.read_to_end(&mut buf).is_ok() {
                         node.cached_bytes = state.cache_bytes(buf);

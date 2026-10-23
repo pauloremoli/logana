@@ -132,11 +132,35 @@ pub fn extract_field_partial(input: &str) -> Option<FieldCompletion> {
         return None;
     }
 
-    // Look for `--field` / `-f` token in the input
-    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-    let field_pos = tokens.iter().position(|&t| t == "--field" || t == "-f")?;
-
-    // The token immediately after `--field` is the pattern being typed
+    // Keep quoted arguments intact, including an unfinished quoted value.
+    let mut ranges = Vec::new();
+    let mut start = None;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, ch) in trimmed.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && quoted {
+            escaped = true;
+        }
+        if ch == '"' {
+            quoted = !quoted;
+        }
+        if ch.is_whitespace() && !quoted {
+            if let Some(start) = start.take() {
+                ranges.push(&trimmed[start..index]);
+            }
+        } else if start.is_none() {
+            start = Some(index);
+        }
+    }
+    if let Some(start) = start {
+        ranges.push(&trimmed[start..]);
+    }
+    let tokens = ranges;
+    let field_pos = tokens.iter().rposition(|&t| t == "--field" || t == "-f")?;
     let after_field = tokens.get(field_pos + 1);
 
     match after_field {

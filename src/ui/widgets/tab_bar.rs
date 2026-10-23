@@ -1,4 +1,5 @@
-use ratatui::{prelude::*, style::Modifier};
+use crate::style::{Modifier, Style};
+use ratatui::prelude::*;
 
 use crate::theme::Theme;
 

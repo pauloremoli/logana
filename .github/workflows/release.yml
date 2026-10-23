@@ -45,8 +45,12 @@ on:
       - '**[0-9]+.[0-9]+.[0-9]+*'
 
 jobs:
+  validate:
+    uses: ./.github/workflows/rust.yml
+
   # Run 'dist plan' (or host) to determine what tasks we need to do
   plan:
+    needs: validate
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
@@ -196,6 +200,7 @@ jobs:
         shell: bash
         run: |
           dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
+          python3 scripts/prepare-desktop-installers.py
           echo "dist ran successfully"
 
           # Parse out what we just built and upload it to scratch storage
@@ -211,14 +216,63 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+  # Native builds let cargo-deb resolve runtime dependencies for each architecture.
+  build-debian-packages:
+    needs: plan
+    if: ${{ needs.plan.outputs.publishing == 'true' || github.event_name == 'pull_request' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        package: [logana, logana-gui, logana-full]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: deb-${{ matrix.package }}
+      - name: Install packaging and build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev libfontconfig1-dev libwayland-dev libxkbcommon-x11-dev libvulkan-dev libssl-dev libclang-dev liblzma-dev
+          cargo install cargo-deb --version 3.8.0 --locked
+      - name: Build Debian package
+        run: cargo deb -p ${{ matrix.package }} --locked --strip
+      - name: Verify package installation
+        run: |
+          dpkg-deb --info target/debian/*.deb
+          dpkg-deb --contents target/debian/*.deb
+          sudo apt-get install -y ./target/debian/*.deb
+          if [ "${{ matrix.package }}" != "logana-gui" ]; then
+            logana --version
+          fi
+          if [ "${{ matrix.package }}" != "logana" ]; then
+            test -x /usr/bin/logana-gui
+            test -f /usr/share/applications/logana.desktop
+            test -f /usr/share/icons/hicolor/256x256/apps/logana.png
+          fi
+      - name: Checksum package
+        run: |
+          cd target/debian
+          sha256sum *.deb > "${{ matrix.package }}-${{ matrix.runner }}.deb.sha256"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: artifacts-debian-${{ matrix.package }}-${{ matrix.runner }}
+          path: target/debian/*
+          if-no-files-found: error
+
   # Determines if we should publish/announce
   host:
     needs:
+      - build-debian-packages
       - plan
       - build-local-artifacts
       - build-global-artifacts
     # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    if: ${{ always() && needs.build-debian-packages.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"
@@ -324,33 +378,15 @@ jobs:
           done
           git push
 
-  publish-cargo:
-    needs:
-      - plan
-      - host
-    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
-    runs-on: "ubuntu-22.04"
-    env:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Publish to crates.io
-        run: cargo publish --no-verify --allow-dirty
-
   announce:
     needs:
       - plan
       - host
       - publish-homebrew-formula
-      - publish-cargo
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' && (needs.publish-homebrew-formula.result == 'skipped' || needs.publish-homebrew-formula.result == 'success') && (needs.publish-cargo.result == 'skipped' || needs.publish-cargo.result == 'success') }}
+    if: ${{ always() && needs.host.result == 'success' && (needs.publish-homebrew-formula.result == 'skipped' || needs.publish-homebrew-formula.result == 'success') }}
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

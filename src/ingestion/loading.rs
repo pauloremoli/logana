@@ -1,3 +1,4 @@
+use crate::ui::App;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -9,8 +10,8 @@ use crate::ingestion::{FileReader, VisibilityPredicate};
 use crate::mode::app_mode::ConfirmRestoreMode;
 use crate::mode::normal_mode::NormalMode;
 
-use crate::ui::{
-    App, ConnectFn, FileLoadState, LoadContext, StreamRetryState, TabId, TabState, VisibleLines,
+use crate::shared::{
+    ConnectFn, FileLoadState, LoadContext, StreamRetryState, TabId, TabState, VisibleLines,
     dlt_connect_fn, docker_connect_fn, otlp_connect_fn, otlp_grpc_connect_fn,
     watch_state_from_connection, watch_state_from_file,
 };
@@ -167,7 +168,7 @@ impl App {
         &mut self,
         title: String,
         source_label: String,
-        connection: std::io::Result<crate::ui::StreamConnection>,
+        connection: std::io::Result<crate::shared::StreamConnection>,
         connect_fn: ConnectFn,
     ) {
         let file_reader = FileReader::from_bytes(vec![]);
@@ -613,7 +614,7 @@ impl App {
     pub async fn begin_stdin_load(&mut self) {
         let (snapshot_rx, temp_file) = FileReader::stream_stdin().await;
         let temp_path = temp_file.path().to_owned();
-        self.stdin_load_state = Some(crate::ui::StdinLoadState {
+        self.stdin_load_state = Some(crate::shared::StdinLoadState {
             snapshot_rx,
             temp_path,
             temp_file,
@@ -688,13 +689,13 @@ impl App {
             });
             let selected_files =
                 crate::ingestion::extract_selected(&source_path, &out_dir, &tree, progress_tx);
-            let _ = result_tx.send(crate::ui::ArchivePickerApplyResult {
+            let _ = result_tx.send(crate::shared::ArchivePickerApplyResult {
                 selected_files,
                 merge_result,
             });
         });
 
-        self.pending_archive = Some(crate::ui::ArchiveExtractionState {
+        self.pending_archive = Some(crate::shared::ArchiveExtractionState {
             source_tab_id,
             progress_rx,
             result_rx,
@@ -916,7 +917,7 @@ impl App {
             let _ = result_tx.send(result);
         });
 
-        self.pending_archive_listing = Some(crate::ui::ArchiveListingState {
+        self.pending_archive_listing = Some(crate::shared::ArchiveListingState {
             source_path: path.to_string(),
             out_dir,
             result_rx,
@@ -991,7 +992,8 @@ impl App {
             let _ = result_tx.send(result);
         });
 
-        self.pending_archive_expand = Some(crate::ui::ArchiveExpandState { node_id, result_rx });
+        self.pending_archive_expand =
+            Some(crate::shared::ArchiveExpandState { node_id, result_rx });
     }
 
     /// Poll the pending archive node expand each frame. When the background
@@ -1190,7 +1192,7 @@ impl App {
                     self.tabs[0].invalidate_parse_cache();
                     if let Some(text_counts) = result.precomputed_text_counts {
                         let all_filter_defs = self.tabs[0].log_manager.get_filters().to_vec();
-                        self.tabs[0].filter.match_counts = crate::ui::merge_filter_counts(
+                        self.tabs[0].filter.match_counts = crate::shared::merge_filter_counts(
                             &all_filter_defs,
                             &text_counts,
                             &[],
@@ -1355,7 +1357,7 @@ impl App {
 
     /// For each merged tab, check if any source tab has grown and extend the merged index.
     pub(crate) fn advance_merged_tabs(&mut self) {
-        use crate::ui::extend_merged_index;
+        use crate::shared::extend_merged_index;
 
         let n = self.tabs.len();
         for mi in 0..n {
@@ -1524,7 +1526,7 @@ impl App {
                 Ok(Ok(conn)) => {
                     tab.file_reader = crate::ingestion::FileReader::from_bytes(vec![]);
                     tab.display.format = None;
-                    tab.filter.visible_indices = crate::ui::VisibleLines::default();
+                    tab.filter.visible_indices = crate::shared::VisibleLines::default();
                     tab.filter.handle = None;
                     tab.scroll.scroll_offset = 0;
                     tab.stream.watch = Some(watch_state_from_connection(conn));
@@ -1609,108 +1611,8 @@ impl App {
     /// Chunks are applied incrementally: the first chunk replaces `visible_indices`,
     /// subsequent chunks extend it.  Scroll and counts are updated on every chunk.
     pub fn advance_filter_computation(&mut self) {
-        use tokio::sync::mpsc::error::TryRecvError;
         for tab in &mut self.tabs {
-            if tab.filter.handle.is_none() {
-                continue;
-            }
-
-            // Phase 1: drain available chunks into a local buffer (limits borrow scope).
-            let (chunks, done) = {
-                let h = tab.filter.handle.as_mut().unwrap();
-                let mut chunks = Vec::new();
-                let mut done = false;
-                loop {
-                    match h.result_rx.try_recv() {
-                        Ok(chunk) => {
-                            let last = chunk.is_last;
-                            chunks.push(chunk);
-                            if last {
-                                done = true;
-                                break;
-                            }
-                        }
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => {
-                            done = true;
-                            break;
-                        }
-                    }
-                }
-                (chunks, done)
-            };
-
-            if chunks.is_empty() && !done {
-                continue;
-            }
-
-            let already_had_first = tab.filter.handle.as_ref().unwrap().received_first_chunk;
-            let scroll_anchor = tab.filter.handle.as_ref().unwrap().scroll_anchor;
-
-            if !chunks.is_empty() {
-                tab.filter.handle.as_mut().unwrap().received_first_chunk = true;
-            }
-
-            // Phase 2: apply chunks to visible_indices.
-            let mut should_replace = !already_had_first;
-            for chunk in chunks {
-                let is_last = chunk.is_last;
-                if let Some(h) = tab.filter.handle.as_mut() {
-                    h.displayed_progress = chunk.progress;
-                }
-                if should_replace {
-                    tab.filter.visible_indices = VisibleLines::Filtered(chunk.visible);
-                    should_replace = false;
-                } else if let VisibleLines::Filtered(ref mut v) = tab.filter.visible_indices {
-                    v.extend(chunk.visible);
-                }
-                if let Some(counts) = chunk.filter_match_counts {
-                    tab.filter.match_counts = counts;
-                }
-                if is_last {
-                    // Apply continuation-line grouping: continuation lines
-                    // (those whose parser returned None) inherit their parent's
-                    // filter visibility so they are hidden when the parent is
-                    // hidden (e.g. by a date or exclude filter).
-                    if let Some(cmap) = tab.active_continuation_map().cloned() {
-                        crate::ui::apply_continuation_correction(
-                            &mut tab.filter.visible_indices,
-                            &cmap,
-                            tab.filter.manager.has_include(),
-                        );
-                    }
-                    tab.union_marked_into_visible();
-                    tab.sync_collapse_mask();
-                    tab.restore_scroll_to_line(scroll_anchor);
-                } else if tab.filter.visible_indices.is_empty() {
-                    tab.scroll.scroll_offset = 0;
-                } else {
-                    tab.scroll.scroll_offset = tab
-                        .scroll
-                        .scroll_offset
-                        .min(tab.filter.visible_indices.len() - 1);
-                }
-            }
-            if done {
-                if let Some(h) = &tab.filter.handle {
-                    tab.filter.cached_scan = Some(crate::ui::CachedScanResult {
-                        filter_fingerprint: h.scan_fingerprint.clone(),
-                        line_count: h.scan_line_count,
-                        raw_mode: h.scan_raw_mode,
-                        highlight_mode: h.scan_highlight_mode,
-                        group_fingerprint: h.scan_group_fingerprint.clone(),
-                        view: (
-                            tab.filter.visible_indices.clone(),
-                            tab.filter.manager.clone(),
-                            tab.filter.text_styles.clone(),
-                            tab.filter.date_styles.clone(),
-                            tab.filter.field_styles.clone(),
-                        ),
-                        match_counts: tab.filter.match_counts.clone(),
-                    });
-                }
-                tab.filter.handle = None;
-            }
+            tab.advance_filter_computation();
         }
     }
 
@@ -1765,11 +1667,12 @@ mod tests {
     use crate::db::LogManager;
     use crate::ingestion::{FileLoadResult, FileReader};
     use crate::mode::app_mode::ModeRenderState;
-    use crate::theme::Theme;
-    use crate::ui::{
-        App, ConnectFn, FileWatchState, FilterChunk, FilterHandle, LoadContext, SearchHandle,
+    use crate::shared::{
+        ConnectFn, FileWatchState, FilterChunk, FilterHandle, LoadContext, SearchHandle,
         StdinLoadState, StreamConnection, StreamRetryState, TabState, VisibleLines,
     };
+    use crate::theme::Theme;
+    use crate::ui::App;
     use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -2090,7 +1993,8 @@ mod tests {
 
         // Replace the real watcher with a manual channel watching the original file.
         let (tx, rx) = tokio::sync::watch::channel(());
-        app.tabs[tab_idx].stream.watch = Some(crate::ui::watch_state_from_file(rx, path.clone()));
+        app.tabs[tab_idx].stream.watch =
+            Some(crate::shared::watch_state_from_file(rx, path.clone()));
 
         // Append new lines to the original file, then notify.
         use std::io::Write as _;
@@ -2866,7 +2770,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
+        app.tabs[0].load_state = Some(crate::shared::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -2903,7 +2807,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
+        app.tabs[0].load_state = Some(crate::shared::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -2945,7 +2849,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
+        app.tabs[0].load_state = Some(crate::shared::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -2983,7 +2887,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
+        app.tabs[0].load_state = Some(crate::shared::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -3032,7 +2936,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
+        app.tabs[0].load_state = Some(crate::shared::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -3069,7 +2973,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
+        app.tabs[0].load_state = Some(crate::shared::FileLoadState {
             path: "test.log".to_string(),
             progress_rx,
             result_rx,
@@ -3098,7 +3002,7 @@ mod tests {
             "gone",
         )));
 
-        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
+        app.tabs[0].load_state = Some(crate::shared::FileLoadState {
             path: "missing.log".to_string(),
             progress_rx,
             result_rx,
@@ -3242,7 +3146,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_begin_file_load_predicate_shows_filtered_preview() {
-        use crate::ui::VisibleLines;
+        use crate::shared::VisibleLines;
 
         let mut app = make_app(&["placeholder"]).await;
 
@@ -3499,7 +3403,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
+        app.tabs[0].load_state = Some(crate::shared::FileLoadState {
             path: abs_path,
             progress_rx,
             result_rx,
@@ -3803,7 +3707,7 @@ mod tests {
         }));
         drop(progress_tx);
 
-        app.tabs[0].load_state = Some(crate::ui::FileLoadState {
+        app.tabs[0].load_state = Some(crate::shared::FileLoadState {
             path: "journalctl.json".to_string(),
             progress_rx,
             result_rx,
@@ -4227,7 +4131,7 @@ mod tests {
         let (rx, tmp) = spawn_otlp_grpc_receiver(port).await.unwrap();
 
         let mut app = make_app(&[]).await;
-        let state = crate::ui::watch_state_from_connection((rx, tmp));
+        let state = crate::shared::watch_state_from_connection((rx, tmp));
         app.tabs[0].stream.watch = Some(state);
 
         let endpoint = format!("http://127.0.0.1:{port}");
@@ -5403,17 +5307,13 @@ mod tests {
         assert_eq!(rows[2].name, "a.log");
 
         // Select "top.log" (row 0, already at cursor 0).
-        app.handle_key_event(crossterm::event::KeyCode::Char(' '))
-            .await;
+        app.handle_key_event(crate::input::KeyCode::Char(' ')).await;
         // Move cursor: row 0 -> row 1 (container) -> row 2 ("a.log").
-        app.handle_key_event(crossterm::event::KeyCode::Char('j'))
-            .await;
-        app.handle_key_event(crossterm::event::KeyCode::Char('j'))
-            .await;
-        app.handle_key_event(crossterm::event::KeyCode::Char(' '))
-            .await;
+        app.handle_key_event(crate::input::KeyCode::Char('j')).await;
+        app.handle_key_event(crate::input::KeyCode::Char('j')).await;
+        app.handle_key_event(crate::input::KeyCode::Char(' ')).await;
         // Confirm the selection.
-        app.handle_key_event(crossterm::event::KeyCode::Enter).await;
+        app.handle_key_event(crate::input::KeyCode::Enter).await;
 
         assert!(app.pending_archive.is_some());
         for _ in 0..100 {

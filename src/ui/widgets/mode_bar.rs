@@ -1,3 +1,4 @@
+use crate::style::Style;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Padding, Paragraph, Wrap},

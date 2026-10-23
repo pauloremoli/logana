@@ -1,9 +1,9 @@
+use crate::style::{Color, Modifier, Style};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ratatui::{
     prelude::*,
-    style::Modifier,
     widgets::{
         Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
     },
@@ -569,19 +569,29 @@ fn populate_parse_cache(
     }
 }
 
-/// Classifies a raw captured `level` value via `parser`'s own mapping (e.g. a
-/// custom schema's error/warning value overrides) when a parser is
-/// available, otherwise via the built-in `LogLevel::parse_level` keywords.
-fn classify_level(parser: Option<&dyn crate::parser::LogFormatParser>, raw: &str) -> LogLevel {
-    parser
-        .map(|p| p.classify_level(raw))
-        .unwrap_or_else(|| LogLevel::parse_level(raw))
-}
+pub(crate) use crate::parser::classify_level;
 
 fn stable_hash(s: &str) -> usize {
     s.bytes().fold(5381usize, |acc, b| {
         acc.wrapping_mul(33).wrapping_add(b as usize)
     })
+}
+
+/// Push a highlight span for every occurrence of `needle` in `rendered`,
+/// matching the GUI's per-cell highlighting (which highlights every repeat
+/// of a matched value, not just the first).
+fn push_every_occurrence(
+    collector: &mut MatchCollector,
+    rendered: &str,
+    needle: &str,
+    style: crate::filters::StyleId,
+) {
+    if needle.is_empty() {
+        return;
+    }
+    for (pos, _) in rendered.match_indices(needle) {
+        collector.push(pos, pos + needle.len(), style);
+    }
 }
 
 fn find_token_offset(haystack: &str, needle: &str) -> Option<usize> {
@@ -999,9 +1009,12 @@ pub fn prepare_log_panel(
                             if dfs.filter.matches(ts, None) {
                                 collector.with_priority(500);
                                 if dfs.match_only {
-                                    if let Some(ts_pos) = c.timestamp_offset {
-                                        collector.push(ts_pos, ts_pos + ts.len(), dfs.style_id);
-                                    }
+                                    push_every_occurrence(
+                                        &mut collector,
+                                        rendered,
+                                        ts,
+                                        dfs.style_id,
+                                    );
                                 } else {
                                     collector.push(0, rendered.len(), dfs.style_id);
                                 }
@@ -1029,15 +1042,22 @@ pub fn prepare_log_panel(
                                 for (field, pattern) in &ffs.field_filter.conditions {
                                     if let Some(val) = crate::filters::resolve_field(field, &parts)
                                         .filter(|v| v.contains(pattern.as_str()))
-                                        && let Some(pos) = rendered.find(val)
                                     {
-                                        collector.push(pos, pos + val.len(), ffs.style_id);
+                                        push_every_occurrence(
+                                            &mut collector,
+                                            rendered,
+                                            val,
+                                            ffs.style_id,
+                                        );
                                     }
                                 }
-                                if let Some(text) = &ffs.field_filter.text
-                                    && let Some(pos) = rendered.find(text.as_str())
-                                {
-                                    collector.push(pos, pos + text.len(), ffs.style_id);
+                                if let Some(text) = &ffs.field_filter.text {
+                                    push_every_occurrence(
+                                        &mut collector,
+                                        rendered,
+                                        text,
+                                        ffs.style_id,
+                                    );
                                 }
                             }
                         }
@@ -1771,7 +1791,11 @@ mod tests {
             let mut buffer = Buffer::empty(area);
             LogPanel { data: &data }.render(area, &mut buffer);
             let highlighted_rows: Vec<usize> = (0..area.height)
-                .filter(|&y| buffer[(2, y)].modifier.contains(Modifier::UNDERLINED))
+                .filter(|&y| {
+                    buffer[(2, y)]
+                        .modifier
+                        .contains(ratatui::style::Modifier::UNDERLINED)
+                })
                 .map(usize::from)
                 .collect();
             assert_eq!(highlighted_rows, vec![selected_row]);
@@ -1870,8 +1894,8 @@ mod tests {
             if marks_only {
                 assert_eq!(lines, normal);
             } else {
-                assert_eq!(lines[0].style.fg, Some(app.theme.mark_fg));
-                assert_eq!(lines[0].style.bg, Some(app.theme.mark_bg));
+                assert_eq!(lines[0].style.fg, Some(app.theme.mark_fg.into()));
+                assert_eq!(lines[0].style.bg, Some(app.theme.mark_bg.into()));
             }
         }
     }
@@ -2181,9 +2205,9 @@ mod tests {
     /// global collapse mode ever being turned on.
     #[tokio::test]
     async fn test_collapse_indicator_renders_end_to_end_via_normal_mode_key() {
+        use crate::input::{KeyCode, KeyModifiers};
         use crate::mode::app_mode::Mode;
         use crate::mode::normal_mode::NormalMode;
-        use crossterm::event::{KeyCode, KeyModifiers};
 
         let mut app = make_app(&[
             "2024-07-24T10:00:00Z INFO request processed",
@@ -2758,8 +2782,8 @@ mod tests {
             show_borders: false,
             show_tab_bar: false,
             wrap: false,
-            theme_border: ratatui::style::Color::White,
-            theme_border_title: ratatui::style::Color::White,
+            theme_border: crate::style::Color::White,
+            theme_border_title: crate::style::Color::White,
             extraction_progress: Some(0.5),
             archive_name: "logs.tar.gz".to_string(),
         };
@@ -2777,5 +2801,63 @@ mod tests {
             has_progress,
             "expected progress bar characters in rendered output"
         );
+    }
+
+    #[tokio::test]
+    async fn test_field_highlight_match_only_colors_every_occurrence() {
+        use crate::filters::FilterType;
+
+        let mut app = make_app(&[r#"{"level":"INFO","msg":"hello hello"}"#]).await;
+        let pattern = crate::filters::encode_field_filter(
+            &[("level".to_string(), "INFO".to_string())],
+            Some("hello"),
+        );
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                pattern,
+                FilterType::Highlight,
+                crate::filters::FilterOptions::default().fg("red"),
+            )
+            .await;
+        app.tabs[0].refresh_visible();
+        app.tabs[0].display.show_sidebar = false;
+
+        let mut terminal = make_terminal();
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let width = buf.area.width;
+        let row_content = |y: u16| -> String {
+            (0..width)
+                .map(|x| buf.cell((x, y)).map_or(" ", |c| c.symbol()).to_string())
+                .collect()
+        };
+        let log_row = (0..buf.area.height)
+            .find(|&y| row_content(y).contains("hello"))
+            .expect("the log line should be rendered somewhere");
+        let content = row_content(log_row);
+
+        let mut occurrences = Vec::new();
+        let mut search_from = 0;
+        while let Some(pos) = content[search_from..].find("hello") {
+            occurrences.push(search_from + pos);
+            search_from += pos + 1;
+        }
+        assert_eq!(
+            occurrences.len(),
+            2,
+            "expected two occurrences of 'hello' on the log row, got: {content}"
+        );
+        for start in occurrences {
+            let cell = buf
+                .cell((start as u16, log_row))
+                .expect("cell should exist");
+            assert_eq!(
+                cell.fg,
+                ratatui::style::Color::Red,
+                "every occurrence of a match-only field highlight's text should be colored, \
+                 not just the first"
+            );
+        }
     }
 }

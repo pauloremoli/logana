@@ -9,6 +9,6 @@ pub use log_manager::LogManager;
 pub use mark_manager::MarkManager;
 pub use sqlite::{
     AppSettingsStore, Database, FileContext, FileContextStore, FilterStore, GroupStore,
-    SessionStore, SettingsKey,
+    SessionStore, SettingsKey, default_db_path,
 };
 pub use types::Comment;

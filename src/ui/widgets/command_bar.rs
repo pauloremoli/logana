@@ -1,17 +1,12 @@
+use crate::style::{Color, Modifier, Style};
 use ratatui::{
     prelude::*,
     widgets::{Paragraph, Wrap},
 };
 
-use crate::commands::auto_complete::{
-    FieldCompletion, complete_color, complete_field_name, complete_field_value, complete_file_path,
-    complete_flags, complete_schema_with_builtins, extract_color_partial, extract_field_partial,
-    extract_flag_partial, extract_group_partial, find_command_completions, fuzzy_match,
-    shell_split,
-};
-use crate::commands::{FILE_PATH_COMMANDS, find_matching_command};
-use crate::theme::parse_color;
-use crate::theme::{Theme, complete_theme};
+use crate::commands::auto_complete::extract_color_partial;
+use crate::commands::find_matching_command;
+use crate::theme::{Theme, parse_color};
 use crate::ui::TabState;
 
 pub enum CompletionSource {
@@ -33,136 +28,36 @@ pub fn resolve_completions(
     if let Some(err) = &tab.interaction.command_error {
         return CompletionSource::Error(err.clone());
     }
-    if let Some(fc) = extract_field_partial(query_text.trim_start()) {
-        let field_index = tab.build_field_index();
-        let completions = match &fc {
-            FieldCompletion::Name(partial) => complete_field_name(partial, &field_index),
-            FieldCompletion::Value { field, partial } => {
-                complete_field_value(field, partial, &field_index)
-            }
-        };
-        return CompletionSource::Items(completions);
-    }
-    if let Some((_, partial)) = extract_flag_partial(query_text) {
-        let cmd = shell_split(query_text)
-            .into_iter()
-            .next()
-            .unwrap_or_default();
-        return CompletionSource::Items(
-            complete_flags(&cmd, &partial)
-                .into_iter()
-                .map(|s| s.to_string())
-                .collect(),
-        );
-    }
-    if let Some(partial) = extract_color_partial(query_text.trim_start()) {
-        return CompletionSource::ColorItems(
-            complete_color(partial)
-                .into_iter()
-                .map(|s| s.to_string())
-                .collect(),
-        );
-    }
-    if let Some(partial) = extract_group_partial(query_text.trim_start()) {
-        let groups = tab.log_manager.group_names();
-        return CompletionSource::Items(
-            groups
-                .into_iter()
-                .filter(|g| fuzzy_match(partial, g))
-                .collect(),
-        );
-    }
-    let trimmed = query_text.trim();
-    let file_cmd = FILE_PATH_COMMANDS
-        .iter()
-        .find(|cmd| trimmed.starts_with(&format!("{} ", cmd)));
-    if let Some(&cmd) = file_cmd {
-        let partial = trimmed[cmd.len()..].trim_start();
-        return CompletionSource::FileItems(complete_file_path(partial));
-    }
-    if let Some(partial_raw) = query_text.trim_start().strip_prefix("set-theme ") {
-        return CompletionSource::Items(complete_theme(partial_raw.trim_start()));
-    }
-    if let Some(partial_raw) = query_text.trim_start().strip_prefix("schema ") {
-        let partial = partial_raw.trim_start();
-        let names: Vec<String> = crate::config::custom_schemas()
-            .iter()
-            .map(|s| s.name.clone())
-            .collect();
-        return CompletionSource::SchemaItems(complete_schema_with_builtins(partial, &names));
-    }
-    if let Some(rest) = query_text.trim_start().strip_prefix("default-filters ") {
-        let rest = rest.trim_start();
-        if let Some((_format, path_partial)) = rest.split_once(' ') {
-            return CompletionSource::FileItems(complete_file_path(path_partial.trim_start()));
-        }
-        let names: Vec<String> = crate::config::custom_schemas()
-            .iter()
-            .map(|s| s.name.clone())
-            .collect();
-        return CompletionSource::SchemaItems(complete_schema_with_builtins(rest, &names));
-    }
-    if let Some(partial_raw) = query_text.trim_start().strip_prefix("hide-field ") {
-        let partial = partial_raw.trim_start();
-        let index = tab.build_field_index();
-        return CompletionSource::Items(complete_field_name(partial, &index));
-    }
-    if let Some(partial_raw) = query_text.trim_start().strip_prefix("show-field ") {
-        let partial = partial_raw.trim_start();
-        let candidates: Vec<String> = if tab.display.hidden_fields.is_empty() {
-            tab.build_field_index().names
-        } else {
-            let mut v: Vec<String> = tab.display.hidden_fields.iter().cloned().collect();
-            v.sort();
-            v
-        };
-        let completions = candidates
-            .iter()
-            .filter(|n| fuzzy_match(partial, n))
-            .cloned()
-            .collect();
-        return CompletionSource::Items(completions);
-    }
-    if let Some(partial_raw) = query_text.trim_start().strip_prefix("group ") {
-        let partial = partial_raw.trim_start();
-        let completions = tab
-            .log_manager
-            .group_names()
-            .into_iter()
-            .filter(|g| fuzzy_match(partial, g))
-            .collect();
-        return CompletionSource::Items(completions);
-    }
-    if let Some(partial_raw) = query_text.trim_start().strip_prefix("toggle-group ") {
-        let partial = partial_raw.trim_start();
-        let completions = tab
-            .log_manager
-            .group_names()
-            .into_iter()
-            .filter(|g| fuzzy_match(partial, g))
-            .collect();
-        return CompletionSource::Items(completions);
-    }
-    if let Some(partial_raw) = query_text.trim_start().strip_prefix("sidebar-position ") {
-        let partial = partial_raw.trim_start();
-        let completions = ["left", "right"]
-            .iter()
-            .filter(|s| fuzzy_match(partial, s))
-            .map(|s| s.to_string())
-            .collect();
-        return CompletionSource::Items(completions);
-    }
+    use crate::commands::completion::{CompletionContext, CompletionKind, suggestions};
+    let context = CompletionContext::for_query(query_text, tab);
+    let items = suggestions(query_text, &context);
+    let kind = items.first().map(|s| s.kind.clone());
     if completion_index.is_none()
-        && let Some(cmd) = find_matching_command(query_text)
+        && (kind == Some(CompletionKind::Command) || (kind.is_none() && !query_text.contains(' ')))
+        && let Some(command) = find_matching_command(query_text)
     {
-        return CompletionSource::CommandHelp(cmd);
+        return CompletionSource::CommandHelp(command);
     }
-    CompletionSource::Items(
-        find_command_completions(trimmed)
-            .into_iter()
-            .map(|s| s.to_string())
-            .collect(),
-    )
+    // Preserve category rendering even when a contextual query has no matches.
+    let color = extract_color_partial(query_text.trim_start()).is_some();
+    let path = crate::commands::completion::filesystem_query(query_text);
+    let schema = query_text.trim_start().starts_with("schema ")
+        || query_text.trim_start().starts_with("default-filters ");
+    if color {
+        return CompletionSource::ColorItems(items.into_iter().map(|s| s.display).collect());
+    }
+    if path {
+        return CompletionSource::FileItems(items.into_iter().map(|s| s.display).collect());
+    }
+    if schema {
+        return CompletionSource::SchemaItems(
+            items
+                .into_iter()
+                .map(|s| (s.display, s.detail == "Custom schema"))
+                .collect(),
+        );
+    }
+    CompletionSource::Items(items.into_iter().map(|s| s.display).collect())
 }
 
 pub fn file_display_name(path: &str) -> String {

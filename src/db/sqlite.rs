@@ -7,6 +7,8 @@ use sqlx::Row;
 use sqlx::sqlite::{SqliteConnection, SqlitePool, SqlitePoolOptions};
 use std::collections::HashSet;
 
+// async_trait adds must_use to an already must-use boxed future.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait FilterStore: Send + Sync {
     async fn insert_filter(
@@ -33,6 +35,7 @@ pub trait FilterStore: Send + Sync {
     ) -> Result<()>;
     async fn delete_filter(&self, id: i64) -> Result<()>;
     async fn toggle_filter(&self, id: i64) -> Result<()>;
+    async fn set_filter_enabled(&self, id: i64, enabled: bool) -> Result<()>;
     async fn set_all_filters_enabled(&self, enabled: bool) -> Result<()>;
     async fn set_filters_enabled_by_group(
         &self,
@@ -42,6 +45,7 @@ pub trait FilterStore: Send + Sync {
     ) -> Result<()>;
     async fn remove_filters_by_group(&self, source_file: &str, group: &str) -> Result<()>;
     async fn swap_filter_order(&self, id1: i64, id2: i64) -> Result<()>;
+    async fn set_filter_order(&self, ids: &[usize]) -> Result<()>;
     async fn clear_filters(&self) -> Result<()>;
     async fn clear_filters_for_source(&self, source_file: &str) -> Result<()>;
     async fn replace_all_filters(
@@ -51,6 +55,8 @@ pub trait FilterStore: Send + Sync {
     ) -> Result<()>;
 }
 
+// async_trait adds must_use to an already must-use boxed future.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait GroupStore: Send + Sync {
     /// Groups with no source file (the `''` bucket) — mirrors `FilterStore::get_filters`.
@@ -94,6 +100,8 @@ pub struct FileContext {
     pub filtering_enabled: bool,
 }
 
+// async_trait adds must_use to an already must-use boxed future.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait FileContextStore: Send + Sync {
     async fn save_file_context(&self, ctx: &FileContext) -> Result<()>;
@@ -101,6 +109,8 @@ pub trait FileContextStore: Send + Sync {
     async fn delete_file_context(&self, source_file: &str) -> Result<()>;
 }
 
+// async_trait adds must_use to an already must-use boxed future.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SessionStore: Send + Sync {
     /// Persist the ordered list of open source files as the last session.
@@ -113,7 +123,11 @@ pub trait SessionStore: Send + Sync {
 pub enum SettingsKey {
     RestoreSession,
     RestoreFileContext,
+    PreviewBytes,
+    McpPort,
     Theme,
+    GuiFontSize,
+    GuiColumnWidths,
     Wrap,
     ShowModeBar,
     ShowBorders,
@@ -132,7 +146,11 @@ impl SettingsKey {
         match self {
             Self::RestoreSession => "restore_session",
             Self::RestoreFileContext => "restore_file_context",
+            Self::PreviewBytes => "preview_bytes",
+            Self::McpPort => "mcp_port",
             Self::Theme => "theme",
+            Self::GuiFontSize => "gui_font_size",
+            Self::GuiColumnWidths => "gui_column_widths",
             Self::Wrap => "wrap",
             Self::ShowModeBar => "show_mode_bar",
             Self::ShowBorders => "show_borders",
@@ -154,12 +172,26 @@ impl std::fmt::Display for SettingsKey {
     }
 }
 
+// async_trait adds must_use to an already must-use boxed future.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait AppSettingsStore: Send + Sync {
     /// Persist a named application setting value.
     async fn save_app_setting(&self, key: SettingsKey, value: &str) -> Result<()>;
     /// Load a named application setting, returning `None` if not set.
     async fn load_app_setting(&self, key: SettingsKey) -> Result<Option<String>>;
+}
+
+/// The default sqlite DB path both the TUI and GUI binaries persist to:
+/// `<platform data dir>/logana/logana.db`, falling back to a relative
+/// `logana.db` when the platform has no resolvable data directory.
+pub fn default_db_path() -> String {
+    if let Some(data_dir) = dirs::data_dir() {
+        let app_dir = data_dir.join("logana");
+        app_dir.join("logana.db").to_string_lossy().to_string()
+    } else {
+        "logana.db".to_string()
+    }
 }
 
 pub struct Database {
@@ -209,6 +241,41 @@ impl Database {
         drop(conn);
 
         Ok(Self { pool })
+    }
+
+    /// Restore an undo snapshot atomically while preserving stable filter IDs.
+    pub async fn restore_filter_snapshot(
+        &self,
+        filters: &[FilterDef],
+        groups: &[GroupDef],
+        source: Option<&str>,
+    ) -> Result<()> {
+        let source = source.unwrap_or("");
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM filters WHERE source_file = ?")
+            .bind(source)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM groups WHERE source_file = ?")
+            .bind(source)
+            .execute(&mut *tx)
+            .await?;
+        for (order, filter) in filters.iter().enumerate() {
+            let colors = filter.color_config.as_ref();
+            sqlx::query("INSERT INTO filters (id, pattern, filter_type, enabled, fg_color, bg_color, display_order, source_file, match_only, use_regex, ignore_case, group_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                .bind(filter.id as i64).bind(&filter.pattern).bind(filter_type_to_str(&filter.filter_type)).bind(filter.enabled)
+                .bind(colors.and_then(|c| c.fg).map(|c| c.to_string())).bind(colors.and_then(|c| c.bg).map(|c| c.to_string()))
+                .bind(order as i64).bind(source).bind(colors.is_none_or(|c| c.match_only)).bind(filter.use_regex).bind(filter.ignore_case).bind(&filter.group)
+                .execute(&mut *tx).await?;
+        }
+        for group in groups {
+            let colors = group.color_config.as_ref();
+            sqlx::query("INSERT INTO groups (source_file, name, fg_color, bg_color, match_only, enabled) VALUES (?, ?, ?, ?, ?, ?)")
+                .bind(source).bind(&group.name).bind(colors.and_then(|c| c.fg).map(|c| c.to_string())).bind(colors.and_then(|c| c.bg).map(|c| c.to_string()))
+                .bind(colors.is_none_or(|c| c.match_only)).bind(group.enabled).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn in_memory() -> Result<Self> {
@@ -875,6 +942,15 @@ impl FilterStore for Database {
         Ok(())
     }
 
+    async fn set_filter_enabled(&self, id: i64, enabled: bool) -> Result<()> {
+        sqlx::query("UPDATE filters SET enabled = ? WHERE id = ?")
+            .bind(enabled)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn toggle_filter(&self, id: i64) -> Result<()> {
         sqlx::query(
             "UPDATE filters SET enabled = CASE WHEN enabled = 0 THEN 1 ELSE 0 END WHERE id = ?",
@@ -914,6 +990,19 @@ impl FilterStore for Database {
             .bind(source_file)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    async fn set_filter_order(&self, ids: &[usize]) -> Result<()> {
+        let mut transaction = self.pool.begin().await?;
+        for (index, id) in ids.iter().enumerate() {
+            sqlx::query("UPDATE filters SET display_order = ? WHERE id = ?")
+                .bind(index as i64 + 1)
+                .bind(*id as i64)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -1294,6 +1383,13 @@ mod tests {
         Database::in_memory().await.unwrap()
     }
 
+    #[test]
+    fn default_db_path_contains_logana() {
+        let path = default_db_path();
+        assert!(path.contains("logana"), "{path}");
+        assert!(path.ends_with("logana.db"), "{path}");
+    }
+
     #[tokio::test]
     async fn test_filter_crud() {
         let db = setup_db().await;
@@ -1563,7 +1659,7 @@ mod tests {
             "",
             "errors",
             &ColorConfig {
-                fg: Some(ratatui::style::Color::Red),
+                fg: Some(crate::style::Color::Red),
                 bg: None,
                 match_only: true,
             },
@@ -1633,7 +1729,7 @@ mod tests {
             "some_file.log",
             "errors",
             &ColorConfig {
-                fg: Some(ratatui::style::Color::Green),
+                fg: Some(crate::style::Color::Green),
                 bg: None,
                 match_only: true,
             },
@@ -1644,13 +1740,13 @@ mod tests {
         assert_eq!(scoped.len(), 1);
         assert_eq!(
             scoped[0].color_config.as_ref().unwrap().fg,
-            Some(ratatui::style::Color::Green)
+            Some(crate::style::Color::Green)
         );
         // The '' bucket group is untouched by the source-scoped insert.
         let global = db.get_groups().await.unwrap();
         assert_eq!(
             global[0].color_config.as_ref().unwrap().fg,
-            Some(ratatui::style::Color::Red)
+            Some(crate::style::Color::Red)
         );
     }
 
@@ -1715,8 +1811,8 @@ mod tests {
     async fn test_insert_and_get_group_style() {
         let db = setup_db().await;
         let cc = ColorConfig {
-            fg: Some(ratatui::style::Color::Red),
-            bg: Some(ratatui::style::Color::Blue),
+            fg: Some(crate::style::Color::Red),
+            bg: Some(crate::style::Color::Blue),
             match_only: false,
         };
         db.upsert_group_style("", "errors", &cc).await.unwrap();
@@ -1736,7 +1832,7 @@ mod tests {
             "",
             "errors",
             &ColorConfig {
-                fg: Some(ratatui::style::Color::Red),
+                fg: Some(crate::style::Color::Red),
                 bg: None,
                 match_only: true,
             },
@@ -1747,7 +1843,7 @@ mod tests {
             "",
             "errors",
             &ColorConfig {
-                fg: Some(ratatui::style::Color::Green),
+                fg: Some(crate::style::Color::Green),
                 bg: None,
                 match_only: true,
             },
@@ -1758,7 +1854,7 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(
             groups[0].color_config.as_ref().unwrap().fg,
-            Some(ratatui::style::Color::Green)
+            Some(crate::style::Color::Green)
         );
     }
 
@@ -1769,7 +1865,7 @@ mod tests {
             "",
             "errors",
             &ColorConfig {
-                fg: Some(ratatui::style::Color::Red),
+                fg: Some(crate::style::Color::Red),
                 bg: None,
                 match_only: true,
             },
@@ -1787,7 +1883,7 @@ mod tests {
             "a.log",
             "errors",
             &ColorConfig {
-                fg: Some(ratatui::style::Color::Red),
+                fg: Some(crate::style::Color::Red),
                 bg: None,
                 match_only: true,
             },
@@ -1798,7 +1894,7 @@ mod tests {
             "b.log",
             "errors",
             &ColorConfig {
-                fg: Some(ratatui::style::Color::Blue),
+                fg: Some(crate::style::Color::Blue),
                 bg: None,
                 match_only: true,
             },
@@ -1812,11 +1908,11 @@ mod tests {
         assert_eq!(b_groups.len(), 1);
         assert_eq!(
             a_groups[0].color_config.as_ref().unwrap().fg,
-            Some(ratatui::style::Color::Red)
+            Some(crate::style::Color::Red)
         );
         assert_eq!(
             b_groups[0].color_config.as_ref().unwrap().fg,
-            Some(ratatui::style::Color::Blue)
+            Some(crate::style::Color::Blue)
         );
     }
 
@@ -1824,7 +1920,7 @@ mod tests {
     async fn test_clear_group_style_only_affects_its_source() {
         let db = setup_db().await;
         let cc = ColorConfig {
-            fg: Some(ratatui::style::Color::Red),
+            fg: Some(crate::style::Color::Red),
             bg: None,
             match_only: true,
         };
@@ -1839,7 +1935,7 @@ mod tests {
     async fn test_replace_all_groups_only_touches_its_source() {
         let db = setup_db().await;
         let cc = ColorConfig {
-            fg: Some(ratatui::style::Color::Red),
+            fg: Some(crate::style::Color::Red),
             bg: None,
             match_only: true,
         };
@@ -1898,8 +1994,8 @@ mod tests {
     async fn test_filter_with_color() {
         let db = setup_db().await;
         let color = ColorConfig {
-            fg: Some(ratatui::style::Color::Red),
-            bg: Some(ratatui::style::Color::Blue),
+            fg: Some(crate::style::Color::Red),
+            bg: Some(crate::style::Color::Blue),
             match_only: false,
         };
 
@@ -1927,7 +2023,7 @@ mod tests {
             .unwrap();
 
         let color = ColorConfig {
-            fg: Some(ratatui::style::Color::Green),
+            fg: Some(crate::style::Color::Green),
             bg: None,
             match_only: false,
         };

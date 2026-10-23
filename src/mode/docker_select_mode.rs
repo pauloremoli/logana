@@ -1,13 +1,19 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
+use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
 use crate::{
-    config::Keybindings,
-    mode::app_mode::{Mode, ModeRenderState, status_entry},
+    mode::app_mode::{Mode, ModeRenderState},
     mode::normal_mode::NormalMode,
-    theme::Theme,
-    ui::{KeyResult, TabState},
+    shared::{KeyResult, TabState},
 };
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 #[derive(Debug, Clone)]
@@ -74,6 +80,7 @@ impl Mode for DockerSelectMode {
         (self, KeyResult::Ignored)
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[DOCKER]  ",
@@ -294,6 +301,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "tui")]
     async fn test_mode_bar_content() {
         let mode = DockerSelectMode::new(sample_containers());
         assert!(matches!(
