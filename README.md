@@ -11,11 +11,12 @@
 <p align="center">
   A fast log viewer for your terminal and desktop. Filter logs of any size and format, mark and annotate what matters, then export your findings.
 </p>
-
+### GUI Desktop application 
 <p align="center">
   <img src="docs/src/logana-gui.png" alt="Logana desktop GUI screenshot" />
 </p>
 
+### TUI application
 <p align="center">
   <img src="docs/src/logana.png" alt="logana TUI showing colored, grouped filters alongside marked lines and inline comments" />
 </p>
