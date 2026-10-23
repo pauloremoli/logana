@@ -1,15 +1,21 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
+use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
 use crate::{
-    config::Keybindings,
     mode::{
-        app_mode::{Mode, ModeRenderState, status_entry},
+        app_mode::{Mode, ModeRenderState},
         normal_mode::NormalMode,
     },
-    theme::Theme,
-    ui::{KeyResult, TabState},
+    shared::{KeyResult, TabState},
 };
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 #[derive(Debug)]
@@ -218,6 +224,7 @@ impl Mode for ExportFooterMode {
         (self, KeyResult::Handled)
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, _kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let active_name = self
             .fields
@@ -258,7 +265,7 @@ mod tests {
     use super::*;
     use crate::db::{Database, LogManager};
     use crate::ingestion::FileReader;
-    use crate::ui::TabState;
+    use crate::shared::TabState;
     use std::sync::Arc;
 
     async fn make_tab() -> TabState {

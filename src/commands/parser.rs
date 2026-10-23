@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::ui::SidebarSide;
+use crate::shared::SidebarSide;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, no_binary_name = true)]

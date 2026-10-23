@@ -141,30 +141,57 @@ fn is_simplified_format(data: &[u8]) -> bool {
 ///
 /// Automatically detects storage, simplified, or wire format from the first message.
 pub fn convert_dlt_binary_to_text(data: &[u8]) -> Vec<u8> {
+    convert_dlt_binary_to_text_controlled(data, &std::sync::atomic::AtomicBool::new(false))
+        .expect("uncanceled DLT conversion")
+}
+
+pub fn convert_dlt_binary_to_text_controlled(
+    data: &[u8],
+    cancel: &std::sync::atomic::AtomicBool,
+) -> std::io::Result<Vec<u8>> {
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "load cancelled",
+        ));
+    }
+    let result = convert_controlled(data, cancel);
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "load cancelled",
+        ));
+    }
+    Ok(result)
+}
+fn convert_controlled(data: &[u8], cancel: &std::sync::atomic::AtomicBool) -> Vec<u8> {
     if data.len() < STD_HEADER_MIN_LEN {
         return Vec::new();
     }
 
     if is_dlt_binary(data) {
         if is_simplified_format(data) {
-            convert_simplified(data)
+            convert_simplified_controlled(data, cancel)
         } else {
-            convert_storage(data)
+            convert_storage_controlled(data, cancel)
         }
     } else if is_dlt_wire_format(data) {
-        convert_wire(data)
+        convert_wire_controlled(data, cancel)
     } else {
         Vec::new()
     }
 }
 
-fn convert_simplified(data: &[u8]) -> Vec<u8> {
+fn convert_simplified_controlled(data: &[u8], cancel: &std::sync::atomic::AtomicBool) -> Vec<u8> {
     let mut output = Vec::new();
     let mut pos = 0;
 
     while pos + SIMPLIFIED_HEADER_LEN <= data.len() {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
         if &data[pos..pos + 4] != DLT_MAGIC {
-            if let Some(next) = find_next_magic(data, pos + 1) {
+            if let Some(next) = find_next_magic_controlled(data, pos + 1, cancel) {
                 pos = next;
                 continue;
             }
@@ -184,7 +211,7 @@ fn convert_simplified(data: &[u8]) -> Vec<u8> {
 
         let payload_start = pos + SIMPLIFIED_HEADER_LEN;
         if payload_start + payload_len > data.len() {
-            if let Some(next) = find_next_magic(data, pos + 1) {
+            if let Some(next) = find_next_magic_controlled(data, pos + 1, cancel) {
                 pos = next;
                 continue;
             }
@@ -210,13 +237,16 @@ fn convert_simplified(data: &[u8]) -> Vec<u8> {
     output
 }
 
-fn convert_storage(data: &[u8]) -> Vec<u8> {
+fn convert_storage_controlled(data: &[u8], cancel: &std::sync::atomic::AtomicBool) -> Vec<u8> {
     let mut output = Vec::new();
     let mut pos = 0;
 
     while pos + STORAGE_HEADER_LEN <= data.len() {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
         if &data[pos..pos + 4] != DLT_MAGIC {
-            if let Some(next) = find_next_magic(data, pos + 1) {
+            if let Some(next) = find_next_magic_controlled(data, pos + 1, cancel) {
                 pos = next;
                 continue;
             }
@@ -236,7 +266,7 @@ fn convert_storage(data: &[u8]) -> Vec<u8> {
         let msg_len = u16::from_be_bytes([data[std_start + 2], data[std_start + 3]]) as usize;
 
         if msg_len < STD_HEADER_MIN_LEN || std_start + msg_len > data.len() {
-            if let Some(next) = find_next_magic(data, pos + 1) {
+            if let Some(next) = find_next_magic_controlled(data, pos + 1, cancel) {
                 pos = next;
                 continue;
             }
@@ -257,11 +287,19 @@ fn convert_storage(data: &[u8]) -> Vec<u8> {
     output
 }
 
+#[cfg(test)]
 fn convert_wire(data: &[u8]) -> Vec<u8> {
+    convert_wire_controlled(data, &std::sync::atomic::AtomicBool::new(false))
+}
+
+fn convert_wire_controlled(data: &[u8], cancel: &std::sync::atomic::AtomicBool) -> Vec<u8> {
     let mut output = Vec::new();
     let mut pos = 0;
 
     while pos + STD_HEADER_MIN_LEN <= data.len() {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
         let htyp = data[pos];
         if htyp & VERSION_MASK != VERSION_1 {
             break;
@@ -477,9 +515,16 @@ fn format_dlt_message(
     Some(line)
 }
 
-fn find_next_magic(data: &[u8], start: usize) -> Option<usize> {
+fn find_next_magic_controlled(
+    data: &[u8],
+    start: usize,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Option<usize> {
     let mut i = start;
     while i + 4 <= data.len() {
+        if i.is_multiple_of(64 * 1024) && cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
         if &data[i..i + 4] == DLT_MAGIC {
             return Some(i);
         }

@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyModifiers};
+use crate::input::{KeyCode, KeyModifiers};
 use serde::{Deserialize, Serialize, de};
 use std::fmt;
 
@@ -2051,7 +2051,6 @@ pub(super) fn check_conflicts(actions: &[(&str, &KeyBindings)], out: &mut Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyModifiers};
 
     fn kb(key: KeyCode) -> KeyBindings {
         KeyBindings(vec![KeyBinding(key, KeyModifiers::NONE)])

@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::style::Modifier;
+use crate::style::{Color, Style};
 use ratatui::{
     Frame,
     prelude::*,
@@ -1643,12 +1646,7 @@ mod tests {
             "ERROR error occurred",
         ])
         .await;
-        let default_disabled: std::collections::HashSet<String> =
-            ["trace", "debug", "info", "notice"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-        assert_eq!(app.tabs[0].display.level_colors_disabled, default_disabled);
+        assert!(app.tabs[0].display.level_colors_disabled.is_empty());
         let mut terminal = make_terminal();
         terminal.draw(|f| app.ui(f)).unwrap();
     }
@@ -2340,12 +2338,14 @@ mod tests {
             .expect("'[' of mode label not found in tab bar") as u16;
         let cell = buf.cell((bracket_col, 0)).expect("cell out of bounds");
         assert_eq!(
-            cell.fg, expected_fg,
+            cell.fg,
+            (expected_fg).into(),
             "mode label '[' should use text_highlight_fg, got {:?}",
             cell.fg
         );
         assert_eq!(
-            cell.bg, expected_bg,
+            cell.bg,
+            (expected_bg).into(),
             "mode label '[' should sit on root_bg (same as mode bar), got {:?}",
             cell.bg
         );
@@ -2682,7 +2682,7 @@ mod tests {
 
         // Leaving filter mode (Esc) must not reset the remembered position;
         // the sidebar keeps showing the same scroll while browsing.
-        app.handle_key_event(crossterm::event::KeyCode::Esc).await;
+        app.handle_key_event(crate::input::KeyCode::Esc).await;
         assert!(matches!(
             app.tabs[0].interaction.mode.render_state(),
             ModeRenderState::Normal
@@ -2692,8 +2692,7 @@ mod tests {
 
         // Re-entering filter mode restores the exact same selection.
         app.tabs[0].interaction.mode = Box::new(NormalMode::default());
-        app.handle_key_event(crossterm::event::KeyCode::Char('f'))
-            .await;
+        app.handle_key_event(crate::input::KeyCode::Char('f')).await;
         match app.tabs[0].interaction.mode.render_state() {
             ModeRenderState::FilterManagement { selected_index, .. } => {
                 assert_eq!(selected_index, 25);
@@ -2717,7 +2716,8 @@ mod tests {
         let other_col = tab_row.find("other").expect("inactive tab title not found") as u16;
         let cell = buf.cell((other_col, 0)).expect("cell out of bounds");
         assert_eq!(
-            cell.fg, expected_fg,
+            cell.fg,
+            (expected_fg).into(),
             "inactive tab should use inactive_tab_fg color, got {:?}",
             cell.fg
         );
@@ -2753,7 +2753,8 @@ mod tests {
 
         let cell = buf.cell((get_col, 1)).expect("cell should exist");
         assert_ne!(
-            cell.fg, get_color,
+            cell.fg,
+            (get_color).into(),
             "GET value color must not be applied when a whole-line filter with fg already covers the span"
         );
     }
@@ -2774,7 +2775,8 @@ mod tests {
 
         let cell = buf.cell((get_col, 1)).expect("cell should exist");
         assert_eq!(
-            cell.fg, get_color,
+            cell.fg,
+            (get_color).into(),
             "GET value color should be applied when no filter overrides the line"
         );
     }
@@ -2807,7 +2809,8 @@ mod tests {
 
         let cell = buf.cell((get_col, 1)).expect("cell should exist");
         assert_eq!(
-            cell.fg, get_color,
+            cell.fg,
+            (get_color).into(),
             "GET value color must apply to the unstyled part even when another part of the line is filter-colored"
         );
     }
@@ -2842,7 +2845,8 @@ mod tests {
 
         let cell = buf.cell((ip_col, 1)).expect("cell should exist");
         assert_ne!(
-            cell.fg, ip_color,
+            cell.fg,
+            (ip_color).into(),
             "IP value color must not override filter --fg Black"
         );
     }
@@ -2878,7 +2882,8 @@ mod tests {
             .expect("IP should appear in content row") as u16;
         let cell = buf.cell((ip_col, 1)).expect("cell should exist");
         assert_ne!(
-            cell.fg, ip_color,
+            cell.fg,
+            (ip_color).into(),
             "IP value color must not override filter --fg Black after re-render"
         );
     }
@@ -2914,7 +2919,8 @@ mod tests {
             .expect("IP should appear in content row") as u16;
         let cell = buf.cell((ip_col, 1)).expect("cell should exist");
         assert_ne!(
-            cell.fg, ip_color,
+            cell.fg,
+            (ip_color).into(),
             "IP value color must not override filter --fg Black after incremental include"
         );
     }
@@ -2962,7 +2968,8 @@ mod tests {
             if let Some(ip_pos) = row.find("5.120.204.67") {
                 let cell = buf.cell((ip_pos as u16, y)).expect("cell should exist");
                 assert_ne!(
-                    cell.fg, ip_color,
+                    cell.fg,
+                    (ip_color).into(),
                     "IP value color must not override filter --fg Black in structured log (row {})",
                     y
                 );
@@ -3077,11 +3084,11 @@ mod tests {
         let cursor_row = 1u16;
         let has_bold = (0..buf.area.width).any(|x| {
             buf.cell((x, cursor_row))
-                .is_some_and(|c| c.modifier.contains(Modifier::BOLD))
+                .is_some_and(|c| c.modifier.contains((Modifier::BOLD).into()))
         });
         let has_underlined = (0..buf.area.width).any(|x| {
             buf.cell((x, cursor_row))
-                .is_some_and(|c| c.modifier.contains(Modifier::UNDERLINED))
+                .is_some_and(|c| c.modifier.contains((Modifier::UNDERLINED).into()))
         });
         assert!(has_bold, "cursor line should have BOLD modifier");
         assert!(
@@ -3099,8 +3106,10 @@ mod tests {
         let buf = terminal.backend().buffer().clone();
 
         let cursor_row = 1u16;
-        let has_cursor_bg = (0..buf.area.width)
-            .any(|x| buf.cell((x, cursor_row)).is_some_and(|c| c.bg == cursor_bg));
+        let has_cursor_bg = (0..buf.area.width).any(|x| {
+            buf.cell((x, cursor_row))
+                .is_some_and(|c| c.bg == (cursor_bg).into())
+        });
         assert!(!has_cursor_bg, "cursor line should not use cursor_bg color");
     }
 
@@ -3108,7 +3117,7 @@ mod tests {
     async fn test_startup_warnings_cleared_on_keypress() {
         let mut app = make_app(&["line 0"]).await;
         app.session.startup_warnings = vec!["conflict".to_string()];
-        app.handle_key_event(crossterm::event::KeyCode::Esc).await;
+        app.handle_key_event(crate::input::KeyCode::Esc).await;
         assert!(
             app.session.startup_warnings.is_empty(),
             "startup_warnings should be cleared after a keypress"

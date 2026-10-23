@@ -25,8 +25,12 @@ impl MarkManager {
         self.marks.contains(&line_idx)
     }
 
+    pub fn indices(&self) -> impl ExactSizeIterator<Item = usize> + '_ {
+        self.marks.iter().copied()
+    }
+
     pub fn get_indices(&self) -> Vec<usize> {
-        let mut v: Vec<usize> = self.marks.iter().copied().collect();
+        let mut v: Vec<usize> = self.indices().collect();
         v.sort_unstable();
         v
     }

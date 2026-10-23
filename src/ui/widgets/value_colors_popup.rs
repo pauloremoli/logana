@@ -1,6 +1,6 @@
+use crate::style::{Modifier, Style};
 use ratatui::{
     prelude::*,
-    style::Modifier,
     widgets::{
         Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget,
     },
@@ -316,13 +316,13 @@ mod tests {
                 ValueColorEntry {
                     key: "http_get".to_string(),
                     label: "GET".to_string(),
-                    color: ratatui::style::Color::Green,
+                    color: crate::style::Color::Green,
                     enabled: true,
                 },
                 ValueColorEntry {
                     key: "http_post".to_string(),
                     label: "POST".to_string(),
-                    color: ratatui::style::Color::Yellow,
+                    color: crate::style::Color::Yellow,
                     enabled: true,
                 },
             ],
@@ -342,13 +342,13 @@ mod tests {
                 ValueColorEntry {
                     key: "http_get".to_string(),
                     label: "GET".to_string(),
-                    color: ratatui::style::Color::Green,
+                    color: crate::style::Color::Green,
                     enabled: true,
                 },
                 ValueColorEntry {
                     key: "http_post".to_string(),
                     label: "POST".to_string(),
-                    color: ratatui::style::Color::Yellow,
+                    color: crate::style::Color::Yellow,
                     enabled: true,
                 },
             ],
@@ -369,19 +369,19 @@ mod tests {
                 ValueColorEntry {
                     key: "status_2xx".to_string(),
                     label: "2xx".to_string(),
-                    color: ratatui::style::Color::Green,
+                    color: crate::style::Color::Green,
                     enabled: true,
                 },
                 ValueColorEntry {
                     key: "status_4xx".to_string(),
                     label: "4xx".to_string(),
-                    color: ratatui::style::Color::Red,
+                    color: crate::style::Color::Red,
                     enabled: false,
                 },
                 ValueColorEntry {
                     key: "status_5xx".to_string(),
                     label: "5xx".to_string(),
-                    color: ratatui::style::Color::Magenta,
+                    color: crate::style::Color::Magenta,
                     enabled: true,
                 },
             ],
@@ -401,7 +401,7 @@ mod tests {
             .map(|i| ValueColorEntry {
                 key: format!("key_{}", i),
                 label: format!("Entry {}", i),
-                color: ratatui::style::Color::Cyan,
+                color: crate::style::Color::Cyan,
                 enabled: true,
             })
             .collect();

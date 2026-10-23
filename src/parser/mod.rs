@@ -68,6 +68,21 @@ pub fn find_builtin_parser(name: &str) -> Option<Box<dyn LogFormatParser>> {
     builtin_parsers().into_iter().find(|p| p.name() == name)
 }
 
+pub fn resolve_parser(name: &str) -> Result<std::sync::Arc<dyn LogFormatParser>, String> {
+    if let Some(config) = crate::config::custom_schemas()
+        .iter()
+        .find(|config| config.name == name)
+    {
+        CustomParser::from_config(config)
+            .map(|parser| std::sync::Arc::new(parser) as std::sync::Arc<dyn LogFormatParser>)
+            .map_err(|error| format!("invalid schema '{name}': {error}"))
+    } else {
+        find_builtin_parser(name)
+            .map(std::sync::Arc::from)
+            .ok_or_else(|| format!("no schema named '{name}'"))
+    }
+}
+
 pub fn detect_format(sample: &[&[u8]]) -> Option<Box<dyn LogFormatParser>> {
     if sample.is_empty() {
         return None;
@@ -155,6 +170,15 @@ pub fn validate_custom_schemas(schemas: &[crate::config::CustomSchemaConfig]) ->
                 .map(|e| format!("invalid custom schema '{}': {e}", cfg.name))
         })
         .collect()
+}
+
+/// Classifies a raw captured `level` value via `parser`'s own mapping (e.g. a
+/// custom schema's error/warning value overrides) when a parser is
+/// available, otherwise via the built-in `LogLevel::parse_level` keywords.
+pub fn classify_level(parser: Option<&dyn crate::parser::LogFormatParser>, raw: &str) -> LogLevel {
+    parser
+        .map(|p| p.classify_level(raw))
+        .unwrap_or_else(|| LogLevel::parse_level(raw))
 }
 
 #[cfg(test)]

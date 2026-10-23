@@ -1,13 +1,19 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
+use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
 use crate::{
-    config::Keybindings,
-    mode::app_mode::{Mode, ModeRenderState, status_entry},
+    mode::app_mode::{Mode, ModeRenderState},
     mode::normal_mode::NormalMode,
-    theme::Theme,
-    ui::{FieldLayout, KeyResult, TabState},
+    shared::{FieldLayout, KeyResult, TabState},
 };
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 use std::collections::HashSet;
 
@@ -127,6 +133,7 @@ impl Mode for SelectFieldsMode {
         (self, KeyResult::Ignored)
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[SELECT FIELDS]  ",
@@ -475,6 +482,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "tui")]
     async fn test_mode_bar_content() {
         let mode = SelectFieldsMode::new(
             sample_fields(),

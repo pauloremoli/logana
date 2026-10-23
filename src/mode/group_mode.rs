@@ -1,16 +1,21 @@
 use crate::config::Keybindings;
 use crate::filters::ColorConfig;
-use crate::mode::app_mode::{Mode, ModeRenderState, status_entry};
+use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+use crate::mode::app_mode::{Mode, ModeRenderState};
 use crate::mode::filter_mode::{
     append_color_flags, open_command, quote_command_arg, toggle_all_filters,
 };
 use crate::mode::normal_mode::NormalMode;
+use crate::shared::KeyResult;
+use crate::shared::TabState;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use crate::theme::Theme;
-use crate::ui::KeyResult;
-use crate::ui::TabState;
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 /// Mirrors `FilterManagementMode`, scoped to a single selected filter group.
@@ -57,10 +62,7 @@ impl GroupManagementMode {
     /// Group names matching the current search query — every known group
     /// when not searching or the query is empty.
     fn narrowed_group_names(&self, tab: &TabState) -> Vec<String> {
-        crate::ui::widgets::sidebar::narrowed_group_names(
-            &tab.log_manager.group_names(),
-            &self.search,
-        )
+        crate::shared::sidebar::narrowed_group_names(&tab.log_manager.group_names(), &self.search)
     }
 
     /// Handles a key while `searching` is active: raw text capture for the
@@ -329,6 +331,7 @@ impl Mode for GroupManagementMode {
         (self, KeyResult::Ignored)
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[GROUP]  ",
@@ -756,6 +759,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_mode_bar_content_lists_actions() {
         let mode = GroupManagementMode::new("net".to_string());
         let kb = Keybindings::default();

@@ -1,15 +1,21 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
+use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
 use crate::{
-    config::Keybindings,
-    mode::app_mode::{Mode, ModeRenderState, status_entry},
+    mode::app_mode::{Mode, ModeRenderState},
     mode::command_mode::CommandMode,
     mode::normal_mode::NormalMode,
     mode::search_mode::SearchMode,
-    theme::Theme,
-    ui::{KeyResult, TabState, field_layout::render_line_text},
+    shared::{KeyResult, TabState, field_layout::render_line_text},
 };
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 /// A character-search motion waiting for the target character.
@@ -224,6 +230,7 @@ impl Mode for VisualMode {
         (self, KeyResult::Ignored)
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         if self.pending_motion.is_some() {
             return Line::from(vec![
@@ -598,6 +605,7 @@ pub fn till_char_backward(text: &str, col: usize, target: char) -> usize {
 
 /// Overlay REVERSED modifier on chars [lo, hi] (inclusive) of a rendered Line.
 /// Used by the render layer to show the visual-char selection.
+#[cfg(feature = "tui")]
 pub fn apply_char_selection(line: Line<'static>, lo: usize, hi: usize) -> Line<'static> {
     let base_style = line.style;
     let mut new_spans: Vec<Span<'static>> = Vec::new();
@@ -623,7 +631,10 @@ pub fn apply_char_selection(line: Line<'static>, lo: usize, hi: usize) -> Line<'
                 new_spans.push(Span::styled(s, style));
             }
             let s: String = span_chars[sel_start..sel_end].iter().collect();
-            new_spans.push(Span::styled(s, style.add_modifier(Modifier::REVERSED)));
+            new_spans.push(Span::styled(
+                s,
+                style.add_modifier(Modifier::REVERSED.into()),
+            ));
             if sel_end < span_len {
                 let s: String = span_chars[sel_end..].iter().collect();
                 new_spans.push(Span::styled(s, style));
@@ -643,7 +654,7 @@ mod tests {
     use crate::db::LogManager;
     use crate::ingestion::FileReader;
     use crate::mode::app_mode::ModeRenderState;
-    use crate::ui::TabState;
+    use crate::shared::TabState;
     use std::sync::Arc;
 
     async fn make_tab(lines: &[&str]) -> TabState {
@@ -1177,6 +1188,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_mode_bar_content_contains_filter_search_yank() {
         let mode = make_mode("hello");
         let content = mode.mode_bar_content(&Keybindings::default(), &Theme::default());
@@ -1187,6 +1199,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_mode_bar_pending_shows_pending_message() {
         let mut mode = make_mode("hello");
         mode.pending_motion = Some(PendingMotion::FindForward);
@@ -1296,23 +1309,25 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_apply_char_selection_single_span() {
         let line = Line::from("hello world");
         let result = apply_char_selection(line, 0, 4);
         let text: String = result.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "hello world");
         // First span should have REVERSED
-        assert!(result.spans[0].style.add_modifier == Modifier::REVERSED);
+        assert!(result.spans[0].style.add_modifier == (Modifier::REVERSED).into());
         // Suffix should not have REVERSED
         assert!(
             !result.spans[1]
                 .style
                 .add_modifier
-                .contains(Modifier::REVERSED)
+                .contains((Modifier::REVERSED).into())
         );
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_apply_char_selection_full_span() {
         let line = Line::from("hi");
         let result = apply_char_selection(line, 0, 1);
@@ -1321,11 +1336,12 @@ mod tests {
             result.spans[0]
                 .style
                 .add_modifier
-                .contains(Modifier::REVERSED)
+                .contains((Modifier::REVERSED).into())
         );
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_apply_char_selection_out_of_range_noop() {
         let line = Line::from("hello");
         let result = apply_char_selection(line, 10, 20);
@@ -1335,7 +1351,7 @@ mod tests {
             !result.spans[0]
                 .style
                 .add_modifier
-                .contains(Modifier::REVERSED)
+                .contains((Modifier::REVERSED).into())
         );
     }
 
@@ -1496,6 +1512,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "tui")]
     async fn test_mode_bar_contains_line_nav_hints() {
         let mode = make_mode("hello");
         let content = mode.mode_bar_content(&Keybindings::default(), &Theme::default());

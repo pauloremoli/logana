@@ -36,7 +36,8 @@ pub(crate) async fn run_headless_merge(
         .collect();
     let readers: Vec<FileReader> = sources.into_iter().map(|s| s.reader).collect();
 
-    let entries = crate::ui::build_merged_index(&readers, &parsers, &year_maps, &continuation_maps);
+    let entries =
+        crate::shared::build_merged_index(&readers, &parsers, &year_maps, &continuation_maps);
 
     for entry in &entries {
         if visible[entry.source_idx]
@@ -113,9 +114,9 @@ fn collect_visible_lines(
                         && synthetic_level
                         && let Some(p) = parts.as_ref()
                     {
-                        let display = crate::ui::field_layout::apply_field_layout(
+                        let display = crate::shared::field_layout::apply_field_layout(
                             p,
-                            &crate::ui::FieldLayout::default(),
+                            &crate::shared::FieldLayout::default(),
                             &std::collections::HashSet::new(),
                             false,
                             None,
@@ -126,7 +127,7 @@ fn collect_visible_lines(
                             text_dec = dec;
                         }
                     }
-                    let mut ctx = crate::ui::FilterEvalContext::new(
+                    let mut ctx = crate::shared::FilterEvalContext::new(
                         has_text_includes,
                         &date_filters,
                         &mut dc,
@@ -134,7 +135,7 @@ fn collect_visible_lines(
                         &exc_ff,
                         None,
                     );
-                    if crate::ui::line_is_visible(text_dec, &mut ctx, parts.as_ref(), line) {
+                    if crate::shared::line_is_visible(text_dec, &mut ctx, parts.as_ref(), line) {
                         vis.push(idx);
                     }
                 }

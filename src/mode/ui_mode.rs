@@ -1,11 +1,17 @@
+#[cfg(feature = "tui")]
 use crate::config::Keybindings;
-use crate::mode::app_mode::{Mode, ModeRenderState, status_entry, status_entry_dyn};
+use crate::input::{KeyCode, KeyModifiers};
+use crate::mode::app_mode::{Mode, ModeRenderState};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::{status_entry, status_entry_dyn};
 use crate::mode::normal_mode::NormalMode;
+use crate::shared::{KeyResult, TabState};
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use crate::theme::Theme;
-use crate::ui::{KeyResult, TabState};
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 #[derive(Debug)]
@@ -93,6 +99,7 @@ impl Mode for UiMode {
         ModeRenderState::Ui
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans = vec![Span::styled(
             "[UI]  ",

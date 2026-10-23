@@ -1,0 +1,28 @@
+04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: dirtyrfservice::instance1 state=CONNECTED
+05 LINUX-0-syscon <2035-04-04T21:54:53.283979Z> 62A INF/Syscon/StartupMgr, dirtyrfservice::instance1 started in 878 ms, and achieved CONNECTED
+06 LINUX-0-dirtyrf <2035-04-04T21:54:53.284472Z> 643 INF/DirtyRf1/Database,  Main config read from path: /etc/rfsw/configs/3/VARIANT_BASE_DIR/dirtyrf_inst1.bin
+07 LINUX-0-capture <2035-04-04T21:54:53.286876Z> 63C INF/CCS/AaRTOSApi, RTOS_msgQueueFileCreate: creating fifo directory: /ram/msgfifo
+08 LINUX-0-capture <2035-04-04T21:54:53.286940Z> 63C INF/CCS/AaFile, AaFileStdio_CreateDir(): creating directory /ram/msgfifo. Reason: File exists (errno = 17)
+09 LINUX-0-capture <2035-04-04T21:54:53.286968Z> 63C INF/CCS/AaRTOSApi, RTOS_msgQueueFileCreate: creating fifo file: /ram/msgfifo/mkfifo178
+0a LINUX-0-capture <2035-04-04T21:54:53.287017Z> 63C INF/CCS/AaSysComUser, Registered for cleanup message from syscom
+0b LINUX-0-capture <2035-04-04T21:54:53.287161Z> 63C INF/CCS/AaConfigRad, AaConfigRadSetMaxTagCount(): domain = 6, count = 158
+0c LINUX-0-syscon <2035-04-04T21:54:53.287187Z> 62A INF/Syscon/StateMgr, State Change Notif recv from [0x21:0x4011] - srv: captureservice::instance1 state: CONNECTED addr: [0x21:0x4011]
+0d LINUX-0-capture <2035-04-04T21:54:53.287413Z> 63C INF/Draco/DracoRT, [captureservice::instance1]::SysconedService service [captureservice::instance1, 33, 0x60003]
+0e LINUX-0-capture <2035-04-04T21:54:53.287528Z> 63C INF/Draco/DracoRT, [captureservice::instance1]::draco::rt::AbstractService::AbstractService(const std::string&, const sf::InitialConf&, const mf::CpId&) AbstractService CTOR
+0f LINUX-0-capture <2035-04-04T21:54:53.287545Z> 63C INF/Draco/DracoRT, draco::rt::CaptureService::CaptureService(const std::string&, const sf::InitialConf&, const mf::CpId&)::CaptureService CTOR name:captureservice::instance1 cpId:33
+10 LINUX-0-capture <2035-04-04T21:54:53.287573Z> 63C INF/D0x000C/T0x000A, libDracoRt.so.1.0 service: captureservice::instance1 created.
+11 LINUX-0-syscon <2035-04-04T21:54:53.287690Z> 62A INF/Syscon/StateNotif, Sending State Change Notif to: syscon::node0: srv=captureservice::instance1 state=CONNECTED addr=[0x21:0x4011]
+12 LINUX-0-syscon <2035-04-04T21:54:53.287819Z> 62A INF/Syscon/StateNotif, Sending State Change Notif to: syscon::node8: srv=captureservice::instance1 state=CONNECTED addr=[0x21:0x4011]
+13 LINUX-0-syscon <2035-04-04T21:54:53.287947Z> 62A INF/Syscon/StateNotif, Sending State Change Notif to: syscon::node2: srv=captureservice::instance1 state=CONNECTED addr=[0x21:0x4011]
+14 LINUX-0-syscon <2035-04-04T21:54:53.288072Z> 62A INF/Syscon/StateNotif, Sending State Change Notif to: syscon::node1: srv=captureservice::instance1 state=CONNECTED addr=[0x21:0x4011]
+15 LINUX-0-syscon <2035-04-04T21:54:53.288368Z> 62A INF/Syscon/StateNotif, Sending State Change Notif to: syscon::node7: srv=captureservice::instance1 state=CONNECTED addr=[0x21:0x4011]
+16 LINUX-0-tempest <2035-04-04T21:54:53.288453Z> 6DD INF/tempest::instance4/TempestSensorElemental, runElemental sensorName=[dfe1:CORE_PL] id=[260] -> starting mesurements
+17 LINUX-0-syscon <2035-04-04T21:54:53.288550Z> 62A INF/Syscon/StateNotif, Sending State Change Notif to: syscon::node9: srv=captureservice::instance1 state=CONNECTED addr=[0x21:0x4011]
+18 LINUX-0-syscon <2035-04-04T21:54:53.288759Z> 62A INF/Syscon/StateNotif, Sending State Change Notif to: syscon::node6: srv=captureservice::instance1 state=CONNECTED addr=[0x21:0x4011]
+19 LINUX-0-syscon <2035-04-04T21:54:53.288953Z> 62A INF/Syscon/StateNotif, Prepare StartedBySysconNotif: service=captureservice::instance1, flag=true, suspended=false
+1a LINUX-0-syscon <2035-04-04T21:54:53.289306Z> 62A INF/Syscon/StateNotif, ...send notif to: captureservice::instance1: srv=syscon::node0 state=RUNNING_READY addr=[0x1:0x1011]
+1b LINUX-0-syscon <2035-04-04T21:54:53.289417Z> 62A INF/Syscon/StateNotif, ...send notif to: captureservice::instance1: srv=eventcollector::instance1 state=RUNNING_READY addr=[0x11:0x1011]
+1c LINUX-0-syscon <2035-04-04T21:54:53.289448Z> 62A INF/Syscon/StartupMgr, StateChange: captureservice::instance1 state=CONNECTED
+1d LINUX-0-syscon <2035-04-04T21:54:53.289608Z> 62A INF/Syscon/StartupMgr, captureservice::instance1 started in 954 ms, and achieved CONNECTED
+1e LINUX-0-tempest <2035-04-04T21:54:53.291202Z> 6E0 INF/tempest::instance4/TempestSensorElemental, runElemental sensorName=[dfe1:CORE_PS] id=[644] -> starting mesurements
+1f LINUX-0-capture <2035-04-04T21:54:53.292033Z> 63C INF/Draco/DracoRT, draco::rt::CaptureService::CaptureService(const std::string&, const sf::InitialConf&, const mf::CpId&)::waitForRequiredServices

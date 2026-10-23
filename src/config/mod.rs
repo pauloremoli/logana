@@ -315,7 +315,7 @@ pub struct Config {
     pub wrap: Option<bool>,
     /// When `Some`, pins the filter sidebar to the given side, overriding the DB-stored value.
     #[serde(default)]
-    pub sidebar_side: Option<crate::ui::SidebarSide>,
+    pub sidebar_side: Option<crate::shared::SidebarSide>,
     #[serde(default)]
     pub dlt_devices: Vec<DltDevice>,
     /// Default port for the embedded MCP server. Used when `:enable-mcp` is invoked without
@@ -440,7 +440,7 @@ pub fn schemas_dir() -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
     use crate::db::AppSettingsStore;
-    use crossterm::event::{KeyCode, KeyModifiers};
+    use crate::input::{KeyCode, KeyModifiers};
 
     #[test]
     fn test_parse_single_char() {

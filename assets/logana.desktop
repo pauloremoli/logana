@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Logana
+Comment=Explore and analyze logs
+Exec=logana-gui %F
+Icon=logana
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=logana

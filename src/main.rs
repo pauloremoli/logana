@@ -5,6 +5,11 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use logana::cli::{
+    Args, expand_cli_files, resolve_out_dir, run_headless_mode, validate_startup_args,
+};
+#[cfg(test)]
+use logana::cli::{validate_file_arg, validate_inline_filter};
 use logana::db::Database;
 use logana::db::LogManager;
 use logana::db::{AppSettingsStore, SettingsKey};
@@ -18,103 +23,6 @@ use logana::{
 use ratatui::prelude::*;
 use std::io::{IsTerminal, stdin, stdout};
 use std::sync::Arc;
-
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Files to process. If none are given, reads from stdin. Each
-    /// additional path beyond the first opens in its own tab (in --headless
-    /// mode, its matching lines are appended to the output after the
-    /// previous file's).
-    files: Vec<String>,
-
-    /// Path to a JSON filter file to preload (e.g. saved with :save-filters).
-    /// Filters are applied in a single pass during file indexing.
-    #[arg(short = 'f', long)]
-    filters: Option<String>,
-
-    /// Start at the end of the file and enable tail mode.
-    /// When combined with --filters, the predicate is evaluated from the last
-    /// line backward so the tail is available immediately after loading.
-    #[arg(long)]
-    tail: bool,
-
-    /// Add an include filter. Accepts the same arguments as the :filter command.
-    /// May be repeated. Examples: -i "error"  or  -i "--bg Red --field level=ERROR"
-    #[arg(
-        short = 'i',
-        long = "include",
-        value_name = "ARGS",
-        allow_hyphen_values = true
-    )]
-    include_filters: Vec<String>,
-
-    /// Add an exclude filter. Accepts the same arguments as the :exclude command.
-    /// May be repeated. Examples: -o "debug"  or  -o "--field level=debug"
-    #[arg(
-        short = 'o',
-        long = "exclude",
-        value_name = "ARGS",
-        allow_hyphen_values = true
-    )]
-    exclude_filters: Vec<String>,
-
-    /// Add a date/time range filter. Accepts the same arguments as :date-filter.
-    /// May be repeated. Examples: -t "> 2024-02-21"  or  -t "01:00 .. 02:00"
-    #[arg(
-        short = 't',
-        long = "timestamp",
-        value_name = "ARGS",
-        allow_hyphen_values = true
-    )]
-    timestamp_filters: Vec<String>,
-
-    /// Enable the embedded MCP server on startup. Port defaults to 9876.
-    /// Use --mcp for the default port or --mcp <PORT> for a custom port.
-    #[arg(long, num_args = 0..=1, default_missing_value = "9876", value_name = "PORT")]
-    mcp: Option<u16>,
-
-    /// Run without TUI, write matching lines to stdout or --output.
-    #[arg(long)]
-    headless: bool,
-
-    /// Write output to PATH instead of stdout (requires --headless or
-    /// --merge). With --merge and no --headless, the resulting tab is saved
-    /// to PATH immediately instead of staying temp-backed.
-    #[arg(long, value_name = "PATH")]
-    output: Option<std::path::PathBuf>,
-
-    /// Execute a command and stream its output to a tab.
-    /// The value is a quoted command string passed to the program directly
-    /// (no shell); arguments are separated by whitespace.
-    /// Example: logana --run "docker logs -f mycontainer"
-    /// Stderr lines are prefixed with "ERROR " for visibility.
-    #[arg(long, value_name = "COMMAND", conflicts_with = "files")]
-    run: Option<String>,
-
-    /// Directory to extract archive contents into, when a given path is an
-    /// archive or a directory. Defaults to the current working directory.
-    /// Extracted files are always written to real, permanent files — never
-    /// temp files.
-    #[arg(long, value_name = "DIR")]
-    out: Option<std::path::PathBuf>,
-
-    /// Interleave all input files by timestamp instead of concatenating
-    /// them (or, without --headless, open the result as a tab). Requires
-    /// at least 2 input files; archive inputs contribute one merge source
-    /// per file inside the archive.
-    #[arg(long)]
-    merge: bool,
-}
-
-/// Resolves the `--out` flag to a concrete directory: the given path, or
-/// the current working directory when omitted (falling back to `.` on the
-/// rare system where the cwd can't be read).
-fn resolve_out_dir(out: Option<&std::path::PathBuf>) -> std::path::PathBuf {
-    out.cloned().unwrap_or_else(|| {
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    })
-}
 
 struct AlternateScreen {
     terminal: Terminal<CrosstermBackend<std::io::Stdout>>,
@@ -140,57 +48,6 @@ impl Drop for AlternateScreen {
     }
 }
 
-fn get_db_path() -> String {
-    if let Some(data_dir) = dirs::data_dir() {
-        let app_dir = data_dir.join("logana");
-        app_dir.join("logana.db").to_string_lossy().to_string()
-    } else {
-        "logana.db".to_string()
-    }
-}
-
-/// Expands any glob-pattern entry in `files` (e.g. `system.log*`) into its
-/// sorted list of matching paths, leaving literal paths untouched. A pattern
-/// that matches nothing is an error naming the pattern, since the user
-/// clearly meant to reference files that don't exist rather than pass a
-/// literal `*` through. A file that literally exists on disk is always
-/// passed through as-is, even if its name contains `*`/`?`/`[`.
-fn expand_cli_files(files: Vec<String>) -> std::result::Result<Vec<String>, String> {
-    let mut expanded = Vec::with_capacity(files.len());
-    for f in files {
-        if logana::utils::filesystem::should_glob_expand(&f) {
-            let matches =
-                logana::utils::filesystem::expand_glob(&f).map_err(|e| format!("Error: {e}"))?;
-            if matches.is_empty() {
-                return Err(format!("Error: No files match '{}'.", f));
-            }
-            expanded.extend(matches);
-        } else {
-            expanded.push(f);
-        }
-    }
-    Ok(expanded)
-}
-
-fn validate_file_arg(path: &str) -> std::result::Result<(), String> {
-    let p = std::path::Path::new(path);
-    if !p.exists() {
-        return Err(format!("'{}' not found.", path));
-    }
-    Ok(())
-}
-
-fn validate_inline_filter(prefix: &str, args_str: &str) -> std::result::Result<(), String> {
-    use clap::Parser as _;
-    use logana::commands::CommandLine;
-    use logana::commands::auto_complete::shell_split;
-
-    let cmd = format!("{} {}", prefix, args_str);
-    CommandLine::try_parse_from(shell_split(&cmd))
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-}
-
 fn resolve_source(file_path: Option<&String>) -> (Option<String>, bool) {
     if let Some(path) = file_path {
         let p = std::path::Path::new(path);
@@ -209,7 +66,7 @@ fn resolve_source(file_path: Option<&String>) -> (Option<String>, bool) {
 }
 
 async fn init_database() -> Result<Arc<Database>> {
-    let db_path = get_db_path();
+    let db_path = logana::db::default_db_path();
     let db = match Database::new(&db_path).await {
         Ok(db) => db,
         Err(err) => {
@@ -221,90 +78,6 @@ async fn init_database() -> Result<Arc<Database>> {
         }
     };
     Ok(Arc::new(db))
-}
-
-fn validate_startup_args(args: &Args) -> std::result::Result<(), String> {
-    for path in &args.files {
-        if let Err(msg) = validate_file_arg(path) {
-            return Err(format!("Error: {}", msg));
-        }
-    }
-
-    if let Some(ref fpath) = args.filters
-        && let Err(msg) = validate_file_arg(fpath)
-    {
-        return Err(format!("Error (--filters): {}", msg));
-    }
-    for args_str in &args.include_filters {
-        if let Err(msg) = validate_inline_filter("filter", args_str) {
-            return Err(format!("Error (-i/--include): {}", msg));
-        }
-    }
-    for args_str in &args.exclude_filters {
-        if let Err(msg) = validate_inline_filter("exclude", args_str) {
-            return Err(format!("Error (-o/--exclude): {}", msg));
-        }
-    }
-    for args_str in &args.timestamp_filters {
-        if let Err(msg) = validate_inline_filter("date-filter", args_str) {
-            return Err(format!("Error (-t/--timestamp): {}", msg));
-        }
-    }
-
-    if args.output.is_some() && !args.headless && !args.merge {
-        return Err("Error: --output requires --headless or --merge.".to_string());
-    }
-    if args.merge {
-        if args.files.len() < 2 {
-            return Err(format!(
-                "Error: --merge requires at least 2 input files, got {}.",
-                args.files.len()
-            ));
-        }
-        for path in &args.files {
-            if std::path::Path::new(path).is_dir() {
-                return Err(format!(
-                    "Error: '{}' is a directory. --merge requires file paths.",
-                    path
-                ));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn run_headless_mode(args: Args) -> Result<()> {
-    for path in &args.files {
-        if std::path::Path::new(path).is_dir() {
-            eprintln!(
-                "Error: '{}' is a directory. --headless requires file paths or stdin.",
-                path
-            );
-            std::process::exit(1);
-        }
-    }
-
-    let mut schema_warnings = init_schemas();
-    schema_warnings.extend(logana::parser::validate_custom_schemas(
-        logana::config::custom_schemas(),
-    ));
-    for warning in &schema_warnings {
-        eprintln!("Warning: {warning}");
-    }
-
-    let out_dir = resolve_out_dir(args.out.as_ref());
-    logana::headless::run_headless(&logana::headless::HeadlessArgs {
-        files: args.files,
-        filters: args.filters,
-        include_filters: args.include_filters,
-        exclude_filters: args.exclude_filters,
-        timestamp_filters: args.timestamp_filters,
-        output: args.output,
-        out_dir,
-        merge: args.merge,
-    })
-    .await
 }
 
 async fn build_app(log_manager: LogManager, config: Config) -> App {
@@ -831,35 +604,6 @@ mod tests {
     fn test_args_mcp_flag_custom_port() {
         let args = Args::try_parse_from(["logana", "--mcp", "8080"]).unwrap();
         assert_eq!(args.mcp, Some(8080));
-    }
-
-    #[test]
-    fn test_get_db_path_contains_logana() {
-        let path = get_db_path();
-        assert!(
-            path.contains("logana"),
-            "DB path should contain 'logana': {}",
-            path
-        );
-        assert!(
-            path.ends_with("logana.db"),
-            "DB path should end with 'logana.db': {}",
-            path
-        );
-    }
-
-    #[test]
-    fn test_get_db_path_uses_data_dir_when_available() {
-        let path = get_db_path();
-        if dirs::data_dir().is_some() {
-            assert!(
-                path.contains("logana"),
-                "DB path should include app directory: {}",
-                path
-            );
-        } else {
-            assert_eq!(path, "logana.db");
-        }
     }
 
     #[test]

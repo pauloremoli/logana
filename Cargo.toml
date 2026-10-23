@@ -12,6 +12,9 @@ categories = ["command-line-utilities", "development-tools::debugging"]
 exclude = [".github", "pkg", "docs"]
 default-run = "logana"
 
+[workspace]
+members = ["crates/logana-gui", "crates/logana-full"]
+
 [package.metadata.wix]
 upgrade-guid = "40A718EC-7645-458F-A8AB-6DE8BC5A8183"
 path-guid = "0D696C66-ABEF-4551-A553-0530BA66BEC7"
@@ -23,8 +26,8 @@ anyhow = { version = "1.0", default-features = false, features = ["std"] }
 libc = { version = "0.2", default-features = false }
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
 regex = { version = "1.10", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
-ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
-crossterm = "0.29"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"], optional = true }
+crossterm = { version = "0.29", optional = true }
 unicode-width = { version = "0.2", default-features = false, features = ["cjk"] }
 serde = { version = "1.0", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
@@ -41,10 +44,11 @@ memchr = { version = "2", default-features = false, features = ["std"] }
 aho-corasick = { version = "1", default-features = false, features = ["std", "perf-literal"] }
 rayon = "1"
 time = { version = "0.3", default-features = false, features = ["std"] }
-arboard = "3"
+arboard = { version = "3", optional = true }
+bitflags = "2"
 tempfile = "3.10"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 bzip2 = { version = "0.6", default-features = false, features = ["bzip2-sys"] }
 xz2 = { version = "0.1", default-features = false }
 tar = { version = "0.4", default-features = false }
@@ -52,9 +56,11 @@ opentelemetry-proto = { version = "0.31", default-features = false, features = [
 prost = { version = "0.14", default-features = false }
 tonic = { version = "0.14", default-features = false, features = ["transport", "router"] }
 tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
-strum = { version = "0.28.0", features = ["derive"] }
+strum = { version = "0.28.0", default-features = false, features = ["std", "derive"] }
 schemars = { version = "0.8", default-features = false, features = ["derive", "preserve_order"] }
 arc-swap = { version = "1.9", default-features = false }
+gpui-kit = { version = "0.7", default-features = false, features = ["component", "assets"], optional = true }
+futures = { version = "0.3", default-features = false, features = ["std", "executor"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["rayon", "html_reports"] }
@@ -73,10 +79,12 @@ harness = false
 [[bench]]
 name = "render_pipeline"
 harness = false
+required-features = ["tui"]
 
 [[bench]]
 name = "headless"
 harness = false
+required-features = ["tui"]
 
 [[bench]]
 name = "paged_file"
@@ -89,3 +97,24 @@ codegen-units = 1
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[features]
+default = ["tui"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:arboard"]
+gui = ["dep:gpui-kit", "dep:futures"]
+gui-test = ["gui", "gpui-kit/test-support"]
+
+[[bin]]
+name = "logana"
+path = "src/main.rs"
+required-features = ["tui"]
+
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+license-file = ["LICENSE", "0"]
+conflicts = "logana-full"
+assets = [
+    ["target/release/logana", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/logana/README.md", "644"],
+]

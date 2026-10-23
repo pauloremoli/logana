@@ -1,13 +1,19 @@
+#[cfg(feature = "tui")]
+use crate::config::Keybindings;
+use crate::input::{KeyCode, KeyModifiers};
+#[cfg(feature = "tui")]
+use crate::mode::app_mode::status_entry;
+#[cfg(feature = "tui")]
+use crate::style::{Modifier, Style};
+#[cfg(feature = "tui")]
+use crate::theme::Theme;
 use crate::{
-    config::Keybindings,
-    mode::app_mode::{Mode, ModeRenderState, status_entry},
+    mode::app_mode::{Mode, ModeRenderState},
     mode::normal_mode::NormalMode,
-    theme::Theme,
-    ui::{KeyResult, TabId, TabState},
+    shared::{KeyResult, TabId, TabState},
 };
 use async_trait::async_trait;
-use crossterm::event::{KeyCode, KeyModifiers};
-use ratatui::style::{Modifier, Style};
+#[cfg(feature = "tui")]
 use ratatui::text::{Line, Span};
 
 #[derive(Debug)]
@@ -87,6 +93,7 @@ impl Mode for MergeSelectMode {
         (self, KeyResult::Ignored)
     }
 
+    #[cfg(feature = "tui")]
     fn mode_bar_content(&self, kb: &Keybindings, theme: &Theme) -> Line<'static> {
         let mut spans: Vec<Span<'static>> = vec![Span::styled(
             "[MERGE SELECT]  ",
@@ -126,7 +133,6 @@ mod tests {
     use crate::db::{Database, LogManager};
     use crate::ingestion::FileReader;
     use crate::mode::app_mode::ModeRenderState;
-    use crossterm::event::KeyModifiers;
     use std::sync::Arc;
 
     async fn make_tab() -> TabState {
@@ -310,6 +316,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tui")]
     fn test_mode_bar_content_contains_merge_select_label() {
         let mode = MergeSelectMode::new(tabs(2), indices(2));
         let kb = Keybindings::default();

@@ -97,7 +97,7 @@ impl App {
             ValueColorEntry, ValueColorGroup as VCGroup, ValueColorsMode,
         };
         let disabled = &self.tabs[self.active_tab].display.level_colors_disabled;
-        let levels: Vec<(&str, &str, ratatui::style::Color)> = vec![
+        let levels: Vec<(&str, &str, crate::style::Color)> = vec![
             ("trace", "TRACE", self.theme.trace_fg),
             ("debug", "DEBUG", self.theme.debug_fg),
             ("info", "INFO", self.theme.info_fg),
@@ -302,19 +302,7 @@ impl App {
                 self.tabs[tab_idx].apply_format(None);
             }
             Some(schema_name) => {
-                let custom = crate::config::custom_schemas()
-                    .iter()
-                    .find(|s| s.name == schema_name)
-                    .cloned();
-                let parser: std::sync::Arc<dyn crate::parser::LogFormatParser> = match custom {
-                    Some(cfg) => std::sync::Arc::new(
-                        crate::parser::CustomParser::from_config(&cfg)
-                            .map_err(|e| format!("invalid schema '{schema_name}': {e}"))?,
-                    ),
-                    None => crate::parser::find_builtin_parser(&schema_name)
-                        .map(std::sync::Arc::from)
-                        .ok_or_else(|| format!("no schema named '{schema_name}'"))?,
-                };
+                let parser = crate::parser::resolve_parser(&schema_name)?;
                 let tab_idx = self.active_tab;
                 self.tabs[tab_idx].apply_format(Some(parser));
                 self.apply_default_filters_if_empty_at(tab_idx).await;

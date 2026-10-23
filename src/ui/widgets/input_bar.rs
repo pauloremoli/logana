@@ -1,3 +1,4 @@
+use crate::style::Style;
 use ratatui::{
     prelude::*,
     widgets::{Paragraph, Wrap},
