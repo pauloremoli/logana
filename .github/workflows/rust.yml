@@ -11,6 +11,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  windows-check:
+    name: Check Windows
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - name: Check Windows library
+      run: cargo check --locked -p logana --lib --all-features
+
   check:
     name: Check & Lint
     runs-on: ubuntu-latest

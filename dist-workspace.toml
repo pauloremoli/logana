@@ -5,6 +5,8 @@ members = ["cargo:."]
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.31.0"
+# Keep frontend features and duplicate binary names isolated between packages.
+precise-builds = true
 # The release workflow adds desktop integration to generated GUI installers.
 allow-dirty = ["ci", "msi"]
 # CI backends to support
@@ -23,3 +25,13 @@ pr-run-mode = "plan"
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+
+# Native GUI libraries are needed by the GNU desktop builds only.
+[dist.dependencies.apt]
+libfontconfig1-dev = { targets = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"] }
+libwayland-dev = { targets = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"] }
+libxkbcommon-x11-dev = { targets = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"] }
+libvulkan-dev = { targets = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"] }
+libssl-dev = { targets = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"] }
+libclang-dev = { targets = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"] }
+liblzma-dev = { targets = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"] }

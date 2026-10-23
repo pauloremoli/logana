@@ -296,9 +296,6 @@ impl FileReader {
             let mut reader = &*file;
             let mut chunk = vec![0; 64 * 1024];
             loop {
-                if cancel.load(Ordering::Relaxed) {
-                    return Err(io::Error::new(io::ErrorKind::Interrupted, "load cancelled"));
-                }
                 let read = reader.read(&mut chunk)?;
                 if read == 0 {
                     break;
