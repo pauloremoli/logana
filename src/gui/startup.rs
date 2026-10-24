@@ -184,10 +184,32 @@ fn has_stdin_input() -> bool {
         let kind = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
         matches!(kind, libc::S_IFREG | libc::S_IFIFO | libc::S_IFSOCK)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        true
+        use std::os::windows::io::AsRawHandle;
+        windows_handle_has_input(std::io::stdin().as_raw_handle())
     }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+#[cfg(windows)]
+fn windows_handle_has_input(handle: std::os::windows::io::RawHandle) -> bool {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileType(handle: std::os::windows::io::RawHandle) -> u32;
+    }
+    const FILE_TYPE_DISK: u32 = 1;
+    const FILE_TYPE_PIPE: u32 = 3;
+    // Explorer launches may have no stdin handle, or a NUL device. Neither
+    // should open a stdin tab and bypass restoration of the previous session.
+    // SAFETY: GetFileType only inspects the handle; invalid handles return UNKNOWN.
+    matches!(
+        unsafe { GetFileType(handle) },
+        FILE_TYPE_DISK | FILE_TYPE_PIPE
+    )
 }
 
 impl App {
@@ -846,6 +868,20 @@ fn build_merge(
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[cfg(windows)]
+    #[test]
+    fn stdin_detection_accepts_files_and_pipes_but_not_desktop_handles() {
+        use std::os::windows::io::AsRawHandle;
+        assert!(!windows_handle_has_input(std::ptr::null_mut()));
+        assert!(!windows_handle_has_input(-1isize as _));
+        let null = std::fs::File::open("NUL").unwrap();
+        assert!(!windows_handle_has_input(null.as_raw_handle()));
+        let file = tempfile::tempfile().unwrap();
+        assert!(windows_handle_has_input(file.as_raw_handle()));
+        let (reader, _writer) = std::io::pipe().unwrap();
+        assert!(windows_handle_has_input(reader.as_raw_handle()));
+    }
 
     #[tokio::test]
     async fn startup_filters_keep_colors_fields_groups_and_dates() {
