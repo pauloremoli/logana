@@ -183,6 +183,11 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify desktop installers
+        run: python3 scripts/test-desktop-installers.py
       - name: Install cached dist
         uses: actions/download-artifact@v7
         with:
