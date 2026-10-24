@@ -5,9 +5,12 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-10-24
+### Added
+- [gui] New actions for UI toogles.
 
-## [0.8.0] - 2026-10-23
+### Fixed 
+- [gui] Uses raw format in multiline formats, as column based doesn't work well on those formats.
+- [gui] Windows desktop application launch without script.
 
 ## [0.8.0] - 2026-10-23
 
