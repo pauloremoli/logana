@@ -754,7 +754,7 @@ pub fn open(
             } else {
                 tab.filter.show_marks_only = !tab.filter.show_marks_only;
             }
-            tab.begin_filter_refresh_background();
+            crate::gui::update::refresh_filters(state, state.active_tab);
             return Effect::None;
         }
         Action::ShowLogs => {

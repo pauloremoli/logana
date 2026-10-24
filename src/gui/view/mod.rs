@@ -160,6 +160,15 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                 message_width,
                 f32::from(window.rem_size()) / 13.,
             );
+            if app.state.pending_selection_anchor.is_none()
+                && let Some((id, old_row, mut top)) = app.selection_viewport.take()
+                && let Some((selected_id, _, row)) = app.state.log_selection
+                && selected_id == id
+                && app.state.tabs[active_tab].id == id
+            {
+                top.item_ix = top.item_ix.saturating_add(row).saturating_sub(old_row);
+                app.log_scroll.scroll_to(top);
+            }
             let tab = &app.state.tabs[active_tab];
             let sidebar_on_left = tab.display.sidebar_side.is_left();
             let show_sidebar = tab.display.show_sidebar;

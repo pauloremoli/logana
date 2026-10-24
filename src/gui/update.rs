@@ -913,11 +913,12 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             if swaps.is_empty() {
                 return Effect::None;
             }
-            force_recompute(tab);
-            Effect::PersistFilterEdit(crate::gui::effect::FilterEdit::Reorder {
+            let effect = Effect::PersistFilterEdit(crate::gui::effect::FilterEdit::Reorder {
                 db: tab.log_manager.db.clone(),
                 order: tab.log_manager.get_filters().iter().map(|f| f.id).collect(),
-            })
+            });
+            refresh_filters(state, tab_idx);
+            effect
         }
         Message::FilterToggled(tab_idx, id) => {
             let Some(tab) = state.tabs.get_mut(tab_idx) else {
@@ -926,8 +927,7 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             if !tab.log_manager.toggle_filter_local(id) {
                 return Effect::None;
             }
-            force_recompute(tab);
-            Effect::PersistFilterEdit(crate::gui::effect::FilterEdit::Toggle {
+            let effect = Effect::PersistFilterEdit(crate::gui::effect::FilterEdit::Toggle {
                 db: tab.log_manager.db.clone(),
                 id,
                 enabled: tab
@@ -937,7 +937,9 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
                     .find(|f| f.id == id)
                     .unwrap()
                     .enabled,
-            })
+            });
+            refresh_filters(state, tab_idx);
+            effect
         }
         Message::FiltersMutated(tab_idx, log_manager) => {
             apply_log_manager(state, tab_idx, log_manager);
@@ -948,13 +950,14 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
                 return Effect::None;
             };
             let enabled = tab.log_manager.toggle_group_local(&name);
-            force_recompute(tab);
-            Effect::PersistFilterEdit(crate::gui::effect::FilterEdit::Group {
+            let effect = Effect::PersistFilterEdit(crate::gui::effect::FilterEdit::Group {
                 db: tab.log_manager.db.clone(),
                 source: tab.log_manager.source_file().unwrap_or("").to_string(),
                 name,
                 enabled,
-            })
+            });
+            refresh_filters(state, tab_idx);
+            effect
         }
         Message::GroupDeleted(tab_idx, name) => match state.tabs.get(tab_idx) {
             Some(tab) => Effect::RemoveGroup {
@@ -1709,18 +1712,31 @@ fn apply_log_manager(state: &mut GuiState, tab_idx: usize, log_manager: LogManag
     let Some(tab) = state.tabs.get_mut(tab_idx) else {
         return;
     };
+    tab.log_manager = log_manager;
+    refresh_filters(state, tab_idx);
+}
+
+pub(super) fn refresh_filters(state: &mut GuiState, tab_idx: usize) {
+    let tab = &mut state.tabs[tab_idx];
     let tab_id = tab.id;
     let anchor = state
-        .log_selection
-        .filter(|(id, _, _)| *id == tab_id)
-        .map(|(_, row_a, row_b)| {
-            (
-                (row_a, row_b),
-                tab.filter.visible_indices.get_opt(row_a),
-                tab.filter.visible_indices.get_opt(row_b),
-            )
+        .pending_selection_anchor
+        .filter(|(id, rows, _, _)| {
+            *id == tab_id && state.log_selection == Some((*id, rows.0, rows.1))
+        })
+        .map(|(_, rows, a, b)| (rows, a, b))
+        .or_else(|| {
+            state
+                .log_selection
+                .filter(|(id, _, _)| *id == tab_id)
+                .map(|(_, a, b)| {
+                    (
+                        (a, b),
+                        tab.filter.visible_indices.get_opt(a),
+                        tab.filter.visible_indices.get_opt(b),
+                    )
+                })
         });
-    tab.log_manager = log_manager;
     force_recompute(tab);
     if let Some((old_rows, line_a, line_b)) = anchor {
         state.pending_selection_anchor = Some((tab_id, old_rows, line_a, line_b));
@@ -2850,6 +2866,34 @@ mod tests {
 
         assert_eq!(state.tabs[0].filter.visible_indices.get_opt(0), Some(2));
         assert_eq!(state.log_selection, Some((tab_id, 0, 0)));
+
+        for expected_row in [2, 0] {
+            update(
+                &mut state,
+                Message::GuiAction(crate::gui::actions::Action::ToggleFiltering),
+            );
+            drain_gui_scan(&mut state.tabs[0]).await;
+            resolve_pending_selection(&mut state);
+            assert_eq!(
+                state.log_selection,
+                Some((tab_id, expected_row, expected_row))
+            );
+        }
+
+        let id = state.tabs[0].log_manager.get_filters()[0].id;
+        for expected_row in [2, 0] {
+            update(&mut state, Message::FilterToggled(0, id));
+            drain_gui_scan(&mut state.tabs[0]).await;
+            resolve_pending_selection(&mut state);
+            assert_eq!(
+                state.log_selection,
+                Some((tab_id, expected_row, expected_row))
+            );
+            assert_eq!(
+                state.tabs[0].filter.visible_indices.get_opt(expected_row),
+                Some(2)
+            );
+        }
     }
 
     #[tokio::test]

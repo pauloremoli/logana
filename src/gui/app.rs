@@ -55,6 +55,8 @@ pub struct App {
     editor_synced: Vec<String>,
     filter_edits: tokio::sync::mpsc::UnboundedSender<crate::gui::effect::FilterEdit>,
     pub log_scroll: ListState,
+    pub(super) selection_viewport:
+        Option<(crate::shared::TabId, usize, gpui_kit::gpui::ListOffset)>,
     pub horizontal_scroll: gpui_kit::gpui::ScrollHandle,
     /// Keyboard navigation (filter/group mode) moves `sidebar_cursor`
     /// without necessarily scrolling it into view — these keep the
@@ -177,6 +179,15 @@ impl App {
                             }
                         }
                         if app.state.pending_selection_anchor.is_some() {
+                            if app
+                                .state
+                                .pending_selection_anchor
+                                .is_some_and(|(id, rows, _, _)| {
+                                    app.state.log_selection != Some((id, rows.0, rows.1))
+                                })
+                            {
+                                app.selection_viewport = None;
+                            }
                             crate::gui::update::resolve_pending_selection(&mut app.state);
                         }
                         for tab in &mut app.state.tabs {
@@ -258,6 +269,7 @@ impl App {
             horizontal_scroll: gpui_kit::gpui::ScrollHandle::new(),
             filter_sidebar_scroll: gpui_kit::gpui::ScrollHandle::new(),
             group_sidebar_scroll: gpui_kit::gpui::ScrollHandle::new(),
+            selection_viewport: None,
             log_scroll: ListState::new(0, ListAlignment::Top, gpui_kit::gpui::px(60.)),
             table_layout: None,
             notification_timer_revision: 0,
@@ -471,7 +483,23 @@ impl App {
             self.state.keyboard_sidebar,
             self.state.sidebar_cursor,
         );
+        let selection_viewport = self
+            .state
+            .log_selection
+            .map(|(id, _, row)| (id, row, self.log_scroll.logical_scroll_top()));
         let effect = update::update(&mut self.state, message);
+        if self.selection_viewport.is_none()
+            && (self.state.pending_selection_anchor.is_some()
+                || selection_viewport.as_ref().is_some_and(|(id, old_row, _)| {
+                    self.state
+                        .log_selection
+                        .is_some_and(|(new_id, _, row)| new_id == *id && row != *old_row)
+                }))
+            && (!scroll_requested || self.state.pending_selection_anchor.is_some())
+            && !selecting
+        {
+            self.selection_viewport = selection_viewport;
+        }
         // Follow selection changes, not every render: wheel scrolling must be
         // free to move away from the selected filter while filter mode is active.
         if self.state.keyboard_sidebar == Some(crate::gui::state::SidebarTab::Filters)
