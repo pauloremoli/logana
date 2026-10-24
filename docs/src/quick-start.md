@@ -41,6 +41,38 @@ logana app.log --filters my-filters.json --tail
 
 ## Opening Compressed and Archive Files
 
+### GUI archive selection
+
+The GUI opens a separate, resizable archive selection window and lists files
+from every readable nested archive automatically. The split pane keeps the archive tree beside your selected files
+and saved glob patterns.
+Add patterns such as `*.log*` or `logs/**` to select matching names or archive
+paths. Patterns are saved and reused for every archive, including after restarting.
+Adding or removing a pattern reapplies the saved patterns; you can then adjust
+individual files manually. Filename search only narrows the list on screen.
+
+Enable **Auto merge rotated logs** to combine selected rotations from the same
+folder and archive. For example, `runtime.log2`, `runtime.log1`, and `runtime.log`
+produce `runtime-merged.log`, while `startup.log*` produces `startup-merged.log`.
+Numbered rotations with or without a dot, including compressed rotations, are
+joined from the highest number down to the current log. Only selected files are
+included. The combined logs are saved under the archive's basename (for example, `bundle.zip` or `bundle.tar.gz`
+uses a `bundle` folder) in the output
+folder shown in the picker and opened; individual rotation
+pieces remain temporary. If a file already occupies the destination folder's
+path, extracted logs are placed under `.logana-extracted` instead. Existing combined
+logs are preserved; a name such as `runtime-merged (2).log` is used when needed.
+
+Use **Choose folder…** to change the output folder before opening files. It
+defaults to the input archive's folder (or `--out`, if provided). Individual files
+and combined logs are saved in the chosen folder. Progress appears only after
+confirming the selection and once extraction is running.
+
+Unreadable nested archives remain visible with an error; other files can still
+be selected and opened.
+
+### TUI archive selection
+
 ```sh
 logana app.log.gz
 logana logs.tar.gz

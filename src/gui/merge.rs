@@ -219,6 +219,7 @@ impl App {
             rx,
             progress: Progress::default(),
             picker: None,
+            extraction_confirmed: false,
             args: None,
             preview: None,
         });
@@ -289,7 +290,10 @@ impl App {
         if count < 2 {
             return;
         }
-        let tree = op.picker.take().unwrap().tree;
+        op.extraction_confirmed = true;
+        let picker = op.picker.take().unwrap();
+        let out = picker.output_dir;
+        let tree = picker.tree;
         let path = op.path.clone();
         let control = op.control.clone();
         control.phase("Queued", String::new(), None);
@@ -347,13 +351,28 @@ impl App {
                         };
                         let (reader, mut merged) = sources.build(&worker)?;
                         merged.stopped = true;
-                        let title = format!("merged({count})");
-                        let manager =
-                            handle.block_on(crate::db::LogManager::new(db, Some(title.clone())));
+                        let mut output =
+                            tempfile::NamedTempFile::new().map_err(|error| error.to_string())?;
+                        for line in 0..reader.line_count() {
+                            worker.check().map_err(|error| error.to_string())?;
+                            std::io::Write::write_all(&mut output, &reader.get_line(line))
+                                .map_err(|error| error.to_string())?;
+                            std::io::Write::write_all(&mut output, b"\n")
+                                .map_err(|error| error.to_string())?;
+                        }
+                        let relative =
+                            crate::gui::loading::path_for_archive_output(&path, "merged.log");
+                        let saved = crate::gui::startup::persist_extracted_unique(
+                            output, &out, &relative, &worker,
+                        )?;
+                        let manager = handle.block_on(crate::db::LogManager::new(
+                            db,
+                            Some(saved.to_string_lossy().into_owned()),
+                        ));
                         let (_, rx) = tokio::sync::watch::channel(());
                         let loaded = FileLoaded {
                             context: None,
-                            path: title.into(),
+                            path: saved,
                             reader,
                             log_manager: manager,
                             watch: crate::shared::watch_state_from_file(rx, String::new()),

@@ -71,7 +71,6 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
                             .flex_1()
                             .min_h(px(0.))
                             .child(body(app, window, cx))
-                            .children(loading::picker(app, f32::from(viewport.width), cx))
                             .children(row_inspector::panel(app, f32::from(viewport.width), cx)),
                     ),
             ),

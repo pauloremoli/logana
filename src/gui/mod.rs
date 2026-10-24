@@ -57,3 +57,5 @@ mod table_preparation;
 mod schema_preparation;
 
 mod facet_query;
+
+mod archive_window;

@@ -63,6 +63,25 @@ pub(super) fn persist_extracted(
     relative: &str,
     control: &Control,
 ) -> Result<PathBuf, String> {
+    save_extracted(temp, out, relative, control, false)
+}
+
+pub(super) fn persist_extracted_unique(
+    temp: tempfile::NamedTempFile,
+    out: &Path,
+    relative: &str,
+    control: &Control,
+) -> Result<PathBuf, String> {
+    save_extracted(temp, out, relative, control, true)
+}
+
+fn save_extracted(
+    temp: tempfile::NamedTempFile,
+    out: &Path,
+    relative: &str,
+    control: &Control,
+    unique: bool,
+) -> Result<PathBuf, String> {
     let first = Path::new(relative).components().next();
     let base = match first {
         Some(std::path::Component::Normal(part))
@@ -98,8 +117,30 @@ pub(super) fn persist_extracted(
     );
     std::io::copy(&mut input, &mut staged).map_err(|e| e.to_string())?;
     control.check().map_err(|e| e.to_string())?;
-    staged.persist(&destination).map_err(|e| e.to_string())?;
-    Ok(destination)
+    if !unique {
+        staged.persist(&destination).map_err(|e| e.to_string())?;
+        return Ok(destination);
+    }
+    let original = destination.clone();
+    let mut number = 1;
+    loop {
+        control.check().map_err(|e| e.to_string())?;
+        match staged.persist_noclobber(&destination) {
+            Ok(_) => return Ok(destination),
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                staged = error.file;
+                number += 1;
+                let mut name = original.file_stem().unwrap_or_default().to_os_string();
+                name.push(format!(" ({number})"));
+                if let Some(extension) = original.extension() {
+                    name.push(".");
+                    name.push(extension);
+                }
+                destination = original.with_file_name(name);
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
 }
 
 fn has_stdin_input() -> bool {
@@ -177,6 +218,7 @@ impl App {
             rx,
             progress: Progress::default(),
             picker: None,
+            extraction_confirmed: false,
             args,
             preview: None,
         });

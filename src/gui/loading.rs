@@ -26,6 +26,7 @@ pub(super) struct Operation {
     pub(super) rx: watch::Receiver<Progress>,
     pub progress: Progress,
     pub picker: Option<Picker>,
+    pub extraction_confirmed: bool,
     pub args: Option<crate::cli::Args>,
     pub preview: Option<Preview>,
 }
@@ -42,10 +43,27 @@ pub(super) struct Picker {
     pub cursor: usize,
     pub query: String,
     matcher: crate::shared::archive_search::SearchMatcher,
+    pub pattern_error: Option<String>,
+    pub output_dir: PathBuf,
+    pub selected_rows: Vec<NodeId>,
+    pub selected_sizes: std::rc::Rc<Vec<gpui_kit::gpui::Size<gpui_kit::gpui::Pixels>>>,
     pub sizes: std::rc::Rc<Vec<gpui_kit::gpui::Size<gpui_kit::gpui::Pixels>>>,
 }
+impl Operation {
+    pub fn shows_progress(&self) -> bool {
+        !self.control.cancelled()
+            && self.picker.is_none()
+            && !matches!(
+                self.control.progress.borrow().phase,
+                "Queued" | "Choose files"
+            )
+            && (self.extraction_confirmed
+                || crate::ingestion::detect_archive_type(&self.path.to_string_lossy()).is_none())
+    }
+}
+
 impl Picker {
-    pub fn new(tree: ArchiveTree) -> Self {
+    pub fn new(tree: ArchiveTree, output_dir: PathBuf) -> Self {
         let rows = tree.visible_rows();
         let checks = tree.check_states();
         let sizes = std::rc::Rc::new(vec![
@@ -55,15 +73,21 @@ impl Picker {
             );
             rows.len()
         ]);
-        Self {
+        let mut picker = Self {
             tree,
             rows,
             checks,
             sizes,
             cursor: 0,
             query: String::new(),
+            pattern_error: None,
+            output_dir,
+            selected_rows: Vec::new(),
+            selected_sizes: std::rc::Rc::new(Vec::new()),
             matcher: crate::shared::archive_search::SearchMatcher::MatchAll,
-        }
+        };
+        picker.refresh();
+        picker
     }
     pub fn set_search(&mut self, query: String) {
         self.matcher = crate::shared::archive_search::SearchMatcher::compile(&query);
@@ -81,6 +105,20 @@ impl Picker {
         self.cursor = previous
             .and_then(|id| self.rows.iter().position(|row| *row == id))
             .unwrap_or(0);
+        self.selected_rows = self
+            .tree
+            .nodes
+            .iter()
+            .filter(|n| n.selected && matches!(n.kind, NodeKind::File))
+            .map(|n| n.id)
+            .collect();
+        self.selected_sizes = std::rc::Rc::new(vec![
+            gpui_kit::gpui::size(
+                gpui_kit::gpui::px(320.),
+                gpui_kit::gpui::px(32.)
+            );
+            self.selected_rows.len()
+        ]);
         self.checks = self.tree.check_states();
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         self.sizes = std::rc::Rc::new(vec![
@@ -95,6 +133,8 @@ impl Picker {
 pub(super) struct Loading {
     pub operations: Vec<Operation>,
     pub selected_picker: Option<u64>,
+    pub picker_window: Option<crate::gui::archive_window::ArchiveWindowHandle>,
+    pub picker_window_opening: bool,
     pub scroll: gpui_kit::base::VirtualListScrollHandle,
     pub focus: gpui_kit::gpui::FocusHandle,
     pub(super) next_id: u64,
@@ -107,6 +147,8 @@ impl Loading {
             focus: cx.focus_handle(),
             operations: Vec::new(),
             selected_picker: None,
+            picker_window: None,
+            picker_window_opening: false,
             next_id: 0,
             gate: Arc::new(Semaphore::new(1)),
             last_poll: Instant::now(),
@@ -516,6 +558,7 @@ impl App {
             rx,
             progress: Progress::default(),
             picker: None,
+            extraction_confirmed: false,
             args,
             preview: None,
         });
@@ -532,10 +575,11 @@ impl App {
                     worker_control.phase("Reading archive", path.display().to_string(), None);
                     let control = worker_control.clone();
                     let tree = tokio::task::spawn_blocking(move || {
-                        crate::ingestion::archive_tree::list_archive_tree_controlled(
+                        let tree = crate::ingestion::archive_tree::list_archive_tree_controlled(
                             &path.to_string_lossy(),
-                            control,
-                        )
+                            control.clone(),
+                        )?;
+                        crate::ingestion::archive_job::expand_all(&path, tree, control)
                     })
                     .await
                     .map_err(|e| e.to_string())??;
@@ -605,9 +649,18 @@ impl App {
                             if let Some(op) =
                                 app.loading.operations.iter_mut().find(|op| op.id == id)
                             {
-                                op.picker = Some(Picker::new(tree));
+                                let mut picker = Picker::new(
+                                    tree,
+                                    archive_output_directory(&op.path, op.args.as_ref()),
+                                );
+                                crate::shared::archive_selection::apply_patterns(
+                                    &mut picker.tree,
+                                    &app.state.preferences.archive_patterns,
+                                );
+                                picker.refresh();
+                                op.picker = Some(picker);
                                 op.control.phase("Choose files", String::new(), None);
-                                app.loading.selected_picker = Some(id);
+                                app.show_archive_picker(id, cx);
                             }
                             cx.notify();
                         } else {
@@ -672,6 +725,93 @@ impl App {
         .detach();
         cx.notify();
     }
+    pub(super) fn picker_add_pattern(
+        &mut self,
+        id: u64,
+        value: String,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            return false;
+        }
+        if let Err(error) = glob::Pattern::new(&value) {
+            if let Some(picker) = self
+                .loading
+                .operations
+                .iter_mut()
+                .find(|op| op.id == id)
+                .and_then(|op| op.picker.as_mut())
+            {
+                picker.pattern_error = Some(format!("Invalid glob: {error}"));
+            }
+            cx.notify();
+            return false;
+        }
+        let mut prefs = self.state.preferences.clone();
+        if !prefs.archive_patterns.contains(&value) {
+            prefs.archive_patterns.push(value);
+        }
+        self.save_preferences(prefs);
+        self.picker_apply_patterns(cx);
+        true
+    }
+    pub(super) fn picker_remove_pattern(&mut self, index: usize, cx: &mut Context<Self>) {
+        let mut prefs = self.state.preferences.clone();
+        if index < prefs.archive_patterns.len() {
+            prefs.archive_patterns.remove(index);
+        }
+        self.save_preferences(prefs);
+        self.picker_apply_patterns(cx);
+    }
+    fn picker_apply_patterns(&mut self, cx: &mut Context<Self>) {
+        for op in &mut self.loading.operations {
+            if let Some(picker) = &mut op.picker {
+                crate::shared::archive_selection::apply_patterns(
+                    &mut picker.tree,
+                    &self.state.preferences.archive_patterns,
+                );
+                picker.pattern_error = None;
+                picker.refresh();
+            }
+        }
+        cx.notify();
+    }
+    pub(super) fn picker_choose_output(&mut self, id: u64, cx: &mut Context<Self>) {
+        let prompt = cx.prompt_for_paths(gpui_kit::gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose output folder".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let result = prompt
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|result| result.map_err(|error| error.to_string()));
+            this.update(cx, |app, cx| {
+                match result {
+                    Ok(Some(paths)) => {
+                        if let Some(path) = paths.into_iter().next()
+                            && let Some(picker) = app
+                                .loading
+                                .operations
+                                .iter_mut()
+                                .find(|op| op.id == id)
+                                .and_then(|op| op.picker.as_mut())
+                        {
+                            picker.output_dir = path;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => app.state.notify(StatusMessage::Error(error)),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
     pub(super) fn picker_all(&mut self, id: u64, selected: bool, cx: &mut Context<Self>) {
         if let Some(picker) = self
             .loading
@@ -715,6 +855,7 @@ impl App {
             return;
         }
         let picker = op.picker.take().unwrap();
+        let output_dir = picker.output_dir.clone();
         let control = op.control.clone();
         control.phase(
             "Reading nested archive",
@@ -749,7 +890,13 @@ impl App {
                             if let Some(op) =
                                 app.loading.operations.iter_mut().find(|op| op.id == id)
                             {
-                                op.picker = Some(Picker::new(tree));
+                                let mut picker = Picker::new(tree, output_dir);
+                                crate::shared::archive_selection::apply_patterns(
+                                    &mut picker.tree,
+                                    &app.state.preferences.archive_patterns,
+                                );
+                                picker.refresh();
+                                op.picker = Some(picker);
                                 op.control.phase("Choose files", String::new(), None);
                             }
                         }
@@ -776,7 +923,21 @@ impl App {
         {
             return;
         }
+        op.extraction_confirmed = true;
         let picker = op.picker.take().unwrap();
+        let output_dir = picker.output_dir.clone();
+        let merge_rotations = self.state.preferences.archive_merge_rotations;
+        let rotation_outputs: std::collections::HashMap<_, _> = if merge_rotations {
+            crate::shared::archive_selection::rotation_groups(&picker.tree)
+                .into_iter()
+                .map(|group| {
+                    let root = path_for_archive_output(&op.path, &group.relative);
+                    (group.representative, root)
+                })
+                .collect()
+        } else {
+            Default::default()
+        };
         let args = op.args.clone();
         let control = op.control.clone();
         control.phase("Queued", String::new(), None);
@@ -799,70 +960,74 @@ impl App {
                     .filter(|n| n.selected && matches!(n.kind, NodeKind::File))
                     .map(|n| n.id)
                     .collect();
-                control.progress.send_modify(|p| p.total_files = ids.len());
+                let removed_rotations = if merge_rotations {
+                    crate::shared::archive_selection::rotation_groups(&tree)
+                        .iter()
+                        .map(|g| g.members.len() - 1)
+                        .sum()
+                } else {
+                    0
+                };
+                control
+                    .progress
+                    .send_modify(|p| p.total_files = ids.len() - removed_rotations);
                 let (tx, mut rx) = tokio::sync::mpsc::channel(1);
                 let worker_tree = tree.clone();
                 let worker_control = control.clone();
                 let worker_path = path.clone();
                 let extraction = runtime::handle().spawn_blocking(move || {
-                    crate::ingestion::archive_job::extract_selection(
-                        &worker_path,
-                        &worker_tree,
-                        &worker_control,
-                        &mut |entry| {
-                            let (ack, accepted) = std::sync::mpsc::sync_channel(1);
-                            tx.blocking_send((entry, ack))
-                                .map_err(|_| "Operation canceled".to_string())?;
-                            loop {
-                                worker_control.check().map_err(|e| e.to_string())?;
-                                match accepted.recv_timeout(Duration::from_millis(100)) {
-                                    Ok(()) => return Ok(()),
-                                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                                    Err(_) => return Err("Operation canceled".into()),
-                                }
+                    let extract = if merge_rotations {
+                        crate::ingestion::archive_job::extract_with_rotations
+                    } else {
+                        crate::ingestion::archive_job::extract_selection
+                    };
+                    extract(&worker_path, &worker_tree, &worker_control, &mut |entry| {
+                        let (ack, accepted) = std::sync::mpsc::sync_channel(1);
+                        tx.blocking_send((entry, ack))
+                            .map_err(|_| "Operation canceled".to_string())?;
+                        loop {
+                            worker_control.check().map_err(|e| e.to_string())?;
+                            match accepted.recv_timeout(Duration::from_millis(100)) {
+                                Ok(()) => return Ok(()),
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                                Err(_) => return Err("Operation canceled".into()),
                             }
-                        },
-                    )
+                        }
+                    })
                 });
                 let mut errors = Vec::new();
                 while let Some((entry, ack)) = rx.recv().await {
                     let entry_result = async {
                         control.check().map_err(|e| e.to_string())?;
                         let (node, temp) = entry?;
-                        let source = provenance(&path, &tree, node);
                         let worker_control = control.clone();
                         let db = db.clone();
-                        let (file_path, temp) = if let Some(args) = &args {
-                            let out = crate::cli::resolve_out_dir(args.out.as_ref());
-                            let relative = crate::ingestion::archive_tree::relative_name(
-                                &tree,
-                                node,
-                                &path.to_string_lossy(),
-                            );
-                            let save_control = control.clone();
-                            let file_path = runtime::handle()
-                                .spawn_blocking(move || {
-                                    crate::gui::startup::persist_extracted(
-                                        temp,
-                                        &out,
-                                        &relative,
-                                        &save_control,
-                                    )
-                                })
-                                .await
-                                .map_err(|e| e.to_string())??;
-                            (file_path, None)
-                        } else {
-                            (temp.path().to_path_buf(), Some(temp))
-                        };
-                        let source = temp.as_ref().map(|_| source);
+                        let out = output_dir.clone();
+                        let relative = rotation_outputs.get(&node).cloned().unwrap_or_else(|| {
+                            path_for_archive_output(
+                                &path,
+                                &crate::shared::archive_selection::output_entry_path(&tree, node),
+                            )
+                        });
+                        let save_control = control.clone();
+                        let file_path = runtime::handle()
+                            .spawn_blocking(move || {
+                                crate::gui::startup::persist_extracted_unique(
+                                    temp,
+                                    &out,
+                                    &relative,
+                                    &save_control,
+                                )
+                            })
+                            .await
+                            .map_err(|e| e.to_string())??;
                         let loaded = runtime::handle()
                             .spawn(async move {
                                 crate::gui::update::load_file_controlled(
                                     file_path,
                                     db,
                                     worker_control,
-                                    source,
+                                    None,
                                 )
                                 .await
                             })
@@ -883,7 +1048,7 @@ impl App {
                             Some(id),
                             false,
                             false,
-                            temp,
+                            None,
                             None,
                         )
                         .await
@@ -918,6 +1083,26 @@ impl App {
         cx.notify();
     }
 }
+fn archive_output_directory(path: &std::path::Path, args: Option<&crate::cli::Args>) -> PathBuf {
+    if let Some(out) = args.and_then(|args| args.out.as_ref()) {
+        return out.clone();
+    }
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    path.parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf()
+}
+
+pub(super) fn path_for_archive_output(path: &std::path::Path, relative: &str) -> String {
+    format!(
+        "{}/{}",
+        crate::shared::archive_selection::archive_output_name(
+            &path.file_name().unwrap_or_default().to_string_lossy()
+        ),
+        relative
+    )
+}
+
 pub(super) fn provenance(path: &std::path::Path, tree: &ArchiveTree, id: NodeId) -> String {
     let mut entries = vec![tree.nodes[id].full_path.as_str()];
     let mut parent = tree.nodes[id].parent;
@@ -932,6 +1117,49 @@ pub(super) fn provenance(path: &std::path::Path, tree: &ArchiveTree, id: NodeId)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn archive_output_defaults_to_the_input_directory_and_respects_explicit_output() {
+        assert_eq!(
+            archive_output_directory(std::path::Path::new("/tmp/input/bundle.zip"), None),
+            PathBuf::from("/tmp/input")
+        );
+        let args =
+            <crate::cli::Args as clap::Parser>::parse_from(["logana", "--out", "/tmp/chosen"]);
+        assert_eq!(
+            archive_output_directory(std::path::Path::new("/tmp/input/bundle.zip"), Some(&args)),
+            PathBuf::from("/tmp/chosen")
+        );
+        assert_eq!(
+            archive_output_directory(std::path::Path::new("bundle.zip"), None),
+            std::env::current_dir().unwrap()
+        );
+    }
+    #[test]
+    fn archive_progress_requires_confirmation_and_active_work() {
+        let (control, rx) = Control::new();
+        let mut op = Operation {
+            id: 1,
+            path: "/tmp/bundle.zip".into(),
+            control: control.clone(),
+            rx,
+            progress: Progress::default(),
+            picker: None,
+            extraction_confirmed: false,
+            args: None,
+            preview: None,
+        };
+        control.phase("Reading archive", String::new(), None);
+        assert!(!op.shows_progress());
+        control.phase("Choose files", String::new(), None);
+        assert!(!op.shows_progress());
+        op.extraction_confirmed = true;
+        control.phase("Queued", String::new(), None);
+        assert!(!op.shows_progress());
+        control.phase("Extracting", String::new(), None);
+        assert!(op.shows_progress());
+        control.cancel.store(true, Ordering::Relaxed);
+        assert!(!op.shows_progress());
+    }
     #[tokio::test]
     async fn first_chunk_is_bounded_complete_and_available_without_full_index() {
         let file = tempfile::NamedTempFile::new().unwrap();
@@ -1260,9 +1488,243 @@ mod tests {
 mod ui_tests {
     use super::*;
     use gpui_kit::{
-        gpui::{AppContext, TestAppContext},
+        gpui::{AppContext, TestAppContext, px, size},
         test::TestWindowExt,
     };
+    #[gpui_kit::test]
+    async fn detached_archive_picker_saves_and_opens_only_rotation_outputs(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::test::TestAppContextExt;
+        cx.background_executor.allow_parking();
+        let inner = crate::ingestion::archive::test_helpers::make_zip(&[
+            ("runtime.log", b"current\n"),
+            ("runtime.log1", b"previous\n"),
+            ("startup.log", b"new\n"),
+            ("startup.log2", b"old\n"),
+            ("notes.txt", b"skip"),
+        ]);
+        let root = crate::ingestion::archive::test_helpers::make_zip(&[(
+            "nested.zip",
+            &std::fs::read(inner.path()).unwrap(),
+        )]);
+        let source = tempfile::Builder::new().suffix(".zip").tempfile().unwrap();
+        std::fs::copy(root.path(), source.path()).unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let initial_output = tempfile::tempdir().unwrap();
+        let existing = output
+            .path()
+            .join(source.path().file_stem().unwrap())
+            .join("nested/runtime-merged.log");
+        std::fs::create_dir_all(existing.parent().unwrap()).unwrap();
+        std::fs::write(&existing, b"keep existing\n").unwrap();
+        let args = <crate::cli::Args as clap::Parser>::parse_from([
+            "logana",
+            "--out",
+            initial_output.path().to_str().unwrap(),
+        ]);
+        let db = Arc::new(
+            runtime::handle()
+                .block_on(crate::db::Database::in_memory())
+                .unwrap(),
+        );
+        let theme = crate::theme::Theme::default();
+        let (main, app) = cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::gui::theme::install(&theme, cx);
+            gpui_kit::open_window(Default::default(), cx, |_, cx| {
+                cx.new(|cx| App::new(db, theme, cx))
+            })
+            .unwrap()
+        });
+        app.update(cx, |app, cx| {
+            app.state.preferences.archive_patterns = vec!["*.log*".into()];
+            app.state.preferences.archive_merge_rotations = true;
+            app.queue_file_with_args(source.path().into(), Some(args), cx);
+        });
+        cx.wait_for(main, Duration::from_secs(30), |_, cx| {
+            app.read(cx).loading.picker_window.is_some()
+        })
+        .await;
+        let detached = app.read_with(cx, |app, _| app.loading.picker_window.unwrap());
+        assert_ne!(*detached, main);
+        cx.update_window(main, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("loading-summary-progress").is_none());
+        })
+        .unwrap();
+        cx.update_window(*detached, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                app.read(cx).loading.operations[0]
+                    .picker
+                    .as_ref()
+                    .unwrap()
+                    .output_dir,
+                initial_output.path()
+            );
+            window.click("archive-output-choose", cx);
+        })
+        .unwrap();
+        assert!(cx.did_prompt_for_paths());
+        let chosen = output.path().to_path_buf();
+        cx.simulate_path_prompt_response(move |options| {
+            assert!(options.directories && !options.files && !options.multiple);
+            Some(vec![chosen])
+        });
+        cx.run_until_parked();
+        cx.update_window(*detached, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                app.read(cx).loading.operations[0]
+                    .picker
+                    .as_ref()
+                    .unwrap()
+                    .selected_rows
+                    .len(),
+                4
+            );
+            assert_eq!(
+                app.read(cx).loading.operations[0]
+                    .picker
+                    .as_ref()
+                    .unwrap()
+                    .output_dir,
+                output.path()
+            );
+            window.click("archive-extract-open", cx);
+            assert!(
+                !app.read(cx).loading.operations[0].shows_progress(),
+                "queued extraction has no animated progress"
+            );
+        })
+        .unwrap();
+        cx.wait_for(main, Duration::from_secs(30), |_, cx| {
+            app.read(cx).loading.operations.is_empty()
+        })
+        .await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.state.tabs.len(), 2, "status: {:?}", app.state.status);
+            assert!(
+                app.state.tabs.iter().all(|tab| tab
+                    .log_manager
+                    .source_file()
+                    .unwrap()
+                    .ends_with(".log"))
+            );
+        });
+        let saved = output
+            .path()
+            .join(source.path().file_stem().unwrap())
+            .join("nested");
+        assert_eq!(
+            std::fs::read(saved.join("runtime-merged (2).log")).unwrap(),
+            b"previous\ncurrent\n"
+        );
+        assert_eq!(
+            std::fs::read(saved.join("startup-merged.log")).unwrap(),
+            b"old\nnew\n"
+        );
+        assert_eq!(std::fs::read(&existing).unwrap(), b"keep existing\n");
+        assert_eq!(std::fs::read_dir(saved).unwrap().count(), 3);
+    }
+
+    #[gpui_kit::test]
+    async fn saved_archive_merge_keeps_per_source_parsing(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestAppContextExt;
+        cx.background_executor.allow_parking();
+        let root = crate::ingestion::archive::test_helpers::make_zip(&[
+            ("first.log", b"{\"timestamp\":\"2024-01-01T00:00:01Z\",\"level\":\"INFO\",\"message\":\"value1\",\"key1\":\"value2\"}\n"),
+            ("second.log", b"<11>1 2024-01-01T00:00:02Z host1 app1 1 - - value3\n"),
+        ]);
+        let source = tempfile::Builder::new().suffix(".zip").tempfile().unwrap();
+        std::fs::copy(root.path(), source.path()).unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let args = <crate::cli::Args as clap::Parser>::parse_from([
+            "logana",
+            "--out",
+            output.path().to_str().unwrap(),
+        ]);
+        let db = Arc::new(
+            runtime::handle()
+                .block_on(crate::db::Database::in_memory())
+                .unwrap(),
+        );
+        let theme = crate::theme::Theme::default();
+        let (main, app) = cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::gui::theme::install(&theme, cx);
+            gpui_kit::open_window(Default::default(), cx, |_, cx| {
+                cx.new(|cx| App::new(db, theme, cx))
+            })
+            .unwrap()
+        });
+        app.update(cx, |app, cx| {
+            app.state.preferences.archive_patterns = vec!["*.log".into()];
+            app.state.preferences.archive_merge_rotations = false;
+            app.queue_file_with_args(source.path().into(), Some(args), cx);
+        });
+        cx.wait_for(main, Duration::from_secs(30), |_, cx| {
+            app.read(cx).loading.picker_window.is_some()
+        })
+        .await;
+        let detached = app.read_with(cx, |app, _| app.loading.picker_window.unwrap());
+        cx.update_window(*detached, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("archive-extract-merge", cx);
+        })
+        .unwrap();
+        cx.wait_for(main, Duration::from_secs(30), |_, cx| {
+            app.read(cx).loading.operations.is_empty()
+        })
+        .await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.state.tabs.len(), 1, "status: {:?}", app.state.status);
+            let tab = &app.state.tabs[0];
+            let entries = tab
+                .file_reader
+                .merged_entries()
+                .expect("saved merge must retain source mappings");
+            let merged = tab.merged.as_ref().unwrap();
+            assert!(
+                merged
+                    .source_labels
+                    .iter()
+                    .any(|label| label.ends_with("first.log"))
+            );
+            assert!(
+                merged
+                    .source_labels
+                    .iter()
+                    .any(|label| label.ends_with("second.log"))
+            );
+            assert_ne!(
+                merged.source_parsers[0].as_ref().unwrap().name(),
+                merged.source_parsers[1].as_ref().unwrap().name()
+            );
+            assert_eq!(entries.len(), 2);
+            let bytes = tab.file_reader.get_line(0);
+            let parts = merged.source_parsers[entries[0].source_idx]
+                .as_ref()
+                .unwrap()
+                .parse_line(&bytes)
+                .unwrap();
+            assert!(
+                parts
+                    .extra_fields
+                    .iter()
+                    .any(|(_, key, value)| *key == "key1" && *value == "value2")
+            );
+            assert_eq!(tab.next_error_position(0), Some(1));
+        });
+        let saved = output
+            .path()
+            .join(source.path().file_stem().unwrap())
+            .join("merged.log");
+        let text = std::fs::read_to_string(saved).unwrap();
+        assert!(text.contains("value1") && text.contains("value3"));
+    }
+
     #[gpui_kit::test]
     fn pending_file_load_allows_tab_switching_and_actions(cx: &mut TestAppContext) {
         let db = Arc::new(
@@ -1305,6 +1767,7 @@ mod ui_tests {
                     rx,
                     progress: Progress::default(),
                     picker: None,
+                    extraction_confirmed: false,
                     args: None,
                     preview: None,
                 });
@@ -1391,6 +1854,7 @@ mod ui_tests {
                     rx,
                     control: control.clone(),
                     picker: None,
+                    extraction_confirmed: false,
                     args: None,
                     preview: Some(preview),
                 });
@@ -1428,13 +1892,18 @@ mod ui_tests {
                     control,
                     rx,
                     progress: Progress::default(),
-                    picker: Some(Picker::new(tree)),
+                    picker: Some(Picker::new(tree, PathBuf::from("/tmp"))),
+                    extraction_confirmed: false,
                     args: None,
                     preview: None,
                 });
-                app.loading.selected_picker = Some(8);
-                cx.notify();
+                app.show_archive_picker(8, cx);
             });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let picker_window = app.read_with(cx, |app, _| app.loading.picker_window.unwrap());
+        cx.update_window(*picker_window, |_, window, cx| {
             window.render_frame(cx);
             window.click("archive-select-all", cx);
             assert!(
@@ -1496,6 +1965,72 @@ mod ui_tests {
                     .rows,
                 vec![0, 1]
             );
+            window.click("archive-pattern-input", cx);
+            window.input("[", cx);
+            window.click("archive-pattern-add", cx);
+            assert!(
+                app.read(cx).loading.operations[0]
+                    .picker
+                    .as_ref()
+                    .unwrap()
+                    .pattern_error
+                    .is_some()
+            );
+            window.click("archive-pattern-input", cx);
+            window.press("ctrl-a", cx);
+            window.input("*two.log", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(*picker_window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                app.read(cx)
+                    .archive_pattern
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            );
+            assert_eq!(
+                app.read(cx).state.preferences.archive_patterns,
+                vec!["*two.log"]
+            );
+            assert_eq!(
+                app.read(cx).loading.operations[0]
+                    .picker
+                    .as_ref()
+                    .unwrap()
+                    .selected_rows,
+                vec![1]
+            );
+            window.click("archive-merge-rotations", cx);
+            assert!(app.read(cx).state.preferences.archive_merge_rotations);
+            window.click(("archive-pattern-remove", 0usize), cx);
+            window.render_frame(cx);
+            assert!(app.read(cx).state.preferences.archive_patterns.is_empty());
+            assert!(
+                app.read(cx).loading.operations[0]
+                    .picker
+                    .as_ref()
+                    .unwrap()
+                    .selected_rows
+                    .is_empty()
+            );
+            for (width, height) in [(1000., 760.), (640., 640.)] {
+                window.resize(size(px(width), px(height)));
+                window.render_frame(cx);
+                assert!(window.find("archive-pattern-input").visible());
+                assert!(window.find("archive-extract-open").visible());
+                let input = window.find("archive-pattern-input").bounds();
+                let toggle = window.find("archive-merge-rotations").bounds();
+                assert!(
+                    input.bottom() <= toggle.top(),
+                    "pattern input must stay above extraction options"
+                );
+            }
             window.click("archive-cancel", cx);
             assert!(app.read(cx).loading.operations.is_empty());
         })

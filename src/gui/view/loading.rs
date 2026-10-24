@@ -5,12 +5,15 @@ use crate::{
 };
 use gpui_kit::{
     assets::IconName,
-    base::{Disableable, Selectable, TestSupportExt},
+    base::{Disableable, Selectable, StyledExt, TestSupportExt},
     component::{
         ActiveTheme, Icon, Sizable,
         button::{Button, ButtonVariants},
         collapsible::Collapsible,
+        h_resizable,
         progress::Progress,
+        resizable_panel,
+        switch::Switch,
     },
     gpui::{AnyElement, Context, MouseButton, div, prelude::*, px},
 };
@@ -63,7 +66,11 @@ pub fn operations(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                         .child(div().truncate().child(format!(
                             "{} — {}{counts}",
                             op.path.file_name().unwrap_or_default().to_string_lossy(),
-                            progress.phase
+                            if choosing {
+                                "Choose files"
+                            } else {
+                                progress.phase
+                            }
                         )))
                         .child(
                             div()
@@ -75,7 +82,7 @@ pub fn operations(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                                     format!("{}  {amount}", progress.entry)
                                 }),
                         )
-                        .when(!choosing, |el| {
+                        .when(op.shows_progress(), |el| {
                             el.child(
                                 div().id(("load-progress", id)).test_support().child(
                                     Progress::new(("load-progress-value", id))
@@ -91,8 +98,7 @@ pub fn operations(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                         Button::new(("archive-choose", id))
                             .label("Choose files")
                             .on_click(cx.listener(move |app, _, _, cx| {
-                                app.loading.selected_picker = Some(id);
-                                cx.notify();
+                                app.show_archive_picker(id, cx);
                             })),
                     )
                 })
@@ -105,11 +111,18 @@ pub fn operations(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
         }))
         .into_any_element();
     let first = &app.loading.operations[0];
+    let active = app.loading.operations.iter().find(|op| op.shows_progress());
     let count = app.loading.operations.len();
     let summary = format!(
         "{count} background {} · {}",
         if count == 1 { "task" } else { "tasks" },
-        first.progress.phase
+        if let Some(active) = active {
+            active.progress.phase
+        } else if first.picker.is_some() {
+            "Choose files"
+        } else {
+            first.progress.phase
+        }
     );
     Some(
         Collapsible::new()
@@ -134,21 +147,29 @@ pub fn operations(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                                 cx.notify();
                             })),
                     )
-                    .child(
-                        div().flex_1().child(
-                            Progress::new("loading-summary-progress")
-                                .accessibility_label("Background task progress")
-                                .loading(first.progress.fraction.is_none())
-                                .value(first.progress.fraction.unwrap_or(0.) as f32 * 100.),
-                        ),
-                    ),
+                    .when_some(active, |row, active| {
+                        row.child(
+                            div()
+                                .id("loading-summary-progress")
+                                .test_support()
+                                .flex_1()
+                                .child(
+                                    Progress::new("loading-summary-progress-value")
+                                        .accessibility_label("Background task progress")
+                                        .loading(active.progress.fraction.is_none())
+                                        .value(
+                                            active.progress.fraction.unwrap_or(0.) as f32 * 100.,
+                                        ),
+                                ),
+                        )
+                    }),
             )
             .content(details)
             .into_any_element(),
     )
 }
 
-pub fn picker(app: &App, viewport_width: f32, cx: &mut Context<App>) -> Option<AnyElement> {
+pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
     let id = app.loading.selected_picker?;
     let op = app.loading.operations.iter().find(|op| op.id == id)?;
     let picker = op.picker.as_ref()?;
@@ -280,106 +301,207 @@ pub fn picker(app: &App, viewport_width: f32, cx: &mut Context<App>) -> Option<A
         },
     )
     .track_scroll(&app.loading.scroll);
-    Some(
+    let selected_list = gpui_kit::base::v_virtual_list(
+        cx.entity(),
+        ("archive-selected-files", id),
+        picker.selected_sizes.clone(),
+        move |app: &mut App, range, _window, cx| {
+            let Some(picker) = app
+                .loading
+                .operations
+                .iter()
+                .find(|op| op.id == id)
+                .and_then(|op| op.picker.as_ref())
+            else {
+                return Vec::new();
+            };
+            range
+                .filter_map(|row| picker.selected_rows.get(row).copied())
+                .map(|node| {
+                    let path = crate::shared::archive_selection::entry_path(&picker.tree, node);
+                    div()
+                        .id(("archive-selected-row", node))
+                        .h(px(32.))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().flex_1().min_w(px(0.)).truncate().child(path.clone()))
+                        .child(
+                            Button::new(("archive-remove-file", node))
+                                .ghost()
+                                .small()
+                                .icon(IconName::X)
+                                .accessibility_label(format!("Remove {path}"))
+                                .on_click(cx.listener(move |app, _, _, cx| {
+                                    app.picker_toggle(id, node, cx)
+                                })),
+                        )
+                })
+                .collect::<Vec<_>>()
+        },
+    );
+    let files = div()
+        .h_full()
+        .flex()
+        .flex_col()
+        .min_w(px(0.))
+        .gap_2()
+        .pr_3()
+        .child(div().font_semibold().child("All files"))
+        .children(app.archive_search.as_ref().map(|input| {
+            super::input(input)
+                .id("archive-search")
+                .aria_label("Search filenames")
+                .cleanable(true)
+        }))
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Includes all nested archives. Search does not change selection."),
+        )
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .child(
+                    Button::new("archive-select-all")
+                        .small()
+                        .label("Select all")
+                        .on_click(cx.listener(move |app, _, _, cx| app.picker_all(id, true, cx))),
+                )
+                .child(
+                    Button::new("archive-clear")
+                        .small()
+                        .label("Clear selection")
+                        .on_click(cx.listener(move |app, _, _, cx| app.picker_all(id, false, cx))),
+                ),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .when(picker.rows.is_empty(), |d| {
+                    d.child("No matching files. Try another search.")
+                })
+                .child(list),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Space selects · arrows navigate · Enter opens"),
+        );
+    let patterns = div().flex_1().min_h(px(0.)).flex().flex_col().gap_2()
+        .child(div().font_semibold().child("Saved glob patterns"))
+        .child(div().text_xs().text_color(cx.theme().muted_foreground)
+            .child("Reused for every archive. Adding or removing a pattern reselects matching files."))
+        .children(app.archive_pattern.as_ref().map(|input| super::input(input)
+            .id("archive-pattern-input").aria_label("Glob pattern")))
+        .child(Button::new("archive-pattern-add").small().label("Add pattern")
+            .on_click(cx.listener(move |app, _, window, cx| {
+                if let Some(input) = app.archive_pattern.clone() {
+                    let value = input.read(cx).value().to_string();
+                    if app.picker_add_pattern(id, value, cx) {
+                        input.update(cx, |input, cx| input.set_value("", window, cx));
+                    }
+                }
+            })))
+        .when_some(picker.pattern_error.clone(), |d, error| d.child(div().text_sm().text_color(cx.theme().danger).child(error)))
+        .child(div().id("archive-patterns").flex_1().min_h(px(0.)).overflow_y_scroll()
+            .when(app.state.preferences.archive_patterns.is_empty(), |d| d.child(div().text_sm()
+                .text_color(cx.theme().muted_foreground).child("No saved patterns. Select files manually or add a glob.")))
+            .children(app.state.preferences.archive_patterns.iter().enumerate().map(|(index, pattern)| {
+                div().flex().items_center().gap_2().py_1()
+                    .child(div().flex_1().min_w(px(0.)).truncate().child(pattern.clone()))
+                    .child(Button::new(("archive-pattern-remove", index)).ghost().small().icon(IconName::X)
+                        .accessibility_label(format!("Remove pattern {pattern}"))
+                        .on_click(cx.listener(move |app, _, _, cx| app.picker_remove_pattern(index, cx))))
+            })));
+    let selection =
         div()
-            .id("archive-picker")
-            .test_support()
-            .track_focus(&app.loading.focus)
-            .w(px(420.))
-            .max_w(gpui_kit::gpui::relative(if viewport_width < 1100. {
-                0.9
-            } else {
-                0.5
-            }))
-            .when(viewport_width < 1100., |d| {
-                d.absolute()
-                    .right_0()
-                    .top_0()
-                    .bottom_0()
-                    .occlude()
-                    .shadow_lg()
-            })
-            .min_w(px(0.))
             .h_full()
-            .border_l_1()
-            .border_color(cx.theme().border)
-            .p_3()
+            .min_w(px(0.))
+            .pl_3()
             .flex()
             .flex_col()
             .gap_3()
             .child(
                 div()
+                    .flex_1()
+                    .min_h(px(80.))
                     .flex()
-                    .items_center()
+                    .flex_col()
                     .gap_2()
-                    .child(div().flex_1().child("Choose files to open"))
                     .child(
-                        Button::new("archive-picker-hide")
-                            .ghost()
-                            .icon(IconName::X)
-                            .accessibility_label("Hide picker")
-                            .tooltip("Hide picker")
-                            .on_click(cx.listener(|app, _, _, cx| {
-                                app.loading.selected_picker = None;
-                                cx.notify();
-                            })),
+                        div()
+                            .font_semibold()
+                            .child(format!("Selected files ({selected})")),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .when(selected == 0, |d| {
+                                d.child(div().text_sm().text_color(cx.theme().muted_foreground)
+                    .child("Choose files on the left, or add a glob pattern below."))
+                            })
+                            .child(selected_list),
                     ),
             )
             .child(
                 div()
-                    .truncate()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(op.path.display().to_string()),
-            )
-            .children(app.archive_search.as_ref().map(|input| super::input(input)
-                .id("archive-search").aria_label("Search filenames").cleanable(true)))
-            .child(div().text_xs().text_color(cx.theme().muted_foreground)
-                .child("Search expanded entries. Expand folders and archives to search their contents. Bulk selection includes files outside the search."))
-            .child(
-                div()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .pt_3()
+                    .flex_1()
+                    .min_h(px(0.))
                     .flex()
-                    .gap_2()
-                    .child(
-                        Button::new("archive-select-all")
-                            .label("Select all")
-                            .on_click(
-                                cx.listener(move |app, _, _, cx| app.picker_all(id, true, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("archive-clear").label("Clear").on_click(
-                            cx.listener(move |app, _, _, cx| app.picker_all(id, false, cx)),
-                        ),
-                    ),
-            )
-            .child(div().flex_1().min_h(px(0.)).when(picker.rows.is_empty(), |d| d.child("No matching filenames. Try another search.")).child(list))
-            .child(div().text_color(cx.theme().muted_foreground).child(format!(
-                "{selected} selected · Space selects · arrows navigate"
-            )))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(
-                        Button::new("archive-extract-open")
-                            .primary()
-                            .label("Open selected")
-                            .disabled(selected == 0)
-                            .on_click(cx.listener(move |app, _, _, cx| app.picker_open(id, cx))),
-                    )
-                    .child(
-                        Button::new("archive-extract-merge")
-                            .label("Merge selected")
-                            .disabled(selected < 2)
-                            .on_click(cx.listener(move |app, _, _, cx| app.merge_archive(id, cx))),
-                    )
-                    .child(
-                        Button::new("archive-cancel")
-                            .label("Cancel")
-                            .on_click(cx.listener(move |app, _, _, cx| app.cancel_loading(id, cx))),
-                    ),
-            )
-            .into_any_element(),
-    )
+                    .flex_col()
+                    .child(patterns),
+            );
+    let merge_rotations = app.state.preferences.archive_merge_rotations;
+    let groups = if merge_rotations {
+        crate::shared::archive_selection::rotation_groups(&picker.tree)
+    } else {
+        Vec::new()
+    };
+    let output_count = selected - groups.iter().map(|g| g.members.len() - 1).sum::<usize>();
+    Some(div().id("archive-picker").test_support().track_focus(&app.loading.focus)
+        .w_full()
+        .min_w(px(0.)).h_full().bg(cx.theme().background).border_l_1().border_color(cx.theme().border)
+        .p_4().flex().flex_col().gap_3()
+        .child(div().flex().items_center().gap_2()
+            .child(div().flex_1().font_semibold().child("Open files from archive"))
+            .child(Button::new("archive-picker-hide").ghost().icon(IconName::X)
+                .accessibility_label("Hide picker").tooltip("Hide picker")
+                .on_click(cx.listener(|app, _, _, cx| { app.loading.selected_picker = None; cx.notify(); }))))
+        .child(div().truncate().text_sm().text_color(cx.theme().muted_foreground).child(op.path.display().to_string()))
+        .child(div().flex_1().min_h(px(0.)).child(h_resizable(("archive-panes", id))
+            .child(resizable_panel().size(px(460.)).size_range(px(220.)..px(1000.)).child(files))
+            .child(resizable_panel().size(px(440.)).size_range(px(220.)..px(1000.)).child(selection))))
+        .child(div().border_t_1().border_color(cx.theme().border).pt_3().flex().flex_col().gap_2()
+            .child(Switch::new("archive-merge-rotations").label("Auto merge rotated logs").checked(merge_rotations)
+                .on_click(cx.listener(|app, _, _, cx| {
+                    let mut prefs = app.state.preferences.clone();
+                    prefs.archive_merge_rotations = !prefs.archive_merge_rotations;
+                    app.save_preferences(prefs); cx.notify();
+                })))
+            .child(div().text_xs().text_color(cx.theme().muted_foreground).child(if merge_rotations {
+                format!("{selected} selected → {output_count} outputs. Each rotation family opens as one saved log; other files open individually.")
+            } else { "runtime.log, runtime.log1, runtime.log2 → runtime-merged.log. Each log family stays separate.".into() })))
+        .child(div().flex().items_center().gap_2()
+            .child(div().flex_1().min_w(px(0.)).flex().flex_col()
+                .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Output folder"))
+                .child(div().id("archive-output-directory").test_support().truncate().text_sm().child(picker.output_dir.display().to_string())))
+            .child(Button::new("archive-output-choose").small().label("Choose folder…")
+                .on_click(cx.listener(move |app, _, _, cx| app.picker_choose_output(id, cx)))))
+        .child(div().flex().flex_wrap().gap_2()
+            .child(Button::new("archive-extract-open").primary().label(format!("Open {output_count} {}", if output_count == 1 { "file" } else { "files" }))
+                .disabled(selected == 0).on_click(cx.listener(move |app, _, _, cx| app.picker_open(id, cx))))
+            .child(Button::new("archive-extract-merge").label("Merge all into one tab").disabled(selected < 2 || merge_rotations)
+                .on_click(cx.listener(move |app, _, _, cx| app.merge_archive(id, cx))))
+            .child(Button::new("archive-cancel").label("Cancel")
+                .on_click(cx.listener(move |app, _, _, cx| app.cancel_loading(id, cx)))))
+        .into_any_element())
 }

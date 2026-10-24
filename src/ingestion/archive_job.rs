@@ -307,6 +307,92 @@ pub fn expand(
     Ok(tree)
 }
 
+pub fn expand_all(
+    source: &Path,
+    mut tree: ArchiveTree,
+    control: Control,
+) -> Result<ArchiveTree, String> {
+    control.check().map_err(|e| e.to_string())?;
+    let mut id = 0;
+    while id < tree.nodes.len() {
+        control.check().map_err(|e| e.to_string())?;
+        if matches!(tree.nodes[id].kind, NodeKind::LazyContainer { .. }) {
+            control.phase("Reading nested archives", tree.nodes[id].name.clone(), None);
+            tree = expand(source, tree, id, control.clone())?;
+        }
+        id += 1;
+    }
+    Ok(tree)
+}
+
+#[cfg(any(feature = "gui", test))]
+pub(crate) fn extract_with_rotations(
+    source: &Path,
+    tree: &ArchiveTree,
+    control: &Control,
+    emit: &mut dyn FnMut(Result<(NodeId, tempfile::NamedTempFile), String>) -> Result<(), String>,
+) -> Result<(), String> {
+    let groups = crate::shared::archive_selection::rotation_groups(tree);
+    let grouped: std::collections::HashSet<_> = groups
+        .iter()
+        .flat_map(|g| g.members.iter().copied())
+        .collect();
+    let mut files = std::collections::HashMap::new();
+    let mut failed = false;
+    extract_selection(source, tree, control, &mut |entry| {
+        match entry {
+            Ok((id, file)) if grouped.contains(&id) => {
+                files.insert(id, file.into_temp_path());
+            }
+            Ok(entry) => emit(Ok(entry))?,
+            Err(error) => {
+                failed = true;
+                emit(Err(error))?;
+            }
+        }
+        Ok(())
+    })?;
+    for group in groups {
+        control.check().map_err(|e| e.to_string())?;
+        if group.members.iter().any(|id| !files.contains_key(id)) {
+            if !failed {
+                emit(Err(format!(
+                    "Incomplete rotation group: {}",
+                    group.relative
+                )))?;
+            }
+            continue;
+        }
+        let mut output = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+        control.phase("Merging rotated logs", group.relative, None);
+        let mut last = None;
+        for id in group.members {
+            let file = files.remove(&id).unwrap();
+            let mut input = CheckedReader::new(
+                File::open(&file).map_err(|e| e.to_string())?,
+                Some(control.clone()),
+            );
+            let mut buffer = [0; 64 * 1024];
+            let mut first = true;
+            loop {
+                let count = input.read(&mut buffer).map_err(|e| e.to_string())?;
+                if count == 0 {
+                    break;
+                }
+                if first && last.is_some_and(|last| last != b'\n') {
+                    std::io::Write::write_all(&mut output, b"\n").map_err(|e| e.to_string())?;
+                }
+                std::io::Write::write_all(&mut output, &buffer[..count])
+                    .map_err(|e| e.to_string())?;
+                last = Some(buffer[count - 1]);
+                first = false;
+            }
+        }
+        emit(Ok((group.representative, output)))?;
+    }
+    Ok(())
+}
+
 /// Walk selected containers once, emitting each completed entry before continuing.
 /// The consumer can apply backpressure while it indexes and publishes that entry.
 pub fn extract_selection(
@@ -482,6 +568,70 @@ mod tests {
         std::fs::copy(bytes.path(), file.path()).unwrap();
         file
     }
+    #[test]
+    fn all_nested_leaves_are_listed_and_rotations_emit_only_combined_outputs() {
+        let compressed = make_gz(b"oldest");
+        let inner = make_zip(&[
+            ("logs/runtime.log", b"newest\n"),
+            (
+                "logs/runtime.log2.gz",
+                &std::fs::read(compressed.path()).unwrap(),
+            ),
+            ("logs/runtime.log1", b"middle\n"),
+            ("logs/startup.log", b"start new\n"),
+            ("logs/startup.log.1", b"start old\n"),
+            ("notes.txt", b"ignore"),
+        ]);
+        let middle = make_tar(&[("inner.zip", &std::fs::read(inner.path()).unwrap())]);
+        let root = archive(
+            &make_zip(&[
+                ("middle.tar", &std::fs::read(middle.path()).unwrap()),
+                ("bad.zip", b"broken"),
+            ]),
+            ".zip",
+        );
+        let (control, _) = Control::new();
+        let tree = super::super::archive_tree::list_archive_tree_controlled(
+            &root.path().to_string_lossy(),
+            control.clone(),
+        )
+        .unwrap();
+        let mut tree = expand_all(root.path(), tree, control.clone()).unwrap();
+        assert!(
+            !tree
+                .nodes
+                .iter()
+                .any(|n| matches!(n.kind, NodeKind::LazyContainer { .. }))
+        );
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|n| matches!(n.kind, NodeKind::UnreadableContainer { .. }))
+        );
+        crate::shared::archive_selection::apply_patterns(&mut tree, &["*.log*".into()]);
+        assert_eq!(tree.nodes.iter().filter(|n| n.selected).count(), 5);
+        let mut outputs = Vec::new();
+        extract_with_rotations(root.path(), &tree, &control, &mut |result| {
+            let (id, file) = result?;
+            outputs.push((
+                tree.nodes[id].name.clone(),
+                std::fs::read(file.path()).unwrap(),
+            ));
+            Ok(())
+        })
+        .unwrap();
+        outputs.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            outputs,
+            vec![
+                ("runtime.log".into(), b"oldest\nmiddle\nnewest\n".to_vec()),
+                ("startup.log".into(), b"start old\nstart new\n".to_vec())
+            ]
+        );
+        control.cancel.store(true, Ordering::Relaxed);
+        assert!(expand_all(root.path(), tree, control).is_err());
+    }
+
     #[test]
     fn selected_entries_stream_for_every_supported_format() {
         let content = b"first\nsecond\n";

@@ -561,7 +561,7 @@ impl ListingState {
     }
 }
 
-/// GUI listing keeps entry content on disk and expands nested archives on demand.
+/// Disk-backed listing; callers can expand nested archives separately.
 pub fn list_archive_tree_controlled(
     path: &str,
     control: super::archive_job::Control,

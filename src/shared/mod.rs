@@ -1,4 +1,6 @@
 pub(crate) mod archive_search;
+#[cfg(any(feature = "gui", test))]
+pub(crate) mod archive_selection;
 pub mod command_helpers;
 pub mod field_layout;
 pub mod session;

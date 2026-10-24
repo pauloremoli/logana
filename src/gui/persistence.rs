@@ -32,6 +32,8 @@ pub struct Preferences {
     pub mcp_port: u16,
     pub font_size: f32,
     pub column_widths: std::collections::BTreeMap<String, std::collections::BTreeMap<String, f32>>,
+    pub archive_patterns: Vec<String>,
+    pub archive_merge_rotations: bool,
     pub locked: Vec<SettingsKey>,
 }
 impl Default for Preferences {
@@ -45,6 +47,8 @@ impl Default for Preferences {
             mcp_port: 9876,
             font_size: 13.,
             column_widths: Default::default(),
+            archive_patterns: Vec::new(),
+            archive_merge_rotations: false,
             locked: Vec::new(),
         }
     }
@@ -145,6 +149,18 @@ impl Preferences {
             .await?
             .and_then(|value| serde_json::from_str(&value).ok())
             .unwrap_or_default();
+        prefs.archive_patterns = db
+            .load_app_setting(SettingsKey::ArchivePatterns)
+            .await?
+            .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|pattern| glob::Pattern::new(pattern).is_ok())
+            .collect();
+        prefs.archive_merge_rotations = db
+            .load_app_setting(SettingsKey::ArchiveMergeRotations)
+            .await?
+            .is_some_and(|value| value == "true");
         Ok(prefs)
     }
     pub(super) fn settings(&self) -> Vec<(SettingsKey, String)> {
@@ -165,6 +181,14 @@ impl Preferences {
             (SettingsKey::PreviewBytes, self.preview_bytes.to_string()),
             (SettingsKey::McpPort, self.mcp_port.to_string()),
             (SettingsKey::GuiFontSize, self.font_size.to_string()),
+            (
+                SettingsKey::ArchivePatterns,
+                serde_json::to_string(&self.archive_patterns).expect("archive patterns"),
+            ),
+            (
+                SettingsKey::ArchiveMergeRotations,
+                self.archive_merge_rotations.to_string(),
+            ),
             (
                 SettingsKey::GuiColumnWidths,
                 serde_json::to_string(&self.column_widths).expect("finite column widths"),
@@ -549,6 +573,26 @@ pub(super) async fn prepare_loaded(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn archive_patterns_and_rotation_option_survive_reloading_preferences() {
+        let db = Database::in_memory().await.unwrap();
+        let prefs = Preferences {
+            archive_patterns: vec!["*.log*".into(), "nested/**".into()],
+            archive_merge_rotations: true,
+            ..Default::default()
+        };
+        Save {
+            settings: prefs.settings(),
+            ..Default::default()
+        }
+        .persist(&db)
+        .await
+        .unwrap();
+        let loaded = Preferences::load(&db, &Config::default()).await.unwrap();
+        assert_eq!(loaded.archive_patterns, prefs.archive_patterns);
+        assert!(loaded.archive_merge_rotations);
+    }
+
     #[tokio::test]
     async fn saved_font_sizes_validate_on_load() {
         let db = Database::in_memory().await.unwrap();
