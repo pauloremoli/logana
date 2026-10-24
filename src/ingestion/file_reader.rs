@@ -1027,7 +1027,7 @@ impl FileReader {
         // same pass; non-Unix falls back to sequential read_to_end.
         #[cfg(unix)]
         let mut file_data: Vec<u8> = {
-            let mut v = vec![0u8; size];
+            let v = vec![0u8; size];
             // SAFETY: madvise only touches kernel page tables for this valid,
             // writable `size`-byte mapping. Pre-faulting pages before the
             // parallel pread avoids per-page fault stalls during memcpy.
@@ -1035,7 +1035,7 @@ impl FileReader {
             #[cfg(target_os = "linux")]
             unsafe {
                 libc::madvise(
-                    v.as_mut_ptr() as *mut libc::c_void,
+                    v.as_ptr() as *mut libc::c_void,
                     size,
                     libc::MADV_POPULATE_WRITE,
                 );
