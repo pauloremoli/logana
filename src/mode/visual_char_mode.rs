@@ -1786,7 +1786,7 @@ mod tests {
     // `render_line_text` function so they can never disagree again.
     #[tokio::test]
     async fn test_display_line_text_matches_template_reconstruction_with_hidden_field() {
-        let line = "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: ok";
+        let line = "04 sample-source <2024-01-01T21:54:53.283856Z> 1AF INF/Module/WorkerTask, StateChange: ok";
         let mut tab = make_tab(&[line]).await;
         tab.display.format = Some(acme_parser());
         tab.display.hidden_fields.insert("component".to_string());
@@ -1795,10 +1795,10 @@ mod tests {
 
         assert_eq!(
             text,
-            "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/StartupMgr, StateChange: ok"
+            "04 sample-source <2024-01-01T21:54:53.283856Z> 1AF INF/WorkerTask, StateChange: ok"
         );
         assert!(
-            !text.contains("Syscon"),
+            !text.contains("Module"),
             "hidden field's value must not appear in word-motion text: {text}"
         );
     }

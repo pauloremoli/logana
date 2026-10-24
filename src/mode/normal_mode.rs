@@ -1716,7 +1716,7 @@ mod tests {
         // hidden field's separator collapsed), not the generic column
         // layout — otherwise a paste doesn't match what the user saw and
         // selected.
-        let line = "INFO/Syscon/StartupMgr, hello there";
+        let line = "INFO/Nexora/LaunchNode, hello there";
         let mut tab = make_tab(&[line]).await;
         let cfg = crate::config::CustomSchemaConfig {
             name: "acme".to_string(),
@@ -1740,7 +1740,7 @@ mod tests {
         let (_, result) = press(&mut tab, KeyCode::Char('y'), KeyModifiers::NONE).await;
         match result {
             KeyResult::CopyToClipboard(text) => {
-                assert_eq!(text, "INFO/StartupMgr, hello there");
+                assert_eq!(text, "INFO/LaunchNode, hello there");
             }
             other => panic!("expected CopyToClipboard, got {:?}", other),
         }

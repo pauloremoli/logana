@@ -578,7 +578,9 @@ fn build_continuation_map_controlled(
         .map(|start| {
             let end = (start + chunk_size).min(count);
             let mut local = Vec::with_capacity(end - start);
-            let mut last_parent = start;
+            // No header in this chunk yet: inherit the preceding chunk's
+            // parent during the sequential correction pass.
+            let mut last_parent = usize::MAX;
 
             for i in start..end {
                 if cancel.load(Ordering::Relaxed) {
@@ -616,11 +618,13 @@ fn build_continuation_map_controlled(
             break;
         }
         for v in chunk.iter_mut() {
-            if *v < prev_last {
+            if *v == usize::MAX {
                 *v = prev_last;
             }
         }
-        prev_last = (*last).max(prev_last);
+        if *last != usize::MAX {
+            prev_last = *last;
+        }
         result.extend_from_slice(chunk);
     }
 
@@ -4897,7 +4901,7 @@ mod tests {
         // hidden-field separator), not the generic column layout —
         // otherwise a match's highlighted position drifts from what's on
         // screen, the same divergence class fixed for Visual Char Mode.
-        let line = "INFO/Syscon/StartupMgr, hello there";
+        let line = "INFO/Nexora/LaunchNode, hello there";
         let mut tab = make_tab(&[line]).await;
         tab.filter.visible_indices = VisibleLines::Filtered(vec![0]);
         let cfg = crate::config::CustomSchemaConfig {
@@ -4919,7 +4923,7 @@ mod tests {
         ));
         tab.display.hidden_fields.insert("component".to_string());
 
-        tab.begin_search("StartupMgr, hello", true, false);
+        tab.begin_search("LaunchNode, hello", true, false);
         drain_search(&mut tab).await;
 
         let results = tab.search.query.get_results();
@@ -4928,8 +4932,8 @@ mod tests {
             1,
             "expected exactly one match against the reconstructed (hidden-field-collapsed) text"
         );
-        let expected_start = "INFO/StartupMgr, hello there"
-            .find("StartupMgr, hello")
+        let expected_start = "INFO/LaunchNode, hello there"
+            .find("LaunchNode, hello")
             .unwrap();
         assert_eq!(results[0].matches[0].0, expected_start);
     }

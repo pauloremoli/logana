@@ -459,7 +459,7 @@ mod tests {
         // Yanked text must match what's actually rendered (schema template,
         // hidden field's separator collapsed), not the generic column
         // layout.
-        let line = "INFO/Syscon/StartupMgr, hello there";
+        let line = "INFO/Nexora/LaunchNode, hello there";
         let mut tab = make_tab(&[line]).await;
         let cfg = crate::config::CustomSchemaConfig {
             name: "acme".to_string(),
@@ -487,7 +487,7 @@ mod tests {
         let (_, result) = press(mode, &mut tab, KeyCode::Char('y')).await;
         match result {
             KeyResult::CopyToClipboard(text) => {
-                assert_eq!(text, "INFO/StartupMgr, hello there");
+                assert_eq!(text, "INFO/LaunchNode, hello there");
             }
             other => panic!("expected CopyToClipboard, got {:?}", other),
         }
@@ -699,7 +699,7 @@ mod tests {
     async fn test_slash_seeds_search_with_custom_schema_template_reconstruction() {
         // The seeded search text must match what's rendered (schema
         // template, hidden field collapsed), not the generic column layout.
-        let line = "INFO/Syscon/StartupMgr, hello there";
+        let line = "INFO/Nexora/LaunchNode, hello there";
         let mut tab = make_tab(&[line]).await;
         let cfg = crate::config::CustomSchemaConfig {
             name: "acme".to_string(),
@@ -727,7 +727,7 @@ mod tests {
         let (mode2, _) = press(mode, &mut tab, KeyCode::Char('/')).await;
         match mode2.render_state() {
             ModeRenderState::Search { query, .. } => {
-                assert_eq!(query, regex::escape("INFO/StartupMgr, hello there"));
+                assert_eq!(query, regex::escape("INFO/LaunchNode, hello there"));
             }
             other => panic!("expected Search, got {:?}", other),
         }

@@ -1575,9 +1575,9 @@ mod tests {
         let pattern = crate::filters::encode_field_filter(
             &[
                 ("level".to_string(), "INFO".to_string()),
-                ("component".to_string(), "Draco".to_string()),
+                ("component".to_string(), "LumaCore".to_string()),
             ],
-            Some("Power measuments:"),
+            Some("Power measurements:"),
         );
         tab.log_manager
             .add_filter_with_color(pattern, FilterType::Include, FilterOptions::default())
@@ -1588,8 +1588,8 @@ mod tests {
             ModeRenderState::Command { input, .. } => {
                 assert!(input.starts_with("filter"), "{input}");
                 assert!(input.contains("--field level=INFO"), "{input}");
-                assert!(input.contains("--field component=Draco"), "{input}");
-                assert!(input.ends_with("Power measuments:"), "{input}");
+                assert!(input.contains("--field component=LumaCore"), "{input}");
+                assert!(input.ends_with("Power measurements:"), "{input}");
             }
             other => panic!("expected Command, got {:?}", other),
         }

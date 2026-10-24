@@ -17,7 +17,7 @@ const TEXT_MARKER: char = '\u{02}';
 /// A compiled, ready-to-evaluate field-scoped filter. May combine several
 /// `(field, value)` conditions (all must match — AND) with an optional
 /// free-text substring condition (also ANDed), e.g. from
-/// `:filter --field level=INFO --field component=Draco some text`.
+/// `:filter --field level=INFO --field component=LumaCore some text`.
 #[derive(Debug, Clone)]
 pub struct FieldFilter {
     /// `(field, pattern)` pairs — every one must match for this filter to match.
@@ -390,12 +390,12 @@ mod tests {
     #[test]
     fn test_parse_field_filter_expr_multiple_conditions() {
         let (conditions, text) =
-            parse_field_filter_expr("level:INFO\u{1F}component:Draco").unwrap();
+            parse_field_filter_expr("level:INFO\u{1F}component:LumaCore").unwrap();
         assert_eq!(
             conditions,
             vec![
                 ("level".to_string(), "INFO".to_string()),
-                ("component".to_string(), "Draco".to_string()),
+                ("component".to_string(), "LumaCore".to_string()),
             ]
         );
         assert_eq!(text, None);
@@ -403,17 +403,18 @@ mod tests {
 
     #[test]
     fn test_parse_field_filter_expr_with_text() {
-        let (conditions, text) =
-            parse_field_filter_expr("level:INFO\u{1F}component:Draco\u{1F}\u{02}Power measuments:")
-                .unwrap();
+        let (conditions, text) = parse_field_filter_expr(
+            "level:INFO\u{1F}component:LumaCore\u{1F}\u{02}Power measurements:",
+        )
+        .unwrap();
         assert_eq!(
             conditions,
             vec![
                 ("level".to_string(), "INFO".to_string()),
-                ("component".to_string(), "Draco".to_string()),
+                ("component".to_string(), "LumaCore".to_string()),
             ]
         );
-        assert_eq!(text.as_deref(), Some("Power measuments:"));
+        assert_eq!(text.as_deref(), Some("Power measurements:"));
     }
 
     #[test]
@@ -431,13 +432,13 @@ mod tests {
     fn test_encode_field_filter_round_trips_multiple_conditions_and_text() {
         let conditions = vec![
             ("level".to_string(), "INFO".to_string()),
-            ("component".to_string(), "Draco".to_string()),
+            ("component".to_string(), "LumaCore".to_string()),
         ];
-        let encoded = encode_field_filter(&conditions, Some("Power measuments:"));
+        let encoded = encode_field_filter(&conditions, Some("Power measurements:"));
         let expr = encoded.strip_prefix(FIELD_PREFIX).unwrap();
         let (parsed_conditions, parsed_text) = parse_field_filter_expr(expr).unwrap();
         assert_eq!(parsed_conditions, conditions);
-        assert_eq!(parsed_text.as_deref(), Some("Power measuments:"));
+        assert_eq!(parsed_text.as_deref(), Some("Power measurements:"));
     }
 
     fn compound(conditions: &[(&str, &str)], text: Option<&str>) -> FieldFilter {
@@ -454,33 +455,39 @@ mod tests {
     #[test]
     fn test_field_filter_matches_all_conditions_and_text() {
         let ff = compound(
-            &[("level", "INFO"), ("component", "Draco")],
-            Some("Power measuments:"),
+            &[("level", "INFO"), ("component", "LumaCore")],
+            Some("Power measurements:"),
         );
-        let parts = make_parts(Some("INFO"), None, None, None, vec![("component", "Draco")]);
-        assert!(field_filter_matches(
-            &ff,
-            &parts,
-            b"INFO Draco Power measuments: everything nominal"
-        ));
-    }
-
-    #[test]
-    fn test_field_filter_matches_one_condition_fails() {
-        let ff = compound(&[("level", "INFO"), ("component", "Draco")], None);
         let parts = make_parts(
             Some("INFO"),
             None,
             None,
             None,
-            vec![("component", "WireBoard")],
+            vec![("component", "LumaCore")],
         );
-        assert!(!field_filter_matches(&ff, &parts, b"INFO WireBoard hi"));
+        assert!(field_filter_matches(
+            &ff,
+            &parts,
+            b"INFO LumaCore Power measurements: everything nominal"
+        ));
+    }
+
+    #[test]
+    fn test_field_filter_matches_one_condition_fails() {
+        let ff = compound(&[("level", "INFO"), ("component", "LumaCore")], None);
+        let parts = make_parts(
+            Some("INFO"),
+            None,
+            None,
+            None,
+            vec![("component", "SignalHub")],
+        );
+        assert!(!field_filter_matches(&ff, &parts, b"INFO SignalHub hi"));
     }
 
     #[test]
     fn test_field_filter_matches_text_fails() {
-        let ff = compound(&[("level", "INFO")], Some("Power measuments:"));
+        let ff = compound(&[("level", "INFO")], Some("Power measurements:"));
         let parts = make_parts(Some("INFO"), None, None, None, vec![]);
         assert!(!field_filter_matches(&ff, &parts, b"INFO unrelated text"));
     }
@@ -726,23 +733,29 @@ mod tests {
     #[test]
     fn test_compound_filter_requires_all_parts_others_still_or() {
         // The actual user scenario: `:filter --field level=INFO --field
-        // component=Draco Power measuments:` produces ONE compound filter
+        // component=LumaCore Power measurements:` produces ONE compound filter
         // whose 2 field conditions and text must ALL match (AND). A second,
         // separate, unrelated filter alongside it still ORs in as usual.
         let compound = compound(
-            &[("level", "INFO"), ("component", "Draco")],
-            Some("Power measuments:"),
+            &[("level", "INFO"), ("component", "LumaCore")],
+            Some("Power measurements:"),
         );
         let unrelated = inc("target", "auth");
         let includes = [compound, unrelated];
 
         // Matches every part of the compound filter -> Match.
-        let parts = make_parts(Some("INFO"), None, None, None, vec![("component", "Draco")]);
+        let parts = make_parts(
+            Some("INFO"),
+            None,
+            None,
+            None,
+            vec![("component", "LumaCore")],
+        );
         assert_eq!(
             field_include_vote(
                 &includes,
                 Some(&parts),
-                b"INFO Draco Power measuments: nominal"
+                b"INFO LumaCore Power measurements: nominal"
             ),
             FieldVote::Match
         );
@@ -751,7 +764,7 @@ mod tests {
         // fails, and the unrelated filter (target=auth) doesn't apply here
         // either -> Miss overall.
         assert_eq!(
-            field_include_vote(&includes, Some(&parts), b"INFO Draco unrelated text"),
+            field_include_vote(&includes, Some(&parts), b"INFO LumaCore unrelated text"),
             FieldVote::Miss
         );
 

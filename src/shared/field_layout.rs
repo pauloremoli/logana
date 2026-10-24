@@ -352,8 +352,8 @@ pub fn apply_field_layout(
 /// and, unless it's the template's last field, the literal segment
 /// immediately following it is dropped too, so hiding a field collapses its
 /// separator instead of leaving a dangling delimiter (e.g. hiding
-/// `component` in `{level}/{component}/{feature}` yields `INFO/StartupMgr`,
-/// not `INFO//StartupMgr`).
+/// `component` in `{level}/{component}/{feature}` yields `INFO/LaunchNode`,
+/// not `INFO//LaunchNode`).
 fn render_template_segments(
     segments: &[TemplateSegment],
     parts: &DisplayParts<'_>,
@@ -467,12 +467,12 @@ mod tests {
                 (
                     crate::parser::FieldSemantic::Component,
                     "component",
-                    "Syscon",
+                    "Nexora",
                 ),
                 (
                     crate::parser::FieldSemantic::Feature,
                     "feature",
-                    "StartupMgr",
+                    "LaunchNode",
                 ),
             ],
             message: Some("StateChange: ok"),
@@ -483,21 +483,21 @@ mod tests {
     #[test]
     fn test_render_template_segments_all_visible() {
         let rendered = render_template_segments(&acme_segments(), &acme_parts(), &HashSet::new());
-        assert_eq!(rendered, "INFO/Syscon/StartupMgr, StateChange: ok");
+        assert_eq!(rendered, "INFO/Nexora/LaunchNode, StateChange: ok");
     }
 
     #[test]
     fn test_render_template_segments_hides_middle_field_collapses_separator() {
         let hidden: HashSet<String> = ["component".to_string()].into_iter().collect();
         let rendered = render_template_segments(&acme_segments(), &acme_parts(), &hidden);
-        assert_eq!(rendered, "INFO/StartupMgr, StateChange: ok");
+        assert_eq!(rendered, "INFO/LaunchNode, StateChange: ok");
     }
 
     #[test]
     fn test_render_template_segments_hides_first_field() {
         let hidden: HashSet<String> = ["level".to_string()].into_iter().collect();
         let rendered = render_template_segments(&acme_segments(), &acme_parts(), &hidden);
-        assert_eq!(rendered, "Syscon/StartupMgr, StateChange: ok");
+        assert_eq!(rendered, "Nexora/LaunchNode, StateChange: ok");
     }
 
     #[test]
@@ -507,7 +507,7 @@ mod tests {
         // choice, not a dangling mid-line delimiter).
         let hidden: HashSet<String> = ["message".to_string()].into_iter().collect();
         let rendered = render_template_segments(&acme_segments(), &acme_parts(), &hidden);
-        assert_eq!(rendered, "INFO/Syscon/StartupMgr, ");
+        assert_eq!(rendered, "INFO/Nexora/LaunchNode, ");
     }
 
     #[test]
@@ -518,7 +518,7 @@ mod tests {
             ignored: true,
         };
         let rendered = render_template_segments(&segments, &acme_parts(), &HashSet::new());
-        assert_eq!(rendered, "Syscon/StartupMgr, StateChange: ok");
+        assert_eq!(rendered, "Nexora/LaunchNode, StateChange: ok");
     }
 
     #[test]

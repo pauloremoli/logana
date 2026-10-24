@@ -10,8 +10,10 @@ pub mod json;
 pub mod logfmt;
 pub mod otlp;
 pub mod schema;
+pub mod service;
 pub mod syslog;
 pub mod timestamp;
+pub mod transactions;
 pub mod types;
 
 pub use clf::ClfParser;
@@ -25,7 +27,9 @@ pub use json::{
 pub use logfmt::{LogfmtParser, SCHEMA_LOGFMT};
 pub use otlp::OtlpParser;
 pub use schema::LogSchema;
+pub use service::ServiceParser;
 pub use syslog::SyslogParser;
+pub use transactions::TransactionsParser;
 pub use types::LogLevel;
 pub use types::{
     ContinuationWalkResult, DisplayParts, FieldSemantic, GroupItem, LogFormatParser, SpanInfo,
@@ -39,8 +43,12 @@ pub use types::{push_extra_field, push_field_as};
 /// listing) so the two can't drift apart — a parser added here is
 /// automatically both detectable and listed.
 fn builtin_parsers() -> Vec<Box<dyn LogFormatParser>> {
-    let mut parsers: Vec<Box<dyn LogFormatParser>> =
-        vec![Box::new(OtlpParser), Box::new(DltParser)];
+    let mut parsers: Vec<Box<dyn LogFormatParser>> = vec![
+        Box::new(OtlpParser),
+        Box::new(DltParser),
+        Box::new(ServiceParser),
+        Box::new(TransactionsParser),
+    ];
     parsers.extend(JsonParser::all_variants());
     parsers.extend([
         Box::new(SyslogParser::default()) as Box<dyn LogFormatParser>,
@@ -190,6 +198,8 @@ mod tests {
         let names = builtin_format_names();
         for expected in [
             "otlp",
+            "service",
+            "transactions",
             "dlt",
             "journalctl-json",
             "tracing-json",

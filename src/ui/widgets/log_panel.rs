@@ -2241,7 +2241,7 @@ mod tests {
         );
     }
 
-    /// A nested, brace-structured multiline schema (mirroring a real HLAPI
+    /// A nested, brace-structured multiline schema (mirroring a generic
     /// transaction log — a header, deeply nested `object { ... }` blocks,
     /// and a distinctly-worded `end_pattern` footer) combined with two
     /// active include filters, matching a real reported "+ doesn't show"
@@ -2646,7 +2646,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_log_panel_custom_schema_preserves_template_separators() {
-        let line = "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: ok";
+        let line = "04 sample-source <2024-01-01T21:54:53.283856Z> 1AF INF/Module/WorkerTask, StateChange: ok";
         let mut app = make_app(&[line]).await;
         app.tabs[0].display.format = Some(acme_parser());
         let mut terminal = Terminal::new(TestBackend::new(200, 24)).unwrap();
@@ -2654,7 +2654,7 @@ mod tests {
         let buf = terminal.backend().buffer().clone();
         let content: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(
-            content.contains("INF/Syscon/StartupMgr,"),
+            content.contains("INF/Module/WorkerTask,"),
             "expected the schema's own separators in the rendered line: {content}"
         );
     }
@@ -2664,7 +2664,7 @@ mod tests {
         // Hiding a field must not disable template reconstruction outright —
         // its value drops and the template's own separator collapses with
         // it, but the OTHER separators (and fields) stay in template order.
-        let line = "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: ok";
+        let line = "04 sample-source <2024-01-01T21:54:53.283856Z> 1AF INF/Module/WorkerTask, StateChange: ok";
         let mut app = make_app(&[line]).await;
         app.tabs[0].display.format = Some(acme_parser());
         app.tabs[0]
@@ -2676,11 +2676,11 @@ mod tests {
         let buf = terminal.backend().buffer().clone();
         let content: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(
-            content.contains("INF/StartupMgr,"),
+            content.contains("INF/WorkerTask,"),
             "expected the hidden field's value and its separator to collapse, other separators kept: {content}"
         );
         assert!(
-            !content.contains("Syscon"),
+            !content.contains("Module"),
             "hidden field's value must not appear: {content}"
         );
     }
@@ -2690,7 +2690,7 @@ mod tests {
         // A genuine reorder (an explicit column list whose order differs
         // from the template's own) can't be represented by the fixed
         // template, so it still falls back to the generic column layout.
-        let line = "04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: ok";
+        let line = "04 sample-source <2024-01-01T21:54:53.283856Z> 1AF INF/Module/WorkerTask, StateChange: ok";
         let mut app = make_app(&[line]).await;
         app.tabs[0].display.format = Some(acme_parser());
         app.tabs[0].display.field_layout.columns = Some(vec![
@@ -2703,7 +2703,7 @@ mod tests {
         let buf = terminal.backend().buffer().clone();
         let content: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(
-            !content.contains("INF/Syscon/StartupMgr,"),
+            !content.contains("INF/Module/WorkerTask,"),
             "an explicit reordered column list must fall back to columns, not the template: {content}"
         );
     }

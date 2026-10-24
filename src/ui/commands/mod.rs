@@ -2079,9 +2079,9 @@ mod tests {
     /// rather than JSON — the JSON parser has its own unrelated quirk of
     /// mapping a `"component"` key to `parts.target` instead of
     /// `extra_fields`, which would otherwise obscure what's under test here.
-    fn draco_parser() -> crate::parser::CustomParser {
+    fn lumacore_parser() -> crate::parser::CustomParser {
         crate::parser::CustomParser::from_config(&crate::config::CustomSchemaConfig {
-            name: "draco".to_string(),
+            name: "lumacore".to_string(),
             description: None,
             template: Some("{level}/{component}: {message}".to_string().into()),
             pattern: None,
@@ -2096,19 +2096,19 @@ mod tests {
     #[tokio::test]
     async fn test_filter_multiple_field_flags_and_text_requires_all() {
         // The user scenario: `:filter --field level=INFO --field
-        // component=Draco Power measuments:` — only the line matching ALL
+        // component=LumaCore Power measurements:` — only the line matching ALL
         // THREE conditions stays visible; lines matching just a subset
         // (which the old OR-across-filters behavior would have shown) hide.
         let mut app = make_app(&[
-            "INFO/Draco: Power measuments: nominal",
-            "INFO/Draco: something else",
-            "INFO/WireBoard: Power measuments: x",
-            "WARN/Draco: Power measuments: y",
+            "INFO/LumaCore: Power measurements: nominal",
+            "INFO/LumaCore: something else",
+            "INFO/SignalHub: Power measurements: x",
+            "WARN/LumaCore: Power measurements: y",
         ])
         .await;
-        app.tabs[0].display.format = Some(Arc::new(draco_parser()));
+        app.tabs[0].display.format = Some(Arc::new(lumacore_parser()));
         let result = app
-            .run_command("filter --field level=INFO --field component=Draco Power measuments:")
+            .run_command("filter --field level=INFO --field component=LumaCore Power measurements:")
             .await;
         assert!(result.is_ok(), "{result:?}");
         await_filter_computations(&mut app).await;
@@ -2123,14 +2123,16 @@ mod tests {
     #[tokio::test]
     async fn test_exclude_multiple_field_flags_and_text_requires_all() {
         let mut app = make_app(&[
-            "INFO/Draco: Power measuments: nominal",
-            "INFO/Draco: something else",
-            "INFO/WireBoard: Power measuments: x",
+            "INFO/LumaCore: Power measurements: nominal",
+            "INFO/LumaCore: something else",
+            "INFO/SignalHub: Power measurements: x",
         ])
         .await;
-        app.tabs[0].display.format = Some(Arc::new(draco_parser()));
+        app.tabs[0].display.format = Some(Arc::new(lumacore_parser()));
         let result = app
-            .run_command("exclude --field level=INFO --field component=Draco Power measuments:")
+            .run_command(
+                "exclude --field level=INFO --field component=LumaCore Power measurements:",
+            )
             .await;
         assert!(result.is_ok(), "{result:?}");
         await_filter_computations(&mut app).await;
@@ -2143,17 +2145,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_highlight_multiple_field_flags_and_text() {
-        let mut app = make_app(&["INFO/Draco: hi"]).await;
-        app.tabs[0].display.format = Some(Arc::new(draco_parser()));
+        let mut app = make_app(&["INFO/LumaCore: hi"]).await;
+        app.tabs[0].display.format = Some(Arc::new(lumacore_parser()));
         let result = app
-            .run_command("highlight --field level=INFO --field component=Draco some text")
+            .run_command("highlight --field level=INFO --field component=LumaCore some text")
             .await;
         assert!(result.is_ok(), "{result:?}");
         let filters = app.tabs[0].log_manager.get_filters();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].filter_type, FilterType::Highlight);
         assert!(filters[0].pattern.contains("level:INFO"));
-        assert!(filters[0].pattern.contains("component:Draco"));
+        assert!(filters[0].pattern.contains("component:LumaCore"));
         // Highlight filters never affect visibility, even though this one
         // has field + text conditions like the include/exclude cases above.
         await_filter_computations(&mut app).await;

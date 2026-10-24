@@ -1082,16 +1082,16 @@ mod tests {
         let pattern = crate::filters::encode_field_filter(
             &[
                 ("level".to_string(), "INFO".to_string()),
-                ("component".to_string(), "Draco".to_string()),
+                ("component".to_string(), "LumaCore".to_string()),
             ],
-            Some("Power measuments:"),
+            Some("Power measurements:"),
         );
         let filter = make_filter(&pattern, true, FilterType::Include);
         let line = build_filter_row(&filter, 0, 0, &[1], &theme, &[]);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("level=INFO"), "got: {text:?}");
-        assert!(text.contains("component=Draco"), "got: {text:?}");
-        assert!(text.contains("Power measuments:"), "got: {text:?}");
+        assert!(text.contains("component=LumaCore"), "got: {text:?}");
+        assert!(text.contains("Power measurements:"), "got: {text:?}");
         assert!(text.contains("[field]"));
     }
 

@@ -983,7 +983,7 @@ mod tests {
         // Export must render a line exactly as the TUI would display it
         // (schema template, hidden field's separator collapsed) — this
         // function's own doc comment promises that.
-        let line = "INFO/Syscon/StartupMgr, hello there";
+        let line = "INFO/Nexora/LaunchNode, hello there";
         let reader = make_reader(&[line]);
         let cfg = crate::config::CustomSchemaConfig {
             name: "acme".to_string(),
@@ -1005,7 +1005,7 @@ mod tests {
         data.parser = Some(&parser);
         data.hidden_fields = &hidden;
         let result = format_lines(&[0], &data);
-        assert_eq!(result, "1: INFO/StartupMgr, hello there");
+        assert_eq!(result, "1: INFO/LaunchNode, hello there");
     }
 
     #[test]

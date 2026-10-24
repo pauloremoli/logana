@@ -150,7 +150,7 @@ A value can only be declared for one of `error`/`warning` — declaring the same
 
 ## Rendering
 
-When a `template`-based schema matches a line, the log panel renders it using the template's own field order and literal separators — so `{level}/{component}/{feature}` shows as `INF/Syscon/StartupMgr`, not space-joined columns. Hiding a field with `:select-fields` keeps this: the hidden field's value drops and its adjacent separator collapses with it, so hiding `component` renders `INF/StartupMgr` rather than a dangling `INF//StartupMgr`. Only genuinely *reordering* columns (moving a field with `J`/`K` in `:select-fields`) falls back to the standard space-joined column layout, since an arbitrary new order can't be expressed with the template's fixed separators. This only applies to `template`-defined schemas; a `pattern`-defined schema (raw regex) always uses the column layout, since a regex has no literal skeleton to reconstruct from.
+When a `template`-based schema matches a line, the log panel renders it using the template's own field order and literal separators — so `{level}/{component}/{feature}` shows as `INF/Module/WorkerTask`, not space-joined columns. Hiding a field with `:select-fields` keeps this: the hidden field's value drops and its adjacent separator collapses with it, so hiding `component` renders `INF/WorkerTask` rather than a dangling `INF//WorkerTask`. Only genuinely *reordering* columns (moving a field with `J`/`K` in `:select-fields`) falls back to the standard space-joined column layout, since an arbitrary new order can't be expressed with the template's fixed separators. This only applies to `template`-defined schemas; a `pattern`-defined schema (raw regex) always uses the column layout, since a regex has no literal skeleton to reconstruct from.
 
 The `:select-fields` popup lists a `template`-defined schema's fields in the template's own order (e.g. `id, target, timestamp, pid, level, component, feature, message` for the acme example below) rather than the generic timestamp/level/target/extras/message grouping used for other formats — matching the order the line actually renders in by default.
 
@@ -265,18 +265,18 @@ A group with only `template` (no `fields`) is a single-line-item group — every
 
 A group's name becomes the dotted-index column prefix in rendering (`workers.0.hostname`, `workers.1.hostname`, …) and the group-scoped path for field filters (`workers.hostname` — see [Field Filters](filtering/field-filters.md#group-scoped-fields)).
 
-## Full example — Acme node log
+## Full example — Generic service log
 
-Log line:
+Log format:
 ```
-04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: dirtyrfservice::instance1 state=CONNECTED
+{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}
 ```
 
 `~/.config/logana/schema/acme.json`:
 ```json
 {
   "name": "acme",
-  "description": "Acme node log: id service <timestamp> pid level/component/feature, message",
+  "description": "Generic service log format",
   "template": "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}",
   "fields": {
     "id":      "extra",
@@ -285,15 +285,15 @@ Log line:
 }
 ```
 
-Parsed fields:
+Field mapping:
 
-| Field | Value |
+| Field | Meaning |
 |---|---|
-| timestamp | `2035-04-04T21:54:53.283856Z` |
-| level | `INF` → Info |
-| target | `LINUX-0-syscon` |
-| component | `Syscon` |
-| feature | `StartupMgr` |
-| message | `StateChange: dirtyrfservice::instance1 state=CONNECTED` |
-| id (extra) | `04` |
-| pid (extra) | `62A` |
+| timestamp | Event timestamp |
+| level | Severity, normalized to the corresponding log level |
+| target | Producing service |
+| component | Component name |
+| feature | Feature name |
+| message | Log message |
+| id (extra) | Sequence identifier |
+| pid | Process identifier |

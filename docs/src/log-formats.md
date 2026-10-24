@@ -12,6 +12,8 @@ logana detects the log format automatically by sampling the first lines of the f
 | Syslog | RFC 3164 (BSD), RFC 5424 |
 | Journalctl | short, short-iso, short-precise, short-full, short-monotonic, short-unix, json-sse, json-seq |
 | Common / Combined Log | Apache access, nginx access |
+| Service | Service logs with sequence, service, timestamp, PID, level/component/feature |
+| Transactions | Multiline transactions, operations, voting rounds, execution and abort stages |
 | Logfmt | Go `slog`, Heroku, Grafana Loki |
 | Common log family | env_logger, tracing-subscriber fmt (with/without spans), logback, log4j2, Spring Boot, Python logging, loguru, structlog |
 
@@ -24,6 +26,34 @@ User-defined schemas (see [Custom Schemas](#custom-schemas) below) are always ev
 The detected format name is shown in the status bar. Run `:schema` to show the active one, or `:schema <name>` to force a specific format for the current tab — typing `:schema ` shows every custom and built-in schema in the autocomplete list (custom ones first, alphabetically, each in its own color).
 
 ## Format Details
+
+### Service
+
+The built-in `service` parser reads the format shown in `examples/service.json`:
+
+```text
+{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}
+```
+
+It extracts `id`, `target` (service), `timestamp`, `pid`, `level`, `component`,
+`feature`, and `message`. Process IDs can be hexadecimal.
+
+### Transactions
+
+The built-in `transactions` parser reads multiline transaction logs, including the
+format shown in `examples/transactions.json`. Each `### Transaction <id> started
+at:` header opens one record. Its start time becomes `timestamp`, with `id`,
+`started_at`, `status`, `user`, and `ended_at` available as fields.
+
+Repeated groups expose `operations`, `voting_rounds`, `votes`, `executions`, and
+`abort_stage`. Operation attributes are flattened within each operation;
+repeated attributes retain their values. Each vote also carries its voting
+`round`. Extraction stops at the transaction end line, or the next header for
+an unfinished transaction. The GUI preserves the original multiline layout.
+
+Both parsers work without installing the example schemas. Select them manually
+with `:schema service` or `:schema transactions` if needed. Installed custom schemas
+with the same names still take precedence when selected explicitly.
 
 ### DLT (AUTOSAR Diagnostic Log and Trace)
 
@@ -171,16 +201,16 @@ Any other placeholder name defaults to an extra field. Use the `fields` map to a
 
 ### Example
 
-Acme node log line:
+Generic service log format:
 ```
-04 LINUX-0-syscon <2035-04-04T21:54:53.283856Z> 62A INF/Syscon/StartupMgr, StateChange: dirtyrfservice::instance1 state=CONNECTED
+{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}
 ```
 
 Schema file at `~/.config/logana/schema/acme.json`:
 ```json
 {
   "name": "acme",
-  "description": "Acme node log format",
+  "description": "Generic service log format",
   "template": "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}",
   "fields": {
     "id":      "extra",
@@ -189,7 +219,7 @@ Schema file at `~/.config/logana/schema/acme.json`:
 }
 ```
 
-`service` (`LINUX-0-syscon`) is mapped to `target` because it identifies the producing service. `id` is mapped to `extra` since no built-in semantic fits a hex sequence number.
+`service` is mapped to `target` because it identifies the producing service. `id` is mapped to `extra` since no built-in semantic fits a hex sequence number.
 
 ### Critical fields
 

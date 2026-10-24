@@ -1,6 +1,6 @@
 {
-  "name": "radio",
-  "description": "Radio",
+  "name": "service",
+  "description": "Service",
   "template": "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}",
   "fields": {
     "id": "extra",

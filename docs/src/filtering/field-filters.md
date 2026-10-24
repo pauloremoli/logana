@@ -20,8 +20,8 @@ The `--field` flag tells logana to treat the pattern as a `key=value` pair. The 
 `--field` can be repeated within a single command to require several fields at once, and combined with trailing free text that must also match — all AND'd together in one filter:
 
 ```sh
-:filter --field level=INFO --field user=Draco Power measurements:
-# shows only lines where level contains "INFO" AND user contains "Draco"
+:filter --field level=INFO --field user=Casey Power measurements:
+# shows only lines where level contains "INFO" AND user contains "Casey"
 # AND the line contains "Power measurements:"
 ```
 
@@ -81,7 +81,7 @@ Field filters appear in the filter manager sidebar with a `[field]` tag. A filte
 ```
 [x] In: level=error [field]
 [x] Out: level=debug [field]
-[x] In: level=INFO, user=Draco, Power measurements: [field]
+[x] In: level=INFO, user=Casey, Power measurements: [field]
 ```
 
 ## Group-Scoped Fields

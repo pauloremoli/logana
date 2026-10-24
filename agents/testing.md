@@ -32,7 +32,7 @@ test flakiness if that file ever carries more than a harmless override.
 
 ## Use generic test data
 
-Never copy real-looking, domain-specific example data (e.g. radio/telecom
+Never copy real-looking, domain-specific example data (e.g. hardware-specific
 terms such as `"operations"`, `"object_name"`, `"txCarrier1"`) from
 existing fixtures into new tests, even if that data already exists
 elsewhere in this codebase's tests. Use clearly generic placeholder names

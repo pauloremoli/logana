@@ -2275,7 +2275,7 @@ mod tests {
         let schema: serde_json::Value =
             serde_json::from_str(include_str!("../../schema/custom-schema.schema.json")).unwrap();
         let example: serde_json::Value =
-            serde_json::from_str(include_str!("../../examples/radio.json")).unwrap();
+            serde_json::from_str(include_str!("../../examples/service.json")).unwrap();
 
         let validator = jsonschema::validator_for(&schema).expect("invalid schema");
         let errors: Vec<String> = validator

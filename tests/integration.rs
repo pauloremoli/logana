@@ -1157,7 +1157,7 @@ operation_type: CREATE
 object {
   object_name: "txCarrier1"
   class_name: "ECpriTxArrayCarrierConf"
-  [hlapi.ho.ECpriTxArrayCarrierConf.object] {
+  [example.objects.ECpriTxArrayCarrierConf.object] {
     array: "txArray4a"
     frequency_Hz: 634500000
     bandwidth_Hz: 5000000
@@ -1270,7 +1270,7 @@ fn test_transaction_groups_schema_end_to_end() {
     assert_eq!(field(op, "data_mode"), Some("TESTRAM"));
     assert_eq!(field(op, "gain"), Some("47"));
     // Brace-only and bracketed-extension-name lines ("object {",
-    // "[hlapi.ho.ECpriTxArrayCarrierConf.object] {", "sfn_offsets {", "}")
+    // "[example.objects.ECpriTxArrayCarrierConf.object] {", "sfn_offsets {", "}")
     // have no `key: value` shape and contribute nothing.
     assert_eq!(
         op.len(),
@@ -1516,4 +1516,62 @@ fn test_headless_binary_merges_files_by_timestamp() {
             "Jan  1 00:00:03 host tag: a2",
         ]
     );
+}
+
+#[test]
+fn test_builtin_transactions_preserves_record_boundaries_and_end_timestamp() {
+    use logana::parser::{FieldSemantic, TransactionsParser};
+    use logana::shared::tab_state::{build_continuation_map, parse_line_with_continuation};
+
+    // Both records span multiple parallel continuation-map chunks.
+    let long_record = TRANSACTION_GROUPS_LOG.replace(
+        "Abort stage:",
+        &format!("{}Abort stage:", "\n".repeat(2500)),
+    );
+    let input = format!("{long_record}\n{long_record}");
+    let reader = FileReader::from_bytes(input.into_bytes());
+    let parser = TransactionsParser;
+    let map = build_continuation_map(&reader, &parser);
+    let mut records = 0;
+    for line in 0..reader.line_count() {
+        let Some(parts) = parse_line_with_continuation(
+            &parser,
+            &reader,
+            reader.get_line_zero_copy(line),
+            Some(&map),
+            line,
+        ) else {
+            continue;
+        };
+        records += 1;
+        assert_eq!(parts.timestamp, Some("1980-01-06 00:00:22.234"));
+        assert!(parts.extra_fields.contains(&(
+            FieldSemantic::Extra,
+            "ended_at",
+            "1980-01-06 00:00:22.297"
+        )));
+        let operations = &parts
+            .field_groups
+            .iter()
+            .find(|(name, _)| *name == "operations")
+            .unwrap()
+            .1;
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].fields.len(), 15);
+        let votes = &parts
+            .field_groups
+            .iter()
+            .find(|(name, _)| *name == "votes")
+            .unwrap()
+            .1;
+        assert_eq!(votes.len(), 2);
+        assert!(
+            votes[0]
+                .fields
+                .contains(&(FieldSemantic::Extra, "round", "0"))
+        );
+    }
+    assert_eq!(records, 2);
+    assert!(logana::parser::find_builtin_parser("service").is_some());
+    assert!(logana::parser::find_builtin_parser("transactions").is_some());
 }
