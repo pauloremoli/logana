@@ -1030,6 +1030,15 @@ impl App {
         self.queue_file(path, cx);
     }
 
+    fn field_values_ready(&self) -> bool {
+        self.loading.operations.is_empty()
+            && self.state.active_tab().is_some_and(|tab| {
+                tab.filter.handle.is_none()
+                    && tab.filter.prepared.is_none()
+                    && self.table_preparation_task.is_none()
+            })
+    }
+
     fn refresh_facet_counts(&mut self, cx: &mut Context<Self>) {
         self.facet_counts
             .retain(|id, _| self.state.tabs.iter().any(|tab| tab.id == *id));
@@ -1300,7 +1309,6 @@ impl Render for App {
             self.notes_search = Some(input);
         }
         self.sync_notification_timer(cx);
-        self.refresh_facet_counts(cx);
         if self.command_input.is_none() {
             let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search actions…"));
             cx.subscribe_in(
@@ -1831,7 +1839,15 @@ impl Render for App {
                 .unwrap_or_default();
             self.text_context = text_context;
         }
-        self.sync_field_discovery(cx);
+        // Start optional value scans only after this frame has displayed the logs.
+        if self.field_values_ready() {
+            cx.on_next_frame(window, |app, _, cx| {
+                if app.field_values_ready() {
+                    app.refresh_facet_counts(cx);
+                    app.sync_field_discovery(cx);
+                }
+            });
+        }
         self.sync_facet_query(cx);
         self.sync_schema_preview(cx);
         self.sync_export_preview(cx);

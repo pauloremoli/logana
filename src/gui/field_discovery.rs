@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct Key {
-    epoch: u64,
     source: TabId,
     generation: u64,
     count: usize,
@@ -14,26 +13,12 @@ pub(super) struct Key {
 
 impl App {
     pub(super) fn sync_field_discovery(&mut self, cx: &mut Context<Self>) {
-        let Some(editor) = self
-            .state
-            .editor
-            .as_ref()
-            .filter(|e| e.action == Action::Filter)
-        else {
+        let Some(tab) = self.state.active_tab() else {
             self.field_discovery_key = None;
             self.field_discovery_task = None;
             return;
         };
-        let Some(tab) = self
-            .state
-            .tabs
-            .iter()
-            .find(|tab| Some(tab.id) == editor.source)
-        else {
-            return;
-        };
         let key = Key {
-            epoch: editor.epoch,
             source: tab.id,
             generation: tab.cache.parse_gen,
             count: tab.file_reader.line_count(),
@@ -70,14 +55,18 @@ impl App {
                 {
                     return;
                 }
-                let Some(editor) = app.state.editor.as_mut().filter(|e| {
-                    e.action == Action::Filter
-                        && e.epoch == key.epoch
-                        && e.source == Some(key.source)
-                }) else {
+                app.field_discovery_task = None;
+                app.state.field_discovery =
+                    Some((key.source, key.generation, key.count, fields.clone()));
+                let Some(editor) = app
+                    .state
+                    .editor
+                    .as_mut()
+                    .filter(|e| e.action == Action::Filter && e.source == Some(key.source))
+                else {
+                    cx.notify();
                     return;
                 };
-                app.field_discovery_task = None;
                 editor.discovery = fields.clone();
                 let mut names = fields.names.clone();
                 names.extend(editor.conditions.iter().map(|(field, _)| field.clone()));
@@ -87,7 +76,6 @@ impl App {
                 }
                 names.sort();
                 names.dedup();
-                app.state.field_discovery = Some((key.source, key.generation, key.count, fields));
                 if let Some(select) = &app.editor_field_select {
                     select.update(cx, |select, cx| {
                         select.set_items(SearchableVec::new(names), window, cx);

@@ -6,8 +6,18 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- [gui] Add an in-app file and folder picker with wrapping paths and rotation-only merging.
-- [gui] Add a detached archive picker with saved glob patterns, output folder selection, and automatic rotation merging.
+- [gui] Add a separate file and folder picker, filename search, hidden-file visibility, and selections preserved while browsing.
+- [gui] Add an archive picker with automatic nested-archive listing, saved glob patterns reused across sessions, output folder selection.
+- [gui] Add optional automatic merging of numbered log rotations to open files and archive extraction.
+
+### Changed
+- [gui] Collect unique field values in the background after file loading, filtering, and log rendering finish.
+- [gui] Default archive extraction to the archive's folder (or `--out`), save merged logs under an archive-named folder.
+
+### Fixed
+- [gui] Preserve the selected source line and its viewport position when toggling filtering, individual filters, or filter groups, and when editing or reordering filters.
+- [gui] Restore the previous session when launching the Windows desktop application without piped or redirected input, instead of opening an empty stdin tab.
+- [gui] If an extracted log cannot be saved, instead of an error it now opens it as a temporary file and report the failed destination.
 
 ## [0.8.1] - 2026-10-24
 

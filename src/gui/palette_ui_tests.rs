@@ -1771,6 +1771,31 @@ fn merge_picker_has_native_selection_search_and_cancel_controls(cx: &mut TestApp
     .unwrap();
 }
 
+fn finish_field_collection(cx: &mut TestAppContext, handle: WindowHandle<Root>, app: &Entity<App>) {
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            if app.state.tabs[0].filter.handle.is_some()
+                || app.state.tabs[0].filter.prepared.is_some()
+            {
+                assert!(app.field_discovery_task.is_none());
+                assert!(app.state.field_discovery.is_none());
+            }
+            finish_gui_filters(&mut app.state.tabs[0]);
+            cx.notify();
+        });
+    });
+    // Table preparation finishes first; value discovery starts after its rendered frame.
+    for _ in 0..3 {
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.simulate_next_frame(cx);
+        })
+        .unwrap();
+    }
+    cx.run_until_parked();
+}
+
 #[gpui_kit::test]
 fn facet_counts_finish_on_the_gpui_executor(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
@@ -1786,7 +1811,7 @@ fn facet_counts_finish_on_the_gpui_executor(cx: &mut TestAppContext) {
         window.render_frame(cx);
     })
     .unwrap();
-    cx.run_until_parked();
+    finish_field_collection(cx, handle, &app);
     cx.update(|cx| {
         let app = app.read(cx);
         let id = app.state.tabs[0].id;
@@ -1795,6 +1820,13 @@ fn facet_counts_finish_on_the_gpui_executor(cx: &mut TestAppContext) {
             .as_ref()
             .expect("facet worker completed");
         assert_eq!(counts.counts["level"], vec![("INFO".into(), 1)]);
+        assert!(app.state.editor.is_none());
+        let (_, _, _, fields) = app
+            .state
+            .field_discovery
+            .as_ref()
+            .expect("autocomplete warmed");
+        assert_eq!(fields.values["level"], vec!["INFO"]);
     });
 }
 
@@ -2637,7 +2669,7 @@ fn field_discovery_finishes_without_replacing_filter_drafts(cx: &mut TestAppCont
         window.render_frame(cx);
     })
     .unwrap();
-    cx.run_until_parked();
+    finish_field_collection(cx, handle, &app);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         let editor = app.read(cx).state.editor.as_ref().unwrap();
@@ -2664,7 +2696,7 @@ fn field_discovery_finishes_without_replacing_filter_drafts(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
-fn closing_filter_editor_discards_pending_field_discovery(cx: &mut TestAppContext) {
+fn closing_filter_editor_keeps_background_field_discovery(cx: &mut TestAppContext) {
     use crate::gui::{actions::Action, message::Message};
     let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
     cx.update_window(handle.into(), |_, window, cx| {
@@ -2679,10 +2711,10 @@ fn closing_filter_editor_discards_pending_field_discovery(cx: &mut TestAppContex
         window.render_frame(cx);
     })
     .unwrap();
-    cx.run_until_parked();
+    finish_field_collection(cx, handle, &app);
     cx.update(|cx| {
         assert!(app.read(cx).state.editor.is_none());
-        assert!(app.read(cx).state.field_discovery.is_none());
+        assert!(app.read(cx).state.field_discovery.is_some());
     });
 }
 
