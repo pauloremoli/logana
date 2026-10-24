@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use clap::Parser;
 use gpui_kit::component::TitleBar;
 use gpui_kit::gpui::KeyBinding;
