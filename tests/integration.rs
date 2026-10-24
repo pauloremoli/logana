@@ -1148,7 +1148,7 @@ fn test_multiline_schema_transaction_end_to_end() {
 /// `template` array feature request: a transaction with one multi-line
 /// `operations` item, two single-line `votes` items and one single-line
 /// `abort_stage` item, using the schema shipped as
-/// `examples/custom-schema-transaction-groups.example.json`.
+/// `examples/transactions.json`.
 const TRANSACTION_GROUPS_LOG: &str = r#"### Transaction 148 started at: 1980-01-06 00:00:22.234
 Status: FAILED
 User: syscom
@@ -1183,10 +1183,8 @@ ReqId: 148003, Actor: l1low::@10120007, AbortStatus: OK
 "#;
 
 fn transaction_groups_parser() -> logana::parser::CustomParser {
-    let cfg: logana::config::CustomSchemaConfig = serde_json::from_str(include_str!(
-        "../examples/custom-schema-transaction-groups.example.json"
-    ))
-    .unwrap();
+    let cfg: logana::config::CustomSchemaConfig =
+        serde_json::from_str(include_str!("../examples/transactions.json")).unwrap();
     logana::parser::CustomParser::from_config(&cfg).expect("schema should compile")
 }
 

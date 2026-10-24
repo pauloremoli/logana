@@ -2275,8 +2275,7 @@ mod tests {
         let schema: serde_json::Value =
             serde_json::from_str(include_str!("../../schema/custom-schema.schema.json")).unwrap();
         let example: serde_json::Value =
-            serde_json::from_str(include_str!("../../examples/custom-schema.example.json"))
-                .unwrap();
+            serde_json::from_str(include_str!("../../examples/radio.json")).unwrap();
 
         let validator = jsonschema::validator_for(&schema).expect("invalid schema");
         let errors: Vec<String> = validator
@@ -2295,10 +2294,8 @@ mod tests {
     fn transaction_groups_example_schema_validates_against_schema() {
         let schema: serde_json::Value =
             serde_json::from_str(include_str!("../../schema/custom-schema.schema.json")).unwrap();
-        let example: serde_json::Value = serde_json::from_str(include_str!(
-            "../../examples/custom-schema-transaction-groups.example.json"
-        ))
-        .unwrap();
+        let example: serde_json::Value =
+            serde_json::from_str(include_str!("../../examples/transactions.json")).unwrap();
 
         let validator = jsonschema::validator_for(&schema).expect("invalid schema");
         let errors: Vec<String> = validator

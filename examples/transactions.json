@@ -1,6 +1,6 @@
 {
-  "name": "transaction-groups",
-  "description": "Transaction log with repeated continuation groups: a variable number of 'operations' (each a multi-line, arbitrarily nested key/value block extracted via auto_fields), 'votes' and 'abort_stage' entries (each one line).",
+  "name": "transactions",
+  "description": "Transactions log",
   "template": [
     "### Transaction {id} started at: {started_at}",
     "Status: {status}",

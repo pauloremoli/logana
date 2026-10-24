@@ -16,6 +16,14 @@ pub enum Action {
     Redo,
     ToggleFiltering,
     ToggleWrap,
+    ToggleRaw,
+    ToggleLineNumbers,
+    ToggleRelativeLineNumbers,
+    ToggleFieldKeys,
+    ToggleContinuations,
+    ToggleSidebar,
+    ToggleSidebarSide,
+
     MarksOnly,
     Annotation,
     Bookmark,
@@ -439,10 +447,59 @@ pub const CATALOG: &[Descriptor] = &[
         tab: true,
     },
     Descriptor {
+        action: Action::ToggleRaw,
+        label: "Toggle raw display",
+        description: "Show original log lines or parsed columns",
+        aliases: "raw raw-mode toggle-raw",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::ToggleLineNumbers,
+        label: "Toggle line numbers",
+        description: "Show or hide line numbers",
+        aliases: "line-numbers toggle-line-numbers",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::ToggleRelativeLineNumbers,
+        label: "Toggle relative line numbers",
+        description: "Switch between relative and absolute line numbers",
+        aliases: "relative-line-numbers",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::ToggleFieldKeys,
+        label: "Toggle field keys",
+        description: "Show or hide names beside field values",
+        aliases: "show-keys hide-keys field-keys",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::ToggleContinuations,
+        label: "Toggle continuation lines",
+        description: "Collapse or expand multiline records",
+        aliases: "collapse expand continuations",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::ToggleSidebar,
+        label: "Toggle sidebar",
+        description: "Show or hide the sidebar",
+        aliases: "sidebar toggle-sidebar",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::ToggleSidebarSide,
+        label: "Toggle sidebar position",
+        description: "Move the sidebar to the other side",
+        aliases: "sidebar-position sidebar-side",
+        tab: true,
+    },
+    Descriptor {
         action: Action::View,
         label: "Display options",
         description: "Wrapping, line numbers, field keys, sidebar, and raw display",
-        aliases: "view display line-numbers relative-line-numbers show-keys hide-keys raw collapse expand sidebar-position",
+        aliases: "view display",
         tab: true,
     },
     Descriptor {
@@ -646,6 +703,16 @@ pub fn open(
         Action::Undo | Action::Redo => {
             return crate::gui::history::apply(state, action == Action::Redo);
         }
+        Action::ToggleSidebar | Action::ToggleSidebarSide => {
+            return crate::gui::update::update(
+                state,
+                if action == Action::ToggleSidebar {
+                    crate::gui::message::Message::SidebarToggled
+                } else {
+                    crate::gui::message::Message::SidebarSideToggled
+                },
+            );
+        }
         Action::CopyPath => {
             return state
                 .active_tab()
@@ -793,6 +860,21 @@ pub fn open(
         }),
         Action::Tail => Some(Commands::Tail),
         Action::ToggleWrap => Some(Commands::Wrap),
+        Action::ToggleRaw => Some(Commands::Raw),
+        Action::ToggleLineNumbers => Some(Commands::LineNumbers),
+        Action::ToggleRelativeLineNumbers => Some(Commands::RelativeLineNumbers),
+        Action::ToggleFieldKeys => Some(if state.active_tab().unwrap().display.show_keys {
+            Commands::HideKeys
+        } else {
+            Commands::ShowKeys
+        }),
+        Action::ToggleContinuations => Some(
+            if state.active_tab().unwrap().display.collapse_continuations {
+                Commands::Expand
+            } else {
+                Commands::Collapse
+            },
+        ),
         _ => None,
     };
     if let Some(cmd) = cmd {
@@ -1862,6 +1944,69 @@ mod tests {
             open(&mut state, Action::ToggleWrap, None, None),
             Effect::None
         ));
+    }
+
+    #[tokio::test]
+    async fn display_toggle_actions_execute_from_the_palette() {
+        let mut state = state().await;
+        let values = |state: &GuiState| {
+            let d = &state.tabs[0].display;
+            [
+                d.raw_mode,
+                d.show_line_numbers,
+                d.relative_line_numbers,
+                d.show_keys,
+                d.collapse_continuations,
+                d.show_sidebar,
+                d.sidebar_side.is_left(),
+            ]
+        };
+        for (index, query, action) in [
+            (0, "raw", Action::ToggleRaw),
+            (1, "line-numbers", Action::ToggleLineNumbers),
+            (
+                2,
+                "relative-line-numbers",
+                Action::ToggleRelativeLineNumbers,
+            ),
+            (3, "field-keys", Action::ToggleFieldKeys),
+            (4, "continuations", Action::ToggleContinuations),
+            (5, "sidebar", Action::ToggleSidebar),
+            (6, "sidebar-position", Action::ToggleSidebarSide),
+        ] {
+            let before = values(&state)[index];
+            for expected in [!before, before] {
+                update(&mut state, Message::OpenCommands);
+                update(&mut state, Message::PaletteEdited(query.into()));
+                assert_eq!(matching(query)[0].action, action);
+                update(
+                    &mut state,
+                    Message::PaletteKey(crate::input::KeyCode::Enter, Default::default()),
+                );
+                assert_eq!(values(&state)[index], expected, "{query}");
+                assert!(!state.palette.open);
+                assert!(state.editor.is_none());
+            }
+        }
+        state.tabs.clear();
+        for descriptor in CATALOG.iter().filter(|d| {
+            matches!(
+                d.action,
+                Action::ToggleRaw
+                    | Action::ToggleLineNumbers
+                    | Action::ToggleRelativeLineNumbers
+                    | Action::ToggleFieldKeys
+                    | Action::ToggleContinuations
+                    | Action::ToggleSidebar
+                    | Action::ToggleSidebarSide
+            )
+        }) {
+            assert!(descriptor.unavailable(&state).is_some());
+            assert!(matches!(
+                open(&mut state, descriptor.action, None, None),
+                Effect::None
+            ));
+        }
     }
 
     #[tokio::test]

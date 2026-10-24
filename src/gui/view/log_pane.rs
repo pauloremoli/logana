@@ -391,9 +391,20 @@ fn annotation_start(tab: &TabState, lines: &[usize]) -> Option<usize> {
         .min()
 }
 
+/// Multiline schemas keep their source layout; parsed fields remain available
+/// to filtering and inspection rather than becoming table columns.
+fn uses_raw_layout(tab: &TabState) -> bool {
+    tab.display.raw_mode
+        || tab
+            .display
+            .format
+            .as_deref()
+            .is_some_and(|parser| parser.wants_continuation_walk())
+}
+
 /// All fields are visible by default; command preferences control visibility and order.
 pub(crate) fn visible_columns(tab: &TabState, fields: &[String]) -> Vec<String> {
-    if tab.display.raw_mode {
+    if uses_raw_layout(tab) {
         return vec!["message".into()];
     }
     let mut ordered = tab.display.field_layout.columns.clone().unwrap_or_default();
@@ -650,7 +661,7 @@ pub(crate) fn line_canonical_timestamp(tab: &TabState, line_idx: usize) -> Optio
 /// `ui::tab_state::merged_message_range` already uses for the same
 /// invariant, rather than reparsing or copying.
 fn row_message_bytes<'a>(tab: &TabState, bytes: &'a [u8]) -> &'a [u8] {
-    if tab.display.raw_mode {
+    if uses_raw_layout(tab) {
         return bytes;
     }
     let Some(parser) = tab.display.format.as_deref() else {
@@ -1690,6 +1701,37 @@ mod tests {
         t.display.raw_mode = true;
         assert_eq!(visible_columns(&t, &["level".into()]), vec!["message"]);
         assert_eq!(row_message_bytes(&t, b"raw text"), b"raw text");
+    }
+    #[tokio::test]
+    async fn multiline_schemas_preserve_source_lines_in_one_column() {
+        use crate::config::CustomSchemaConfig;
+        use crate::parser::{CustomParser, LogFormatParser};
+
+        let mut t = tab().await;
+        for schema in [
+            include_str!("../../../examples/hlapi-transactions.schema.json"),
+            r#"{"name":"folded", "template":"{level} {message}", "multiline":true}"#,
+        ] {
+            let config: CustomSchemaConfig = serde_json::from_str(schema).unwrap();
+            let parser = CustomParser::from_config(&config).unwrap();
+            assert!(parser.wants_continuation_walk());
+            t.display.format = Some(std::sync::Arc::new(parser));
+            t.display.hidden_fields.insert("message".into());
+            t.display.show_keys = true;
+            assert!(!t.display.raw_mode);
+            assert_eq!(
+                visible_columns(&t, &["timestamp".into(), "level".into()]),
+                vec!["message"]
+            );
+            let source = "### Transaction 1610 started at: 2026-10-21 11:37:49.874\nStatus: COMPLETED\n  object_name: \"FanPwmConfig0\"\nINFO original message\n";
+            t.file_reader = FileReader::from_bytes(source.as_bytes().to_vec());
+            for (line, expected) in source.lines().enumerate() {
+                assert_eq!(
+                    displayed_values(&t, line, &visible_columns(&t, &[])),
+                    vec![expected]
+                );
+            }
+        }
     }
     #[tokio::test]
     async fn unstructured_and_merged_field_lists_keep_the_raw_message_column() {

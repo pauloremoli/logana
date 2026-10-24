@@ -1,6 +1,6 @@
 {
-  "name": "acme",
-  "description": "Acme node log: id service <timestamp> pid level/component/feature, message",
+  "name": "radio",
+  "description": "Radio",
   "template": "{id} {service} <{timestamp}> {pid} {level}/{component}/{feature}, {message}",
   "fields": {
     "id": "extra",
