@@ -1528,7 +1528,7 @@ fn bookmark_annotation_shortcuts_and_enter_are_scoped_to_their_interfaces(cx: &m
 }
 
 #[gpui_kit::test]
-fn minimal_filter_sidebar_hides_fields_and_opens_prefilled_conditions(cx: &mut TestAppContext) {
+fn minimal_filter_sidebar_selects_conditions_and_edits_only_explicitly(cx: &mut TestAppContext) {
     use crate::filters::{FilterOptions, FilterType};
     use crate::gui::state::NavPage;
     for name in ["dracula", "github-light"] {
@@ -1567,11 +1567,12 @@ fn minimal_filter_sidebar_hides_fields_and_opens_prefilled_conditions(cx: &mut T
             assert!(!app.read(cx).state.facet_browser_open);
             assert!(window.try_find("facet-search-input").is_none());
             window.click(("filter-condition", id), cx);
+            assert!(app.read(cx).state.editor.is_none());
             assert_eq!(
-                app.read(cx).state.editor.as_ref().unwrap().values[0],
-                "payment"
+                app.read(cx).state.keyboard_sidebar,
+                Some(super::state::SidebarTab::Filters)
             );
-            window.press("escape", cx);
+            assert_eq!(app.read(cx).state.sidebar_cursor, 0);
             window.click(("filter-edit", id), cx);
             assert_eq!(
                 app.read(cx).state.editor.as_ref().unwrap().values[0],
@@ -1602,6 +1603,42 @@ fn filter_sidebar_keyboard_navigation_scrolls_selection_into_view(cx: &mut TestA
             cx.notify();
         });
         window.render_frame(cx);
+        // Native wheel events must scroll in either mode and survive a redraw.
+        for active in [false, true] {
+            app.update(cx, |app, cx| {
+                app.state.keyboard_sidebar = active.then_some(super::state::SidebarTab::Filters);
+                app.filter_sidebar_scroll.set_offset(point(px(0.), px(0.)));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            let logs = app.read(cx).log_scroll.logical_scroll_top();
+            window.scroll(
+                "sidebar-filters-scroll",
+                gpui::ScrollDelta::Lines(point(0., -5.)),
+                cx,
+            );
+            window.render_frame(cx);
+            let down = app.read(cx).filter_sidebar_scroll.offset().y;
+            assert!(down < px(0.), "wheel must scroll filters, active={active}");
+            app.update(cx, |_, cx| cx.notify());
+            window.render_frame(cx);
+            assert_eq!(app.read(cx).filter_sidebar_scroll.offset().y, down);
+            window.scroll(
+                "sidebar-filters-scroll",
+                gpui::ScrollDelta::Lines(point(0., 2.)),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(app.read(cx).filter_sidebar_scroll.offset().y > down);
+            let current = app.read(cx).log_scroll.logical_scroll_top();
+            assert_eq!(
+                (current.item_ix, current.offset_in_item),
+                (logs.item_ix, logs.offset_in_item)
+            );
+            assert!(app.read(cx).state.editor.is_none());
+            assert_eq!(app.read(cx).state.sidebar_cursor, 0);
+        }
+        app.update(cx, |app, _| app.state.keyboard_sidebar = None);
         app.update(cx, |app, cx| {
             app.dispatch(
                 super::message::Message::KeyPressed(KeyCode::Char('f'), KeyModifiers::NONE),
@@ -1630,6 +1667,7 @@ fn filter_sidebar_keyboard_navigation_scrolls_selection_into_view(cx: &mut TestA
             header_bounds
         );
         assert_eq!(app.read(cx).state.sidebar_cursor, 30);
+        assert!(app.read(cx).state.editor.is_none());
         assert!(
             app.read(cx).filter_sidebar_scroll.offset().y < px(0.),
             "selecting a filter far down the list must scroll it into view"

@@ -144,7 +144,7 @@ fn archive_suffix(name: &str) -> &'static str {
         None => ".log",
     }
 }
-fn unpack(
+pub(crate) fn unpack(
     source: &Path,
     kind: &ArchiveType,
     entry_name: &str,

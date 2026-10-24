@@ -46,7 +46,6 @@ pub(super) struct Picker {
     pub pattern_error: Option<String>,
     pub output_dir: PathBuf,
     pub selected_rows: Vec<NodeId>,
-    pub selected_sizes: std::rc::Rc<Vec<gpui_kit::gpui::Size<gpui_kit::gpui::Pixels>>>,
     pub sizes: std::rc::Rc<Vec<gpui_kit::gpui::Size<gpui_kit::gpui::Pixels>>>,
 }
 impl Operation {
@@ -83,7 +82,6 @@ impl Picker {
             pattern_error: None,
             output_dir,
             selected_rows: Vec::new(),
-            selected_sizes: std::rc::Rc::new(Vec::new()),
             matcher: crate::shared::archive_search::SearchMatcher::MatchAll,
         };
         picker.refresh();
@@ -112,13 +110,7 @@ impl Picker {
             .filter(|n| n.selected && matches!(n.kind, NodeKind::File))
             .map(|n| n.id)
             .collect();
-        self.selected_sizes = std::rc::Rc::new(vec![
-            gpui_kit::gpui::size(
-                gpui_kit::gpui::px(320.),
-                gpui_kit::gpui::px(32.)
-            );
-            self.selected_rows.len()
-        ]);
+
         self.checks = self.tree.check_states();
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         self.sizes = std::rc::Rc::new(vec![
@@ -778,39 +770,19 @@ impl App {
         cx.notify();
     }
     pub(super) fn picker_choose_output(&mut self, id: u64, cx: &mut Context<Self>) {
-        let prompt = cx.prompt_for_paths(gpui_kit::gpui::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Choose output folder".into()),
-        });
-        cx.spawn(async move |this, cx| {
-            let result = prompt
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|result| result.map_err(|error| error.to_string()));
-            this.update(cx, |app, cx| {
-                match result {
-                    Ok(Some(paths)) => {
-                        if let Some(path) = paths.into_iter().next()
-                            && let Some(picker) = app
-                                .loading
-                                .operations
-                                .iter_mut()
-                                .find(|op| op.id == id)
-                                .and_then(|op| op.picker.as_mut())
-                        {
-                            picker.output_dir = path;
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => app.state.notify(StatusMessage::Error(error)),
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        if let Some(picker) = self
+            .loading
+            .operations
+            .iter()
+            .find(|op| op.id == id)
+            .and_then(|op| op.picker.as_ref())
+        {
+            self.show_path_picker(
+                crate::gui::path_picker::Purpose::ArchiveOutput(id),
+                picker.output_dir.clone(),
+                cx,
+            );
+        }
     }
     pub(super) fn picker_all(&mut self, id: u64, selected: bool, cx: &mut Context<Self>) {
         if let Some(picker) = self
@@ -1010,9 +982,9 @@ impl App {
                             )
                         });
                         let save_control = control.clone();
-                        let file_path = runtime::handle()
+                        let saved = runtime::handle()
                             .spawn_blocking(move || {
-                                crate::gui::startup::persist_extracted_unique(
+                                crate::gui::startup::save_or_temporary(
                                     temp,
                                     &out,
                                     &relative,
@@ -1021,13 +993,16 @@ impl App {
                             })
                             .await
                             .map_err(|e| e.to_string())??;
+                        if let Some(warning) = saved.warning {
+                            errors.push(warning);
+                        }
                         let loaded = runtime::handle()
                             .spawn(async move {
                                 crate::gui::update::load_file_controlled(
-                                    file_path,
+                                    saved.path,
                                     db,
                                     worker_control,
-                                    None,
+                                    saved.source,
                                 )
                                 .await
                             })
@@ -1048,7 +1023,7 @@ impl App {
                             Some(id),
                             false,
                             false,
-                            None,
+                            saved.temp,
                             None,
                         )
                         .await
@@ -1101,17 +1076,6 @@ pub(super) fn path_for_archive_output(path: &std::path::Path, relative: &str) ->
         ),
         relative
     )
-}
-
-pub(super) fn provenance(path: &std::path::Path, tree: &ArchiveTree, id: NodeId) -> String {
-    let mut entries = vec![tree.nodes[id].full_path.as_str()];
-    let mut parent = tree.nodes[id].parent;
-    while let Some(id) = parent {
-        entries.push(&tree.nodes[id].full_path);
-        parent = tree.nodes[id].parent;
-    }
-    entries.reverse();
-    format!("{}/{}", path.display(), entries.join("/"))
 }
 
 #[cfg(test)]
@@ -1563,15 +1527,42 @@ mod ui_tests {
                     .output_dir,
                 initial_output.path()
             );
+            let output = window
+                .find("archive-preview-output:nested/runtime-merged.log")
+                .bounds();
+            let child = window
+                .find("archive-preview-file:nested.zip/runtime.log")
+                .bounds();
+            assert!(child.top() >= output.bottom());
+            assert!(child.left() > output.left());
             window.click("archive-output-choose", cx);
         })
         .unwrap();
-        assert!(cx.did_prompt_for_paths());
-        let chosen = output.path().to_path_buf();
-        cx.simulate_path_prompt_response(move |options| {
-            assert!(options.directories && !options.files && !options.multiple);
-            Some(vec![chosen])
+        assert!(!cx.did_prompt_for_paths());
+        let chooser = app.read_with(cx, |app, _| {
+            app.path_picker.as_ref().unwrap().upgrade().unwrap()
         });
+        let chooser_window = chooser.read_with(cx, |picker, _| picker.window);
+        cx.wait_for(chooser_window, Duration::from_secs(30), |_, cx| {
+            !chooser.read(cx).loading
+        })
+        .await;
+        cx.update_window(chooser_window, |_, window, cx| {
+            chooser.update(cx, |picker, cx| {
+                picker.choose_test_directory(output.path().to_path_buf(), cx);
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.wait_for(chooser_window, Duration::from_secs(30), |_, cx| {
+            !chooser.read(cx).loading
+        })
+        .await;
+        cx.update_window(chooser_window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("path-confirm", cx);
+        })
+        .unwrap();
         cx.run_until_parked();
         cx.update_window(*detached, |_, window, cx| {
             window.render_frame(cx);
@@ -1630,7 +1621,68 @@ mod ui_tests {
     }
 
     #[gpui_kit::test]
-    async fn saved_archive_merge_keeps_per_source_parsing(cx: &mut TestAppContext) {
+    async fn failed_archive_save_opens_temporary_tabs_and_notifies(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestAppContextExt;
+        cx.background_executor.allow_parking();
+        let root = crate::ingestion::archive::test_helpers::make_zip(&[
+            ("runtime.log", b"current\n"),
+            ("runtime.log1", b"previous\n"),
+            ("other.log", b"separate\n"),
+        ]);
+        let source = tempfile::Builder::new().suffix(".zip").tempfile().unwrap();
+        std::fs::copy(root.path(), source.path()).unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let blocked = output.path().join("blocked");
+        std::fs::write(&blocked, b"keep").unwrap();
+        let args = crate::cli::Args {
+            out: Some(blocked.clone()),
+            ..Default::default()
+        };
+        let db = Arc::new(
+            runtime::handle()
+                .block_on(crate::db::Database::in_memory())
+                .unwrap(),
+        );
+        let theme = crate::theme::Theme::default();
+        let (main, app) = cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::gui::theme::install(&theme, cx);
+            gpui_kit::open_window(Default::default(), cx, |_, cx| {
+                cx.new(|cx| App::new(db, theme, cx))
+            })
+            .unwrap()
+        });
+        app.update(cx, |app, cx| {
+            app.state.preferences.archive_patterns = vec!["*.log*".into()];
+            app.state.preferences.archive_merge_rotations = true;
+            app.queue_file_with_args(source.path().into(), Some(args), cx);
+        });
+        cx.wait_for(main, Duration::from_secs(30), |_, cx| {
+            app.read(cx).loading.picker_window.is_some()
+        })
+        .await;
+        let detached = app.read_with(cx, |app, _| app.loading.picker_window.unwrap());
+        cx.update_window(*detached, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("archive-extract-open", cx);
+        })
+        .unwrap();
+        cx.wait_for(main, Duration::from_secs(30), |_, cx| {
+            app.read(cx).loading.operations.is_empty()
+        })
+        .await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.state.tabs.len(), 2, "{:?}", app.state.status);
+            assert!(app.state.tabs.iter().all(|tab| tab.merged_temp.as_ref().unwrap().path().exists()));
+            assert!(app.state.tabs.iter().all(|tab| tab.title.ends_with("(temporary)")));
+            assert!(app.state.tabs.iter().any(|tab| tab.file_reader.line_count() == 2));
+            assert!(matches!(&app.state.status, Some(StatusMessage::Error(error)) if error.contains("Could not save") && error.contains("temporary")));
+        });
+        assert_eq!(std::fs::read(blocked).unwrap(), b"keep");
+    }
+
+    #[gpui_kit::test]
+    async fn archive_rotation_toggle_keeps_unrelated_files_separate(cx: &mut TestAppContext) {
         use gpui_kit::test::TestAppContextExt;
         cx.background_executor.allow_parking();
         let root = crate::ingestion::archive::test_helpers::make_zip(&[
@@ -1661,7 +1713,7 @@ mod ui_tests {
         });
         app.update(cx, |app, cx| {
             app.state.preferences.archive_patterns = vec!["*.log".into()];
-            app.state.preferences.archive_merge_rotations = false;
+            app.state.preferences.archive_merge_rotations = true;
             app.queue_file_with_args(source.path().into(), Some(args), cx);
         });
         cx.wait_for(main, Duration::from_secs(30), |_, cx| {
@@ -1671,7 +1723,8 @@ mod ui_tests {
         let detached = app.read_with(cx, |app, _| app.loading.picker_window.unwrap());
         cx.update_window(*detached, |_, window, cx| {
             window.render_frame(cx);
-            window.click("archive-extract-merge", cx);
+            assert!(window.try_find("archive-extract-merge").is_none());
+            window.click("archive-extract-open", cx);
         })
         .unwrap();
         cx.wait_for(main, Duration::from_secs(30), |_, cx| {
@@ -1679,50 +1732,40 @@ mod ui_tests {
         })
         .await;
         app.read_with(cx, |app, _| {
-            assert_eq!(app.state.tabs.len(), 1, "status: {:?}", app.state.status);
-            let tab = &app.state.tabs[0];
-            let entries = tab
-                .file_reader
-                .merged_entries()
-                .expect("saved merge must retain source mappings");
-            let merged = tab.merged.as_ref().unwrap();
+            assert_eq!(app.state.tabs.len(), 2, "status: {:?}", app.state.status);
+            assert!(app.state.tabs.iter().all(|tab| tab.merged.is_none()));
             assert!(
-                merged
-                    .source_labels
+                app.state
+                    .tabs
                     .iter()
-                    .any(|label| label.ends_with("first.log"))
+                    .all(|tab| tab.file_reader.line_count() == 1)
             );
-            assert!(
-                merged
-                    .source_labels
-                    .iter()
-                    .any(|label| label.ends_with("second.log"))
-            );
-            assert_ne!(
-                merged.source_parsers[0].as_ref().unwrap().name(),
-                merged.source_parsers[1].as_ref().unwrap().name()
-            );
-            assert_eq!(entries.len(), 2);
-            let bytes = tab.file_reader.get_line(0);
-            let parts = merged.source_parsers[entries[0].source_idx]
-                .as_ref()
-                .unwrap()
-                .parse_line(&bytes)
-                .unwrap();
-            assert!(
-                parts
-                    .extra_fields
-                    .iter()
-                    .any(|(_, key, value)| *key == "key1" && *value == "value2")
-            );
-            assert_eq!(tab.next_error_position(0), Some(1));
+            assert!(app.state.tabs.iter().any(|tab| {
+                tab.log_manager
+                    .source_file()
+                    .unwrap()
+                    .ends_with("first.log")
+            }));
+            assert!(app.state.tabs.iter().any(|tab| {
+                tab.log_manager
+                    .source_file()
+                    .unwrap()
+                    .ends_with("second.log")
+            }));
         });
-        let saved = output
-            .path()
-            .join(source.path().file_stem().unwrap())
-            .join("merged.log");
-        let text = std::fs::read_to_string(saved).unwrap();
-        assert!(text.contains("value1") && text.contains("value3"));
+        let saved = output.path().join(source.path().file_stem().unwrap());
+        assert_eq!(std::fs::read_dir(&saved).unwrap().count(), 2);
+        assert!(
+            std::fs::read_to_string(saved.join("first.log"))
+                .unwrap()
+                .contains("value1")
+        );
+        assert!(
+            std::fs::read_to_string(saved.join("second.log"))
+                .unwrap()
+                .contains("value3")
+        );
+        assert!(!saved.join("merged.log").exists());
     }
 
     #[gpui_kit::test]

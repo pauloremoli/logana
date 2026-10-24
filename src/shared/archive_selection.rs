@@ -70,7 +70,7 @@ pub(crate) fn apply_patterns(tree: &mut ArchiveTree, patterns: &[String]) {
     }
 }
 
-fn rotation_name(path: &str) -> Option<(&str, u64)> {
+pub(crate) fn rotation_name(path: &str) -> Option<(&str, u64)> {
     let path = path
         .strip_suffix(".gz")
         .or_else(|| path.strip_suffix(".bz2"))
@@ -110,7 +110,7 @@ pub(crate) fn rotation_groups(tree: &ArchiveTree) -> Vec<RotationGroup> {
     groups
         .into_values()
         .filter_map(|mut items| {
-            if items.len() < 2 {
+            if items.len() < 2 || !items.iter().any(|(rank, _)| *rank > 0) {
                 return None;
             }
             items.sort_by_key(|&(rank, id)| (std::cmp::Reverse(rank), id));
@@ -196,6 +196,19 @@ mod tests {
         );
         assert_eq!(rotation_name("logs/messages.2"), Some(("logs/messages", 2)));
         assert_eq!(rotation_name("logs/messages"), Some(("logs/messages", 0)));
+    }
+    #[test]
+    fn compressed_copies_without_numbering_are_not_rotations() {
+        let mut tree = tree();
+        for node in &mut tree.nodes {
+            node.selected = false;
+        }
+        for (id, name) in [(0, "a/runtime.log"), (1, "a/runtime.log.gz")] {
+            tree.nodes[id].selected = true;
+            tree.nodes[id].name = name.into();
+            tree.nodes[id].full_path = name.into();
+        }
+        assert!(rotation_groups(&tree).is_empty());
     }
     #[test]
     fn saved_globs_match_names_and_paths_and_can_be_removed() {

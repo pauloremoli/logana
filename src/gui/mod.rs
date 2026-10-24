@@ -59,3 +59,5 @@ mod schema_preparation;
 mod facet_query;
 
 mod archive_window;
+
+mod path_picker;

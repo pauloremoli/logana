@@ -57,13 +57,45 @@ pub(super) async fn apply_filters(
     Ok(manager)
 }
 
-pub(super) fn persist_extracted(
+pub(super) struct SavedOutput {
+    pub path: PathBuf,
+    pub temp: Option<tempfile::NamedTempFile>,
+    pub warning: Option<String>,
+    pub source: Option<String>,
+}
+impl SavedOutput {
+    fn file(path: PathBuf) -> Self {
+        Self {
+            path,
+            temp: None,
+            warning: None,
+            source: None,
+        }
+    }
+}
+
+pub(super) fn save_or_temporary(
     temp: tempfile::NamedTempFile,
     out: &Path,
     relative: &str,
     control: &Control,
-) -> Result<PathBuf, String> {
-    save_extracted(temp, out, relative, control, false)
+) -> Result<SavedOutput, String> {
+    match save_extracted_unique(&temp, out, relative, control) {
+        Ok(path) => Ok(SavedOutput::file(path)),
+        Err(error) => {
+            control.check().map_err(|e| e.to_string())?;
+            let destination = out.join(relative);
+            Ok(SavedOutput {
+                path: temp.path().to_path_buf(),
+                temp: Some(temp),
+                warning: Some(format!(
+                    "Could not save {}: {error}. Opened as a temporary file.",
+                    destination.display()
+                )),
+                source: Some(format!("{} (temporary)", destination.display())),
+            })
+        }
+    }
 }
 
 pub(super) fn persist_extracted_unique(
@@ -72,15 +104,14 @@ pub(super) fn persist_extracted_unique(
     relative: &str,
     control: &Control,
 ) -> Result<PathBuf, String> {
-    save_extracted(temp, out, relative, control, true)
+    save_extracted_unique(&temp, out, relative, control)
 }
 
-fn save_extracted(
-    temp: tempfile::NamedTempFile,
+fn save_extracted_unique(
+    temp: &tempfile::NamedTempFile,
     out: &Path,
     relative: &str,
     control: &Control,
-    unique: bool,
 ) -> Result<PathBuf, String> {
     let first = Path::new(relative).components().next();
     let base = match first {
@@ -117,10 +148,6 @@ fn save_extracted(
     );
     std::io::copy(&mut input, &mut staged).map_err(|e| e.to_string())?;
     control.check().map_err(|e| e.to_string())?;
-    if !unique {
-        staged.persist(&destination).map_err(|e| e.to_string())?;
-        return Ok(destination);
-    }
     let original = destination.clone();
     let mut number = 1;
     loop {
@@ -248,6 +275,96 @@ impl App {
             .iter()
             .filter(|op| children.contains(&op.id))
             .count()
+    }
+
+    pub(super) fn queue_rotation_selection(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let (id, control) = self.cli_operation(PathBuf::from("Selected files"), None);
+        let gate = self.loading.gate.clone();
+        cx.spawn(async move |this, cx| {
+            let worker = control.clone();
+            let result = runtime::handle()
+                .spawn(async move {
+                    let _permit = permit(gate, &worker).await?;
+                    tokio::task::spawn_blocking(move || prepare_rotation_selection(paths, &worker))
+                        .await
+                        .map_err(|e| e.to_string())?
+                })
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r);
+            let result = async {
+                let outputs = result?;
+                let mut warnings = Vec::new();
+                let mut children = std::collections::HashSet::new();
+                for output in outputs {
+                    control.check().map_err(|e| e.to_string())?;
+                    if let Some(warning) = output.warning {
+                        warnings.push(warning);
+                    }
+                    if output.temp.is_some() {
+                        let db = this
+                            .update(cx, |app, _| app.state.db.clone())
+                            .map_err(|e| e.to_string())?;
+                        let worker = control.clone();
+                        let loaded = runtime::handle()
+                            .spawn(async move {
+                                crate::gui::update::load_file_controlled(
+                                    output.path,
+                                    db,
+                                    worker,
+                                    output.source,
+                                )
+                                .await
+                            })
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        install_loaded(
+                            &this,
+                            cx,
+                            loaded,
+                            control.clone(),
+                            Some(id),
+                            false,
+                            false,
+                            output.temp,
+                            None,
+                        )
+                        .await?;
+                    } else {
+                        let child = this
+                            .update(cx, |app, cx| {
+                                app.queue_file_with_args(output.path, None, cx);
+                                app.loading.next_id
+                            })
+                            .map_err(|e| e.to_string())?;
+                        children.insert(child);
+                    }
+                }
+                loop {
+                    let remaining = this
+                        .update(cx, |app, cx| {
+                            app.directory_remaining(&children, control.cancelled(), cx)
+                        })
+                        .map_err(|e| e.to_string())?;
+                    if remaining == 0 {
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(100))
+                        .await;
+                }
+                if warnings.is_empty() {
+                    Ok(())
+                } else {
+                    Err(warnings.join("\n"))
+                }
+            }
+            .await;
+            this.update(cx, |app, cx| app.finish_loading(id, result, cx))
+                .ok();
+        })
+        .detach();
+        cx.notify();
     }
 
     pub(super) fn queue_directory(
@@ -427,6 +544,112 @@ fn collect_directory(
     Ok(errors)
 }
 
+fn prepare_rotation_selection(
+    selected: Vec<PathBuf>,
+    control: &Control,
+) -> Result<Vec<SavedOutput>, String> {
+    use std::collections::{BTreeMap, HashSet};
+    use std::io::Read;
+    let mut paths = Vec::new();
+    control.phase("Reading selected files", String::new(), None);
+    for path in selected {
+        control.check().map_err(|e| e.to_string())?;
+        if path.is_dir() {
+            let errors = collect_directory(&path, control, &mut paths)?;
+            if !errors.is_empty() {
+                return Err(errors.join("\n"));
+            }
+        } else {
+            paths.push(path);
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut groups = BTreeMap::<PathBuf, Vec<(u64, PathBuf)>>::new();
+    let mut outputs = Vec::new();
+    for path in paths {
+        let path = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let kind = crate::ingestion::detect_archive_type(&path.to_string_lossy());
+        if kind.as_ref().is_some_and(|kind| {
+            !matches!(
+                kind,
+                crate::ingestion::ArchiveType::Gz
+                    | crate::ingestion::ArchiveType::Bz2
+                    | crate::ingestion::ArchiveType::Xz
+            )
+        }) {
+            outputs.push(SavedOutput::file(path));
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy();
+        if let Some((base, rank)) = crate::shared::archive_selection::rotation_name(&name) {
+            groups
+                .entry(path.parent().unwrap().join(base))
+                .or_default()
+                .push((rank, path));
+        } else {
+            outputs.push(SavedOutput::file(path));
+        }
+    }
+    for (base, mut members) in groups {
+        if members.len() < 2 || !members.iter().any(|(rank, _)| *rank > 0) {
+            outputs.extend(members.into_iter().map(|(_, path)| SavedOutput::file(path)));
+            continue;
+        }
+        members.sort_by_key(|(rank, path)| (std::cmp::Reverse(*rank), path.clone()));
+        control.phase("Merging rotated logs", base.display().to_string(), None);
+        let mut merged = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+        let mut last = None;
+        for (_, path) in members {
+            control.check().map_err(|e| e.to_string())?;
+            let decoded = if let Some(kind) =
+                crate::ingestion::detect_archive_type(&path.to_string_lossy())
+            {
+                Some(crate::ingestion::archive_job::unpack(
+                    &path, &kind, "", control,
+                )?)
+            } else {
+                None
+            };
+            let mut input =
+                std::fs::File::open(decoded.as_ref().map(|f| f.path()).unwrap_or(&path))
+                    .map_err(|e| e.to_string())?;
+            let mut buffer = [0; 64 * 1024];
+            let mut first = true;
+            loop {
+                control.check().map_err(|e| e.to_string())?;
+                let count = input.read(&mut buffer).map_err(|e| e.to_string())?;
+                if count == 0 {
+                    break;
+                }
+                if first && last.is_some_and(|b| b != b'\n') {
+                    merged.write_all(b"\n").map_err(|e| e.to_string())?;
+                }
+                merged
+                    .write_all(&buffer[..count])
+                    .map_err(|e| e.to_string())?;
+                last = Some(buffer[count - 1]);
+                first = false;
+            }
+        }
+        let mut name = base.file_stem().unwrap().to_os_string();
+        name.push("-merged");
+        if let Some(ext) = base.extension() {
+            name.push(".");
+            name.push(ext);
+        }
+        outputs.push(save_or_temporary(
+            merged,
+            base.parent().unwrap(),
+            &name.to_string_lossy(),
+            control,
+        )?);
+    }
+    Ok(outputs)
+}
+
 fn build_merge(
     args: Args,
     db: Arc<crate::db::Database>,
@@ -440,23 +663,50 @@ fn build_merge(
     String,
 > {
     let out = crate::cli::resolve_out_dir(args.out.as_ref());
-    let mut paths = Vec::new();
+    let mut requested = Vec::new();
     for path in &args.files {
+        let path = Path::new(path);
+        if path.is_dir() {
+            let errors = collect_directory(path, &control, &mut requested)?;
+            if !errors.is_empty() {
+                return Err(errors.join("\n"));
+            }
+        } else {
+            requested.push(path.to_path_buf());
+        }
+    }
+    requested.retain(|path| {
+        !path
+            .components()
+            .any(|part| part.as_os_str() == ".logana-merge")
+    });
+    let mut seen = std::collections::HashSet::new();
+    let mut paths = Vec::new();
+    for path in requested {
         control.check().map_err(|e| e.to_string())?;
-        if crate::ingestion::detect_archive_type(path).is_some() {
-            let mut tree = crate::ingestion::archive_tree::list_archive_tree_controlled(
-                path,
+        let canonical =
+            std::fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if !seen.insert(canonical) {
+            continue;
+        }
+        if crate::ingestion::detect_archive_type(&path.to_string_lossy()).is_some() {
+            let tree = crate::ingestion::archive_tree::list_archive_tree_controlled(
+                &path.to_string_lossy(),
                 control.clone(),
             )?;
+            let mut tree = crate::ingestion::archive_job::expand_all(&path, tree, control.clone())?;
             tree.set_all_files_selected(true);
             crate::ingestion::archive_job::extract_selection(
-                Path::new(path),
+                &path,
                 &tree,
                 &control,
                 &mut |entry| {
                     let (node, temp) = entry?;
-                    let relative = crate::ingestion::archive_tree::relative_name(&tree, node, path);
-                    paths.push(persist_extracted(
+                    let relative = crate::gui::loading::path_for_archive_output(
+                        &path,
+                        &crate::shared::archive_selection::output_entry_path(&tree, node),
+                    );
+                    paths.push(persist_extracted_unique(
                         temp,
                         &out.join(".logana-merge"),
                         &relative,
@@ -466,8 +716,11 @@ fn build_merge(
                 },
             )?;
         } else {
-            paths.push(PathBuf::from(path));
+            paths.push(path);
         }
+    }
+    if paths.is_empty() {
+        return Err("The selection contains no files to merge.".into());
     }
     if let Some(output) = &args.output {
         for path in &paths {
@@ -678,6 +931,127 @@ mod tests {
     }
 
     #[test]
+    fn failed_save_preserves_temporary_bytes_and_reports_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, b"keep").unwrap();
+        let mut temp = tempfile::NamedTempFile::new().unwrap();
+        temp.write_all(b"dummy contents\n").unwrap();
+        let (control, _) = Control::new();
+        let saved = save_or_temporary(temp, &blocked, "runtime-merged.log", &control).unwrap();
+        assert!(saved.temp.is_some());
+        assert_eq!(std::fs::read(&saved.path).unwrap(), b"dummy contents\n");
+        assert!(
+            saved
+                .warning
+                .as_ref()
+                .unwrap()
+                .contains("runtime-merged.log")
+        );
+        assert!(
+            saved
+                .source
+                .as_ref()
+                .unwrap()
+                .ends_with("runtime-merged.log (temporary)")
+        );
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"keep");
+        let path = saved.path.clone();
+        drop(saved);
+        assert!(!path.exists());
+        control
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            save_or_temporary(
+                tempfile::NamedTempFile::new().unwrap(),
+                &blocked,
+                "cancel.log",
+                &control
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rotation_output_that_cannot_be_saved_remains_temporary() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = format!("{}.log", "x".repeat(245));
+        std::fs::write(dir.path().join(&name), b"current\n").unwrap();
+        std::fs::write(dir.path().join(format!("{name}1")), b"previous\n").unwrap();
+        let (control, _) = Control::new();
+        let outputs = prepare_rotation_selection(vec![dir.path().into()], &control).unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert!(outputs[0].temp.is_some());
+        assert!(
+            outputs[0]
+                .warning
+                .as_ref()
+                .unwrap()
+                .contains("Could not save")
+        );
+        assert_eq!(
+            std::fs::read(&outputs[0].path).unwrap(),
+            b"previous\ncurrent\n"
+        );
+    }
+
+    #[test]
+    fn selection_merges_only_numbered_families_in_the_same_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        for (name, content) in [
+            ("runtime.log", "current\n"),
+            ("runtime.log2", "older"),
+            ("startup.log", "startup\n"),
+            ("startup.log1", "previous\n"),
+            ("other.log", "unrelated\n"),
+            ("nested/runtime.log", "separate\n"),
+        ] {
+            std::fs::write(dir.path().join(name), content).unwrap();
+        }
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gzip.write_all(b"oldest\n").unwrap();
+        std::fs::write(dir.path().join("runtime.log10.gz"), gzip.finish().unwrap()).unwrap();
+        let (control, _) = Control::new();
+        let outputs = prepare_rotation_selection(
+            vec![dir.path().into(), dir.path().join("runtime.log")],
+            &control,
+        )
+        .unwrap();
+        assert_eq!(outputs.len(), 4);
+        assert_eq!(
+            std::fs::read(dir.path().join("runtime-merged.log")).unwrap(),
+            b"oldest\nolder\ncurrent\n"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("startup-merged.log")).unwrap(),
+            b"previous\nstartup\n"
+        );
+        assert!(outputs.iter().any(|o| o.path == nested.join("runtime.log")));
+        assert!(
+            outputs
+                .iter()
+                .any(|o| o.path == dir.path().join("other.log"))
+        );
+        assert!(
+            !outputs
+                .iter()
+                .any(|o| o.path == dir.path().join("runtime.log"))
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("runtime.log2")).unwrap(),
+            b"older"
+        );
+        control
+            .cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(prepare_rotation_selection(vec![dir.path().into()], &control).is_err());
+    }
+
+    #[test]
     fn merge_extracts_nested_compression_into_requested_directory() {
         let dir = tempfile::tempdir().unwrap();
         let archive = dir.path().join("bundle.zip");
@@ -701,7 +1075,7 @@ mod tests {
         let out = dir.path().join("extracted");
         let args = Args {
             files: vec![
-                archive.to_string_lossy().into(),
+                dir.path().to_string_lossy().into(),
                 plain.to_string_lossy().into(),
             ],
             merge: true,
@@ -709,16 +1083,19 @@ mod tests {
             ..Args::default()
         };
         let (control, _) = Control::new();
-        let (loaded, _temp, merged) = build_merge(args, db, control).unwrap();
+        let (loaded, _temp, merged) = build_merge(args.clone(), db.clone(), control).unwrap();
+        let (control, _) = Control::new();
+        let (repeated, _, _) = build_merge(args, db, control).unwrap();
+        assert_eq!(repeated.reader.line_count(), 3);
         assert_eq!(loaded.reader.line_count(), 3);
         assert_eq!(merged.source_labels.len(), 3);
         assert!(String::from_utf8_lossy(&loaded.reader.get_line(0)).contains("nested"));
         assert!(String::from_utf8_lossy(&loaded.reader.get_line(1)).contains("plain"));
         assert_eq!(
-            std::fs::read(out.join(".logana-merge/bundle.zip/nested.log")).unwrap(),
+            std::fs::read(out.join(".logana-merge/bundle/nested.log")).unwrap(),
             b"Jan  1 00:00:01 host tag: nested\n"
         );
-        assert!(!out.join(".logana-merge/bundle.zip/nested.log.gz").exists());
+        assert!(!out.join(".logana-merge/bundle/nested.log.gz").exists());
         assert!(zip::ZipArchive::new(std::fs::File::open(archive).unwrap()).is_ok());
     }
 
@@ -759,10 +1136,11 @@ mod tests {
         );
         let mut temp = tempfile::NamedTempFile::new().unwrap();
         temp.write_all(b"extracted\n").unwrap();
-        let path = persist_extracted(temp, dir.path(), "nested/entry.log", &control).unwrap();
+        let path =
+            persist_extracted_unique(temp, dir.path(), "nested/entry.log", &control).unwrap();
         assert_eq!(std::fs::read(path).unwrap(), b"extracted\n");
         assert!(
-            persist_extracted(
+            persist_extracted_unique(
                 tempfile::NamedTempFile::new().unwrap(),
                 dir.path(),
                 "../escape",
@@ -775,7 +1153,7 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         assert!(collect_directory(dir.path(), &control, &mut Vec::new()).is_err());
         assert!(
-            persist_extracted(
+            persist_extracted_unique(
                 tempfile::NamedTempFile::new().unwrap(),
                 dir.path(),
                 "canceled.log",

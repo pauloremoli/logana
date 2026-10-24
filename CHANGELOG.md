@@ -6,6 +6,7 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- [gui] Add an in-app file and folder picker with wrapping paths and rotation-only merging.
 - [gui] Add a detached archive picker with saved glob patterns, output folder selection, and automatic rotation merging.
 
 ## [0.8.1] - 2026-10-24

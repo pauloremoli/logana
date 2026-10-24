@@ -15,8 +15,8 @@ use gpui_kit::component::select::{SearchableVec, SelectEvent, SelectState};
 use gpui_kit::component::time_field::{TimeFieldEvent, TimeFieldState, TimePrecision};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{
-    Context, Entity, FocusHandle, Focusable, KeyDownEvent, ListAlignment, ListState, Window,
-    actions, div,
+    Context, Entity, FocusHandle, Focusable, KeyDownEvent, ListAlignment, ListState, WeakEntity,
+    Window, actions, div,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,6 +72,7 @@ pub struct App {
     pub facet_counts: std::collections::HashMap<crate::shared::TabId, FacetCache>,
     pub facet_search: Option<Entity<InputState>>,
     pub(super) facet_query: Option<crate::gui::facet_query::Query>,
+    pub(super) path_picker: Option<WeakEntity<crate::gui::path_picker::PathPicker>>,
     pub archive_search: Option<Entity<InputState>>,
     pub archive_pattern: Option<Entity<InputState>>,
     archive_pattern_clear: bool,
@@ -268,6 +269,7 @@ impl App {
             facet_counts: Default::default(),
             facet_search: None,
             facet_query: None,
+            path_picker: None,
             archive_search: None,
             archive_pattern: None,
             archive_pattern_clear: false,
@@ -464,7 +466,25 @@ impl App {
             Message::SearchPopup(open) => Some(*open),
             _ => None,
         };
+        let previous_sidebar_selection = (
+            self.state.active_tab,
+            self.state.keyboard_sidebar,
+            self.state.sidebar_cursor,
+        );
         let effect = update::update(&mut self.state, message);
+        // Follow selection changes, not every render: wheel scrolling must be
+        // free to move away from the selected filter while filter mode is active.
+        if self.state.keyboard_sidebar == Some(crate::gui::state::SidebarTab::Filters)
+            && previous_sidebar_selection
+                != (
+                    self.state.active_tab,
+                    self.state.keyboard_sidebar,
+                    self.state.sidebar_cursor,
+                )
+        {
+            self.filter_sidebar_scroll
+                .scroll_to_item(self.state.sidebar_cursor);
+        }
         crate::gui::view::bookmarks::sync(&mut self.state);
 
         // The auto-filter keybinding opens a prefilled draft; it should
@@ -966,28 +986,16 @@ impl App {
         }
     }
 
-    fn spawn_open_file_dialog(&self, directories: bool, cx: &mut Context<Self>) {
-        let prompt = cx.prompt_for_paths(gpui_kit::gpui::PathPromptOptions {
-            files: !directories,
-            // Linux portals use directory mode whenever this flag is true,
-            // even when files is also true. Keep the two native pickers separate.
-            directories,
-            multiple: true,
-            prompt: None,
-        });
-        cx.spawn(async move |this, cx| {
-            let paths = prompt.await.ok().and_then(Result::ok).flatten();
-            this.update_in(cx, |app, window, cx| match paths {
-                Some(paths) if !paths.is_empty() => {
-                    for path in paths {
-                        app.dispatch(Message::FileDialogResult(Some(path)), window, cx);
-                    }
-                }
-                _ => app.dispatch(Message::FileDialogResult(None), window, cx),
-            })
-            .ok();
-        })
-        .detach();
+    fn spawn_open_file_dialog(&mut self, _directories: bool, cx: &mut Context<Self>) {
+        let initial = self
+            .state
+            .active_tab()
+            .and_then(|tab| tab.log_manager.source_file())
+            .and_then(|path| std::path::Path::new(path).parent())
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        self.show_path_picker(crate::gui::path_picker::Purpose::Open, initial, cx);
     }
 
     fn spawn_load_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {

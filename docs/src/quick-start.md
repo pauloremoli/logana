@@ -41,6 +41,21 @@ logana app.log --filters my-filters.json --tail
 
 ## Opening Compressed and Archive Files
 
+### GUI file and folder selection
+
+Open files or folders from the in-app selection window. Browse folders by clicking
+their names; use the checkboxes to select files and entire folders together.
+Selected paths stay in the right pane as you browse. You can enter a path directly,
+filter the current folder, and show hidden entries.
+
+By default, each file opens in its own tab, including files inside selected folders.
+Enable **Auto merge rotated logs** to combine numbered rotations of each log,
+oldest first (for example, `runtime.log2`, `runtime.log1`, and `runtime.log` become
+`runtime-merged.log`). Unrelated logs and identically named logs in different
+folders open separately. Compressed rotations are supported. Folders are scanned
+recursively, and overlapping folder and file selections are counted once. Confirm to start opening;
+Cancel leaves the current tabs unchanged.
+
 ### GUI archive selection
 
 The GUI opens a separate, resizable archive selection window and lists files
@@ -54,6 +69,8 @@ individual files manually. Filename search only narrows the list on screen.
 Enable **Auto merge rotated logs** to combine selected rotations from the same
 folder and archive. For example, `runtime.log2`, `runtime.log1`, and `runtime.log`
 produce `runtime-merged.log`, while `startup.log*` produces `startup-merged.log`.
+The selected-files pane previews each merged output with its original files indented beneath it; remove a file there to exclude it.
+Unrelated files open separately; files from different folders or nested archives stay separate.
 Numbered rotations with or without a dot, including compressed rotations, are
 joined from the highest number down to the current log. Only selected files are
 included. The combined logs are saved under the archive's basename (for example, `bundle.zip` or `bundle.tar.gz`
@@ -67,6 +84,8 @@ Use **Choose folder…** to change the output folder before opening files. It
 defaults to the input archive's folder (or `--out`, if provided). Individual files
 and combined logs are saved in the chosen folder. Progress appears only after
 confirming the selection and once extraction is running.
+If saving fails, the log still opens as a temporary file and an error notification
+identifies the destination that could not be saved.
 
 Unreadable nested archives remain visible with an error; other files can still
 be selected and opened.

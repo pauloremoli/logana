@@ -29,9 +29,6 @@ pub fn filter_pane(
     let empty = filter_defs.is_empty();
     let enabled = filter_defs.iter().filter(|def| def.enabled).count();
     let total = filter_defs.len();
-    if let Some(index) = selected {
-        scroll.scroll_to_item(index);
-    }
     let pane = div()
         .flex()
         .flex_col()
@@ -223,7 +220,8 @@ fn filter_row(
         .flex_shrink_0()
         .on_mouse_down(
             gpui_kit::gpui::MouseButton::Left,
-            cx.listener(move |app, _, _, cx| {
+            cx.listener(move |app, _, window, cx| {
+                app.root_focus.focus(window, cx);
                 app.state.keyboard_sidebar = Some(crate::gui::state::SidebarTab::Filters);
                 app.state.sidebar_cursor = app.state.tabs[tab_idx]
                     .log_manager
@@ -314,10 +312,7 @@ fn filter_row(
                         })
                         .child(condition),
                 )
-                .tooltip(move |window, cx| Tooltip::new(full_condition.clone()).build(window, cx))
-                .on_click(cx.listener(move |app, _, window, cx| {
-                    app.dispatch(Message::EditFilter(id), window, cx)
-                })),
+                .tooltip(move |window, cx| Tooltip::new(full_condition.clone()).build(window, cx)),
         )
         .child(
             Button::new(("filter-edit", id))

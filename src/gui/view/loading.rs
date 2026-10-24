@@ -301,45 +301,87 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
         },
     )
     .track_scroll(&app.loading.scroll);
-    let selected_list = gpui_kit::base::v_virtual_list(
-        cx.entity(),
-        ("archive-selected-files", id),
-        picker.selected_sizes.clone(),
-        move |app: &mut App, range, _window, cx| {
-            let Some(picker) = app
-                .loading
-                .operations
-                .iter()
-                .find(|op| op.id == id)
-                .and_then(|op| op.picker.as_ref())
-            else {
-                return Vec::new();
-            };
-            range
-                .filter_map(|row| picker.selected_rows.get(row).copied())
-                .map(|node| {
-                    let path = crate::shared::archive_selection::entry_path(&picker.tree, node);
-                    div()
-                        .id(("archive-selected-row", node))
-                        .h(px(32.))
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(div().flex_1().min_w(px(0.)).truncate().child(path.clone()))
-                        .child(
-                            Button::new(("archive-remove-file", node))
-                                .ghost()
-                                .small()
-                                .icon(IconName::X)
-                                .accessibility_label(format!("Remove {path}"))
-                                .on_click(cx.listener(move |app, _, _, cx| {
-                                    app.picker_toggle(id, node, cx)
-                                })),
-                        )
-                })
-                .collect::<Vec<_>>()
-        },
+    let groups = if app.state.preferences.archive_merge_rotations {
+        crate::shared::archive_selection::rotation_groups(&picker.tree)
+    } else {
+        Vec::new()
+    };
+    let grouped: std::collections::HashSet<_> = groups
+        .iter()
+        .flat_map(|group| group.members.iter().copied())
+        .collect();
+    let mut preview = Vec::new();
+    for group in groups {
+        preview.push((None, group.relative, false));
+        for node in group.members {
+            preview.push((
+                Some(node),
+                crate::shared::archive_selection::entry_path(&picker.tree, node),
+                true,
+            ));
+        }
+    }
+    preview.extend(
+        picker
+            .selected_rows
+            .iter()
+            .filter(|node| !grouped.contains(node))
+            .map(|&node| {
+                (
+                    Some(node),
+                    crate::shared::archive_selection::entry_path(&picker.tree, node),
+                    false,
+                )
+            }),
     );
+    let selected_list = div()
+        .id(("archive-selected-files", id))
+        .size_full()
+        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .children(preview.into_iter().map(|(node, path, child)| {
+            div()
+                .id(node
+                    .map(|node| gpui_kit::gpui::ElementId::from(("archive-selected-row", node)))
+                    .unwrap_or_else(|| format!("archive-preview-row:{path}").into()))
+                .test_support()
+                .w_full()
+                .min_w(px(0.))
+                .min_h(px(32.))
+                .flex_shrink_0()
+                .flex()
+                .items_start()
+                .gap_2()
+                .py_1()
+                .when(child, |d| d.pl_4())
+                .when(node.is_none(), |d| d.font_semibold())
+                .child(
+                    div()
+                        .id(format!(
+                            "archive-preview-{}:{path}",
+                            if node.is_none() { "output" } else { "file" }
+                        ))
+                        .test_support()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .whitespace_normal()
+                        .child(path.clone()),
+                )
+                .when_some(node, |d, node| {
+                    d.child(
+                        Button::new(("archive-remove-file", node))
+                            .ghost()
+                            .small()
+                            .flex_shrink_0()
+                            .icon(IconName::X)
+                            .accessibility_label(format!("Remove {path}"))
+                            .on_click(
+                                cx.listener(move |app, _, _, cx| app.picker_toggle(id, node, cx)),
+                            ),
+                    )
+                })
+        }));
     let files = div()
         .h_full()
         .flex()
@@ -499,8 +541,6 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
         .child(div().flex().flex_wrap().gap_2()
             .child(Button::new("archive-extract-open").primary().label(format!("Open {output_count} {}", if output_count == 1 { "file" } else { "files" }))
                 .disabled(selected == 0).on_click(cx.listener(move |app, _, _, cx| app.picker_open(id, cx))))
-            .child(Button::new("archive-extract-merge").label("Merge all into one tab").disabled(selected < 2 || merge_rotations)
-                .on_click(cx.listener(move |app, _, _, cx| app.merge_archive(id, cx))))
             .child(Button::new("archive-cancel").label("Cancel")
                 .on_click(cx.listener(move |app, _, _, cx| app.cancel_loading(id, cx)))))
         .into_any_element())
