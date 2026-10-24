@@ -1709,7 +1709,7 @@ mod tests {
 
         let mut t = tab().await;
         for schema in [
-            include_str!("../../../examples/hlapi-transactions.schema.json"),
+            include_str!("../../../examples/transactions.json"),
             r#"{"name":"folded", "template":"{level} {message}", "multiline":true}"#,
         ] {
             let config: CustomSchemaConfig = serde_json::from_str(schema).unwrap();
