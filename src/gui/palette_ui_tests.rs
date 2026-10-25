@@ -2825,7 +2825,7 @@ fn invalid_regex_worker_keeps_the_editor_interactive(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn about_page_opens_from_help_without_files_and_returns_to_logs(cx: &mut TestAppContext) {
+fn about_dialog_opens_from_help_without_files_and_closes(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -2838,10 +2838,27 @@ fn about_page_opens_from_help_without_files_and_returns_to_logs(cx: &mut TestApp
     .unwrap();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(app.read(cx).state.nav_page, super::state::NavPage::About);
-        assert!(window.find("about-back").bounds().size.height > px(0.));
-        window.click("about-back", cx);
         assert_eq!(app.read(cx).state.nav_page, super::state::NavPage::Logs);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().action,
+            super::actions::Action::About
+        );
+        assert!(window.find("editor-focus").bounds().size.height > px(0.));
+        assert!(window.try_find("editor-cancel").is_none());
+        assert_eq!(window.find("editor-apply").label(), Some("Done"));
+        window.click("editor-apply", cx);
+        assert!(app.read(cx).state.editor.is_none());
+        assert_eq!(app.read(cx).state.nav_page, super::state::NavPage::Logs);
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                super::message::Message::GuiAction(super::actions::Action::About),
+                window,
+                cx,
+            )
+        });
+        window.render_frame(cx);
+        window.press("escape", cx);
+        assert!(app.read(cx).state.editor.is_none());
     })
     .unwrap();
 }

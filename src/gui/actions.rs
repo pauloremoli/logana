@@ -767,10 +767,6 @@ pub fn open(
             crate::gui::update::refresh_filters(state, state.active_tab);
             return Effect::None;
         }
-        Action::About => {
-            crate::gui::view::bookmarks::set_view(state, crate::gui::state::NavPage::About);
-            return Effect::None;
-        }
         Action::ShowLogs => {
             crate::gui::view::bookmarks::set_view(state, crate::gui::state::NavPage::Logs);
             return Effect::None;
@@ -1188,7 +1184,10 @@ pub fn close(state: &mut GuiState, applied: bool) {
         state.palette.focus_epoch = state.palette.focus_epoch.wrapping_add(1);
         if !applied
             && state.palette.outcome.is_none()
-            && !matches!(e.action, Action::View | Action::Help | Action::FileInfo)
+            && !matches!(
+                e.action,
+                Action::View | Action::Help | Action::FileInfo | Action::About
+            )
         {
             crate::gui::update::gui_outcome(
                 state,
@@ -1859,6 +1858,7 @@ mod tests {
     async fn about_opens_from_palette_without_files() {
         let mut state = state().await;
         state.tabs.clear();
+        state.nav_page = crate::gui::state::NavPage::Bookmarks;
         update(&mut state, Message::OpenCommands);
         update(&mut state, Message::PaletteEdited("about".into()));
         assert_eq!(matching("about")[0].action, Action::About);
@@ -1866,9 +1866,13 @@ mod tests {
             &mut state,
             Message::PaletteKey(crate::input::KeyCode::Enter, Default::default()),
         );
-        assert_eq!(state.nav_page, crate::gui::state::NavPage::About);
+        assert_eq!(state.nav_page, crate::gui::state::NavPage::Bookmarks);
         assert!(!state.palette.open);
+        assert_eq!(state.editor.as_ref().unwrap().action, Action::About);
+        update(&mut state, Message::EditorCancel);
         assert!(state.editor.is_none());
+        assert_eq!(state.nav_page, crate::gui::state::NavPage::Bookmarks);
+        assert!(state.palette.outcome.is_none());
     }
 
     #[tokio::test]

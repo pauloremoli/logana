@@ -802,7 +802,9 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
     let e = app.state.editor.as_ref()?;
     let width = (f32::from(viewport.width) - 48.).clamp(
         0.,
-        if e.action == Action::Filter {
+        if e.action == Action::About {
+            420.
+        } else if e.action == Action::Filter {
             520.
         } else if matches!(e.action, Action::Settings | Action::Keybindings) {
             960.
@@ -837,6 +839,9 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         ));
     let mut body = div().flex().flex_col().flex_shrink_0().gap_3();
     match e.action {
+        Action::About => {
+            body = body.child(super::about::content(cx));
+        }
         Action::Keybindings => {
             let entity = cx.entity();
             let groups = chunk_by_group(&e.fields)
@@ -1894,7 +1899,10 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             })
             .gap_2()
             .when(
-                !matches!(e.action, Action::View | Action::Help | Action::FileInfo),
+                !matches!(
+                    e.action,
+                    Action::View | Action::Help | Action::FileInfo | Action::About
+                ),
                 |d| {
                     d.child(button(
                         "editor-cancel",
@@ -1921,7 +1929,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                         }
                     } else {
                         match e.action {
-                            Action::Help | Action::SwitchFile => "Done",
+                            Action::Help | Action::About | Action::SwitchFile => "Done",
                             Action::Settings => "Save preferences",
                             Action::Keybindings => "Save shortcuts",
                             Action::Appearance => "Save theme",

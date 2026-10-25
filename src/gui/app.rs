@@ -1713,7 +1713,8 @@ impl Render for App {
                     crate::gui::actions::Action::Appearance => {
                         self.editor_inputs[1].update(cx, |input, cx| input.focus(window, cx))
                     }
-                    crate::gui::actions::Action::FileInfo
+                    crate::gui::actions::Action::About
+                    | crate::gui::actions::Action::FileInfo
                     | crate::gui::actions::Action::View
                     | crate::gui::actions::Action::ValueColors
                     | crate::gui::actions::Action::LevelColors => {
