@@ -18,6 +18,7 @@ All notable changes to logana will be documented in this file.
 - [gui] Default archive extraction to the archive's folder (or `--out`), save merged logs under an archive-named folder.
 
 ### Fixed
+- [gui] Disable bookmark styling in marks-only mode and restore it when returning to all logs.
 - Keep format parsing active in raw display mode for field and date filters, level navigation, and continuation records.
 - [gui] Search raw log text regardless of column layout or hidden fields, matching text filters and preserving patterns such as `ERR/Component`.
 - [gui] Preserve the selected source line and its viewport position when toggling filtering, individual filters, or filter groups, and when editing or reordering filters.

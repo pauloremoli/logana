@@ -1424,6 +1424,22 @@ fn log_bookmark_background_covers_wrapped_rows_and_selection_takes_precedence(
                 painted,
                 "{theme_name}: bookmark background must span the whole wrapped row"
             );
+            for marks_only in [true, false] {
+                app.update(cx, |app, _| {
+                    app.state.tabs[0].filter.show_marks_only = marks_only;
+                });
+                window.render_frame(cx);
+                let painted = window.painted_quads().into_iter().any(|q| {
+                    q.background.as_solid() == Some(color)
+                        && (q.bounds.origin.y.0 / scale - f32::from(row.origin.y)).abs() < 2.
+                        && q.bounds.size.width.0 / scale >= f32::from(row.size.width) - 2.
+                });
+                assert_eq!(
+                    painted, !marks_only,
+                    "{theme_name}: bookmark styling must follow marks-only mode"
+                );
+                assert!(app.read(cx).state.tabs[0].mark_manager.is_marked(1));
+            }
             let from = app.read(cx).text_document.borrow().test_point(1, 0, 3);
             let to = app.read(cx).text_document.borrow().test_point(1, 0, 90);
             window.drag(from, to, cx);

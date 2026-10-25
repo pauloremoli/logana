@@ -834,6 +834,7 @@ fn line_row_with_selection(
         .and_then(|style| style.bg)
         .is_none()
         && tab.mark_manager.is_marked(line_idx)
+        && !tab.filter.show_marks_only
         && let Some(background) = color_to_gpui(theme.mark_bg)
     {
         row = row.bg(background);
