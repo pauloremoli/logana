@@ -1,3 +1,4 @@
+use super::SelectionButton;
 use crate::commands::Commands;
 use crate::filters::FilterType;
 use crate::gui::{
@@ -6,7 +7,7 @@ use crate::gui::{
     message::Message,
 };
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{Disableable, FocusTrapElement, Selectable, TestSupportExt};
+use gpui_kit::base::{Disableable, FocusTrapElement, TestSupportExt};
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
@@ -152,12 +153,12 @@ fn restore_policy_row(
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let locked = app.state.preferences.locked.contains(&key);
-    let mut choices = ButtonGroup::new(("restore-policy-group", index)).outline();
+    let mut choices = ButtonGroup::new(("restore-policy-group", index));
     for (choice, value) in ["always", "ask", "never"].into_iter().enumerate() {
         choices = choices.child(
             Button::new(("restore-policy", index * 3 + choice))
                 .label(value)
-                .selected(e.values[index] == value)
+                .selected_accent(e.values[index] == value)
                 .disabled(locked)
                 .on_click(cx.listener(move |app, _, window, cx| {
                     app.dispatch(Message::EditorText(index, value.into()), window, cx)
@@ -229,10 +230,7 @@ fn timestamp_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
     let pattern = &app.state.editor.as_ref().unwrap().values[0];
     let (operator, start, end) = crate::gui::time_range::timestamp_parts(pattern);
     let time_only = start.contains(':') && !start.contains('-') && !start.contains(' ');
-    let mut operations = ButtonGroup::new("timestamp-operators")
-        .outline()
-        .small()
-        .flex_wrap();
+    let mut operations = ButtonGroup::new("timestamp-operators").small().flex_wrap();
     for (index, (value, label)) in [
         (">", "After"),
         (">=", "On or after"),
@@ -247,7 +245,7 @@ fn timestamp_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
         operations = operations.child(
             Button::new(("timestamp-operator", index))
                 .small()
-                .selected(operator == value)
+                .selected_accent(operator == value)
                 .label(label)
                 .on_click(cx.listener(move |app, _, window, cx| {
                     app.dispatch(Message::EditorTimestampPart(0, value.into()), window, cx);
@@ -291,12 +289,11 @@ fn timestamp_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
         .gap_3()
         .child(
             ButtonGroup::new("timestamp-scope")
-                .outline()
                 .small()
                 .child(
                     Button::new("timestamp-date-and-time")
                         .label("Date and time")
-                        .selected(!time_only)
+                        .selected_accent(!time_only)
                         .on_click(cx.listener(move |app, _, window, cx| {
                             let pattern = &app.state.editor.as_ref().unwrap().values[0];
                             let (operator, _, _) = crate::gui::time_range::timestamp_parts(pattern);
@@ -310,7 +307,7 @@ fn timestamp_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
                 .child(
                     Button::new("timestamp-time-only")
                         .label("Time only")
-                        .selected(time_only)
+                        .selected_accent(time_only)
                         .on_click(cx.listener(move |app, _, window, cx| {
                             if !time_only {
                                 let pattern = &app.state.editor.as_ref().unwrap().values[0];
@@ -508,7 +505,7 @@ fn filter_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
     let mut body = div().flex().flex_col().gap_3();
     let timestamp = e.values[0].starts_with(crate::filters::DATE_PREFIX);
     if !timestamp {
-        let mut kinds = ButtonGroup::new("filter-behavior").outline().small();
+        let mut kinds = ButtonGroup::new("filter-behavior").small();
         for (i, (kind, label)) in [
             (FilterType::Include, "Include"),
             (FilterType::Exclude, "Exclude"),
@@ -520,7 +517,7 @@ fn filter_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
             kinds = kinds.child(
                 Button::new(("filter-kind", i))
                     .label(label)
-                    .selected(e.kind == kind)
+                    .selected_accent(e.kind == kind)
                     .on_click(cx.listener(move |app, _, window, cx| {
                         app.dispatch(Message::EditorKind(kind.clone()), window, cx)
                     })),
@@ -665,7 +662,7 @@ fn filter_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
                 .child(
                     Button::new("filter-auto-style")
                         .small()
-                        .selected(e.auto_style)
+                        .selected_accent(e.auto_style)
                         .label("Auto style")
                         .on_click(cx.listener(|app, _, window, cx| {
                             app.dispatch(Message::EditorStyle(true), window, cx)
@@ -1290,12 +1287,12 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
             body = body
                 .child("Receive OpenTelemetry logs. Choose the transport used by your sender.")
                 .child(text(app, 0, "Listen port", cx));
-            let mut protocols = ButtonGroup::new("otel-protocol").outline();
+            let mut protocols = ButtonGroup::new("otel-protocol");
             for (protocol, label) in [("http", "HTTP"), ("grpc", "gRPC")] {
                 protocols = protocols.child(
                     Button::new(format!("otel-{protocol}"))
                         .label(label)
-                        .selected(e.values[1] == protocol)
+                        .selected_accent(e.values[1] == protocol)
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.dispatch(Message::EditorText(1, protocol.into()), window, cx)
                         })),
@@ -1669,7 +1666,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 row = row.child(
                     Button::new(("theme-choice", i))
                         .ghost()
-                        .selected(e.values[0] == name)
+                        .selected_accent(e.values[0] == name)
                         .label(name)
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.dispatch(Message::EditorPreview(chosen.clone()), window, cx)

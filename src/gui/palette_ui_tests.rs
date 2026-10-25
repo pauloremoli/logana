@@ -2950,3 +2950,40 @@ fn timestamp_filter_can_choose_time_without_a_date(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn timestamp_choices_keep_one_selection_when_clicked(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (900., 700.), "github-light");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx);
+            app.state.editor.as_mut().unwrap().values[0] =
+                format!("{}>= 09:30:00", crate::filters::DATE_PREFIX);
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert_eq!(window.find("timestamp-time-only").checked(), Some(true));
+        assert_eq!(
+            window.find("timestamp-date-and-time").checked(),
+            Some(false)
+        );
+        window.click("timestamp-date-and-time", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("timestamp-time-only").checked(), Some(false));
+        assert_eq!(window.find("timestamp-date-and-time").checked(), Some(true));
+        window.click(("timestamp-operator", 2usize), cx);
+        window.render_frame(cx);
+        for index in 0..6usize {
+            assert_eq!(
+                window.find(("timestamp-operator", index)).checked(),
+                Some(index == 2)
+            );
+        }
+        let editor = app.read(cx).state.editor.as_ref().unwrap();
+        let (operator, _, _) = crate::gui::time_range::timestamp_parts(&editor.values[0]);
+        assert_eq!(operator, "<");
+    })
+    .unwrap();
+}

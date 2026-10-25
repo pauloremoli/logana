@@ -83,11 +83,10 @@ impl GuiPalette {
         .map(to_rgb)
         .find(|&(r, g, b)| r.max(g).max(b) - r.min(g).min(b) > 30)
         .unwrap_or_else(|| to_rgb(theme.border_title));
-        let primary = readable(
-            gui.map(|g| to_rgb(g.primary)).unwrap_or(accent),
-            surface,
-            3.0,
-        );
+        let mut primary = gui.map(|g| to_rgb(g.primary)).unwrap_or(accent);
+        for background in [surface, elevated, control] {
+            primary = readable(primary, background, 3.0);
+        }
         let selected = blend(background, primary, 0.23);
         for background in [surface, elevated, control, hover, selected] {
             foreground = readable(foreground, background, 4.5);
@@ -307,8 +306,18 @@ fn theme_set_json(theme: &TuiTheme) -> String {
         &["primary.active.background"],
         blend(palette.primary, state_tint, 0.20),
     );
+    // Selected primary buttons keep a solid accent instead of the pressed tint,
+    // which can lose its distinction from neutral controls in light themes.
+    set(&["button.primary.active.background"], palette.primary);
     set(&["selection.background"], to_rgb(theme.visual_select_bg));
-    set(&["switch.thumb.background"], palette.foreground);
+    // One thumb color is used in both positions. Choose it against both tracks,
+    // then lift/darken the neutral track only when needed for a visible thumb.
+    let thumb = palette.primary_foreground;
+    set(&["switch.thumb.background"], thumb);
+    set(
+        &["switch.background"],
+        readable(palette.control, thumb, 3.0),
+    );
     for (name, color) in [
         ("red", theme.error_fg),
         ("yellow", theme.warning_fg),
@@ -446,6 +455,45 @@ mod tests {
                 contrast(palette.primary_foreground, palette.primary) >= 4.5,
                 "{name}: button contrast"
             );
+        }
+    }
+
+    #[test]
+    fn bundled_control_states_have_clear_selection_and_thumb_contrast() {
+        let rgb = |color: gpui_kit::gpui::Hsla| {
+            let color = gpui_kit::gpui::Rgba::from(color);
+            (
+                (color.r * 255.).round() as u8,
+                (color.g * 255.).round() as u8,
+                (color.b * 255.).round() as u8,
+            )
+        };
+        for name in TuiTheme::list_available_themes() {
+            let source = TuiTheme::from_file(format!("{name}.json")).unwrap();
+            let palette = GuiPalette::from_theme(&source);
+            let mut active = GpuiTheme::default();
+            active.apply_config(&gui_config(&source));
+            let selected = rgb(active.button_primary_active);
+            for neutral in [palette.control, palette.elevated, palette.surface] {
+                assert!(
+                    contrast(selected, neutral) >= 3.,
+                    "{name}: selected control"
+                );
+                assert!(
+                    contrast(palette.primary, neutral) >= 3.,
+                    "{name}: switch on"
+                );
+            }
+            assert!(
+                contrast(rgb(active.button_primary_foreground), selected) >= 4.5,
+                "{name}: selected label"
+            );
+            for track in [rgb(active.switch), palette.primary] {
+                assert!(
+                    contrast(rgb(active.switch_thumb), track) >= 3.,
+                    "{name}: switch thumb"
+                );
+            }
         }
     }
 

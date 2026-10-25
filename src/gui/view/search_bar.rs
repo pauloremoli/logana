@@ -1,9 +1,10 @@
+use super::SelectionButton;
 use crate::gui::app::App;
 use crate::gui::message::Message;
 use crate::gui::state::{GuiState, NavPage};
 use crate::gui::update::is_tab_live;
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{Disableable, Selectable};
+use gpui_kit::base::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable};
@@ -265,7 +266,7 @@ pub fn live_indicator(state: &GuiState, cx: &mut Context<App>) -> impl IntoEleme
                     .ghost()
                     .small()
                     .label("Follow")
-                    .selected(tab.stream.tail_mode)
+                    .selected_accent(tab.stream.tail_mode)
                     .accessibility_label("Follow latest rows")
                     .tooltip("Keep the latest rows in view")
                     .on_click(cx.listener(|app, _, window, cx| {

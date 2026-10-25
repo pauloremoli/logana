@@ -20,7 +20,7 @@ pub mod tab_bar;
 use crate::gui::app::App;
 use crate::gui::state::NavPage;
 use crate::gui::{actions::Action, message::Message};
-use gpui_kit::base::TestSupportExt;
+use gpui_kit::base::{Selectable, TestSupportExt};
 use gpui_kit::component::TitleBar;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::empty::{Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle};
@@ -28,6 +28,18 @@ use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{h_resizable, resizable_panel};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Window, div, px};
+
+/// Consistent, solid selection styling for choices and toggle buttons.
+pub(super) trait SelectionButton {
+    fn selected_accent(self, selected: bool) -> Self;
+}
+
+impl SelectionButton for Button {
+    fn selected_accent(self, selected: bool) -> Self {
+        self.selected(selected)
+            .when(selected, |button| button.primary())
+    }
+}
 
 /// Leave enough room for the native editor's line height plus both borders.
 /// The component's default 32px height with 8px vertical padding clips glyphs.

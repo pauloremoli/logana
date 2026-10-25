@@ -1,3 +1,4 @@
+use super::SelectionButton;
 use super::field_facets;
 use super::filter_pane;
 use super::group_pane;
@@ -6,7 +7,6 @@ use crate::gui::message::Message;
 use crate::gui::state::SidebarTab;
 use crate::shared::TabState;
 use gpui_kit::assets::IconName;
-use gpui_kit::base::Selectable;
 use gpui_kit::component::Icon;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::InputState;
@@ -158,7 +158,7 @@ fn sidebar_header(
                                 .ghost()
                                 .small()
                                 .label("Fields")
-                                .selected(active == SidebarTab::Filters && fields_open)
+                                .selected_accent(active == SidebarTab::Filters && fields_open)
                                 .on_click(cx.listener(|app, _, window, cx| {
                                     app.dispatch(
                                         Message::SidebarTabSelected(SidebarTab::Filters),
@@ -201,7 +201,7 @@ fn sidebar_header(
                 } else {
                     "Filtering off"
                 })
-                .selected(tab.filter.enabled)
+                .selected_accent(tab.filter.enabled)
                 .accessibility_label("Toggle filtering")
                 .tooltip("Toggle filtering (F)")
                 .on_click(cx.listener(|app, _, window, cx| {
@@ -245,7 +245,7 @@ fn sidebar_tab_button(args: SidebarTabButtonArgs, cx: &mut Context<App>) -> impl
         }),
     );
     if active {
-        button = button.selected(true);
+        button = button.selected_accent(true);
     }
     button
 }

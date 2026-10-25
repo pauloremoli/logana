@@ -1,11 +1,12 @@
 //! Progress stays visible without preventing interaction with existing tabs.
+use super::SelectionButton;
 use crate::{
     gui::app::App,
     ingestion::archive_tree::{CheckState, NodeKind},
 };
 use gpui_kit::{
     assets::IconName,
-    base::{Disableable, Selectable, StyledExt, TestSupportExt},
+    base::{Disableable, StyledExt, TestSupportExt},
     component::{
         ActiveTheme, Icon, Sizable,
         button::{Button, ButtonVariants},
@@ -141,7 +142,7 @@ pub fn operations(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                             .ghost()
                             .small()
                             .label(summary)
-                            .selected(app.loading_details_open)
+                            .selected_accent(app.loading_details_open)
                             .on_click(cx.listener(|app, _, _, cx| {
                                 app.loading_details_open = !app.loading_details_open;
                                 cx.notify();

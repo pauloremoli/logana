@@ -1,7 +1,8 @@
+use super::SelectionButton;
 use crate::gui::{actions::Action, app::App, message::Message, preview};
 use gpui_kit::{
     assets::IconName,
-    base::{Disableable, Selectable, TestSupportExt},
+    base::{Disableable, TestSupportExt},
     component::{
         ActiveTheme, Sizable,
         button::{Button, ButtonGroup, ButtonVariants},
@@ -78,10 +79,10 @@ pub fn panel(app: &App, viewport: f32, cx: &mut Context<App>) -> Option<AnyEleme
             .child(Button::new("inspector-close").ghost().icon(IconName::X).accessibility_label("Close row inspector")
                 .on_click(cx.listener(|app, _, window, cx| { app.inspected_row = None; app.root_focus.focus(window, cx); cx.notify(); }))))
         .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("{} · source row {}", tab.title, line + 1)))
-        .child(ButtonGroup::new("inspector-view").outline().small()
-            .child(Button::new("inspector-parsed").label("Parsed").selected(!raw)
+        .child(ButtonGroup::new("inspector-view").small()
+            .child(Button::new("inspector-parsed").label("Parsed").selected_accent(!raw)
                 .on_click(cx.listener(|app, _, _, cx| { app.inspector_raw = false; cx.notify(); })))
-            .child(Button::new("inspector-raw").label("Raw").selected(raw)
+            .child(Button::new("inspector-raw").label("Raw").selected_accent(raw)
                 .on_click(cx.listener(|app, _, _, cx| { app.inspector_raw = true; cx.notify(); }))))
         .child(div().id("inspector-content").flex_1().min_h(px(0.)).overflow_y_scroll()
             .child(if raw {
