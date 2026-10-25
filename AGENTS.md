@@ -10,6 +10,8 @@ do not affect users do not need a changelog entry.
 
 # Development rules
 
+- Read and follow [the architecture rules](agents/architecture.md) when changing
+  application code, including shared logic and the GUI/TUI frontends.
 - Maintain at least 80% test coverage.
 - Use RED/GREEN TDD: write a failing test first, confirm it fails, then implement
   the smallest change that makes it pass. Refactor while keeping tests green.
