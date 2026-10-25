@@ -54,7 +54,13 @@ fn convert_analysedoc(xml_text: &str) -> Result<Vec<FilterDef>, String> {
             filter_type: FilterType::Include,
             enabled: true,
             color_config: Some(ColorConfig {
-                fg: Some(Color::Black),
+                fg: Some(
+                    attrs
+                        .get("fgColor")
+                        .map(|fg| map_bg_color(fg))
+                        .transpose()?
+                        .unwrap_or_else(|| readable_import_foreground(bg_color)),
+                ),
                 bg: Some(bg_color),
                 match_only: true,
             }),
@@ -69,14 +75,14 @@ fn convert_analysedoc(xml_text: &str) -> Result<Vec<FilterDef>, String> {
 fn convert_userlang(xml_text: &str) -> Result<Vec<FilterDef>, String> {
     let mut filters = Vec::new();
 
-    let mut styles: HashMap<u32, (String, String)> = HashMap::new();
+    let mut styles: HashMap<u32, (Option<String>, String)> = HashMap::new();
     for caps in WORDS_STYLE_RE.captures_iter(xml_text) {
         let n: u32 = caps[1]
             .parse()
             .map_err(|_| "invalid WordsStyle index".to_string())?;
         let attrs = parse_attrs(&caps[2]);
-        if let (Some(fg), Some(bg)) = (attrs.get("fgColor"), attrs.get("bgColor")) {
-            styles.insert(n, (fg.clone(), bg.clone()));
+        if let Some(bg) = attrs.get("bgColor") {
+            styles.insert(n, (attrs.get("fgColor").cloned(), bg.clone()));
         }
     }
 
@@ -90,10 +96,16 @@ fn convert_userlang(xml_text: &str) -> Result<Vec<FilterDef>, String> {
         let Some((fg, bg)) = styles.get(&n) else {
             continue;
         };
-        let fg_color = Color::from_str(&format!("#{fg}"))
-            .map_err(|_| format!("Invalid fgColor '{fg}' for Keywords{n}"))?;
         let bg_color = Color::from_str(&format!("#{bg}"))
             .map_err(|_| format!("Invalid bgColor '{bg}' for Keywords{n}"))?;
+        let fg_color = fg
+            .as_ref()
+            .map(|fg| {
+                Color::from_str(&format!("#{fg}"))
+                    .map_err(|_| format!("Invalid fgColor '{fg}' for Keywords{n}"))
+            })
+            .transpose()?
+            .unwrap_or_else(|| readable_import_foreground(bg_color));
         for token in text.split_whitespace() {
             filters.push(FilterDef {
                 id: filters.len(),
@@ -112,6 +124,22 @@ fn convert_userlang(xml_text: &str) -> Result<Vec<FilterDef>, String> {
         }
     }
     Ok(filters)
+}
+
+/// Choose black or white using the shared contrast rule. Named backgrounds
+/// use the same RGB values as the GUI's ANSI palette.
+fn readable_import_foreground(bg: Color) -> Color {
+    let rgb = match bg {
+        Color::Green => (0, 128, 0),
+        Color::Red => (128, 0, 0),
+        Color::Yellow => (128, 128, 0),
+        Color::Cyan => (0, 128, 128),
+        Color::LightGreen => (0, 255, 0),
+        Color::LightRed => (255, 0, 0),
+        other => crate::theme::color_to_rgb(other),
+    };
+    let (r, g, b) = crate::theme::readable_foreground_for(rgb);
+    Color::Rgb(r, g, b)
 }
 
 /// Maps a Notepad++ `bgColor` value (named or `#RRGGBB`) to a `Color` logana
@@ -201,6 +229,39 @@ mod tests {
     "#;
 
     #[test]
+    fn background_only_imports_generate_readable_foregrounds() {
+        for bg in ["000000", "FFFFFF", "112233", "777777", "FF0000", "00FF00"] {
+            for xml in [
+                format!(r##"<AnalyseDoc><SearchText bgColor="#{bg}">x</SearchText></AnalyseDoc>"##),
+                format!(
+                    r#"<UserLang><Keywords name="Keywords1">x</Keywords><WordsStyle name="KEYWORDS1" bgColor="{bg}" /></UserLang>"#
+                ),
+            ] {
+                let filters = convert_npp_xml(&xml).unwrap();
+                assert_eq!(filters.len(), 1, "{xml}");
+                let colors = filters[0].color_config.as_ref().unwrap();
+                let fg = crate::theme::color_to_rgb(colors.fg.unwrap());
+                let bg = crate::theme::color_to_rgb(colors.bg.unwrap());
+                assert!(
+                    crate::theme::contrast_ratio(fg, bg) >= crate::theme::MIN_READABLE_CONTRAST,
+                    "{xml}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn analysedoc_preserves_explicit_foreground() {
+        let filters =
+            convert_npp_xml(r##"<SearchText bgColor="#000000" fgColor="#123456">x</SearchText>"##)
+                .unwrap();
+        assert_eq!(
+            filters[0].color_config.as_ref().unwrap().fg,
+            Some(Color::Rgb(0x12, 0x34, 0x56))
+        );
+    }
+
+    #[test]
     fn test_analysedoc_maps_named_color_and_group() {
         let filters = convert_npp_xml(ANALYSEDOC_XML).unwrap();
         let error_filter = &filters[0];
@@ -209,7 +270,7 @@ mod tests {
         assert_eq!(error_filter.group.as_deref(), Some("errs"));
         assert!(!error_filter.use_regex);
         let cc = error_filter.color_config.as_ref().unwrap();
-        assert_eq!(cc.fg, Some(Color::Black));
+        assert_eq!(cc.fg, Some(Color::Rgb(255, 255, 255)));
         assert_eq!(cc.bg, Some(Color::Green));
         assert!(cc.match_only);
     }

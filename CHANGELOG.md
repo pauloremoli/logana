@@ -18,6 +18,8 @@ All notable changes to logana will be documented in this file.
 - [gui] Default archive extraction to the archive's folder (or `--out`), save merged logs under an archive-named folder.
 
 ### Fixed
+- [gui] Make selected options clearly visible across editors and controls, and improve switch-thumb contrast in light and dark themes.
+- [core] Generate readable text colors for Notepad++ filter imports with a background but no text color.
 - [gui] Disable bookmark styling in marks-only mode and restore it when returning to all logs.
 - Keep format parsing active in raw display mode for field and date filters, level navigation, and continuation records.
 - [gui] Search raw log text regardless of column layout or hidden fields, matching text filters and preserving patterns such as `ERR/Component`.
