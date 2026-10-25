@@ -2,6 +2,21 @@
 
 Log analysis tool built in Rust with independent Ratatui TUI and GPUI GUI frontends. Filters and UI context are persisted in SQLite.
 
+## Workspace and Feature Boundaries
+
+The workspace has three packages. Frontend implementations remain in the root library; the sibling packages select features and provide installable binary targets.
+
+| Package / configuration | Features on `logana` | Targets and entry points |
+|---|---|---|
+| `logana` (default) | `tui` | Shared library, `logana` (`src/main.rs`), and `schema` (`src/bin/schema.rs`) |
+| `logana --no-default-features` | Neither frontend | Shared library and `schema`; the `logana` binary requires `tui` |
+| `logana-gui` | `gui`, default features disabled | `logana-gui` (`crates/logana-gui/src/main.rs`) |
+| `logana-full` | `tui` + `gui`, default features disabled | `logana`, `logana-gui`, and `schema`, reusing the same entry-point sources |
+
+Cargo features are additive. `tui` enables Ratatui, Crossterm, and Arboard; `gui` enables GPUI Kit and Futures. `gui-test` adds GPUI test support. Building both frontends produces two independent executables, each with its own application state and event loop.
+
+Core builds have neither frontend's dependencies. GUI-only builds exclude terminal dependencies, and TUI-only builds exclude GPUI. `scripts/check-feature-deps.py` verifies these normal/build dependency graphs and binary feature requirements. CI builds and tests core, TUI, GUI, and full configurations separately.
+
 ## High-Level Design
 
 logana is structured around a strict separation between domain logic and the UI layer, divided into the following concerns:
@@ -12,21 +27,21 @@ logana is structured around a strict separation between domain logic and the UI 
 
 **Filter Pipeline** (`filters/`) — `FilterManager` compiles filter definitions into Aho-Corasick automata or regexes and evaluates them against every line to produce a visibility bitmap. Each filter has a `FilterType` of `Include`, `Exclude`, or `Highlight`; `Highlight` filters apply their styling like `Include` but never contribute to the visibility decision. `FilterState::highlight_mode` (toggled with `H` in normal mode) is a separate, temporary override that makes every active filter — regardless of its own type — apply styling only, bypassing visibility for the whole tab. The pipeline runs in a background thread. Filter definitions are persisted to SQLite and reloaded on startup.
 
-**Mode System** (`mode/`) — Modal UI where each mode owns keyboard input and returns a `KeyResult` for effects that cross mode boundaries. Example of modes: Normal, Command, Search, Filter, Visual, Comment. Each window is also treated as a mode.
+**TUI Mode System** (`mode/`) — Modal UI where each mode owns keyboard input and returns a `KeyResult` for effects that cross mode boundaries. Example of modes: Normal, Command, Search, Filter, Visual, Comment. Each window is also treated as a mode.
 
-**Shared application data** (`shared/`, `style.rs`) — Tab state, sessions, field layout, themes, command helpers, and color/style data are independent of frontend dependencies. Modes share input and interaction state; terminal status bars and render caches are gated by `tui`. Existing `ui` paths re-export shared types for compatibility.
+**Shared application data** (`shared/`, `style.rs`) — Tab state, sessions, field layout, themes, command helpers, and color/style data are independent of frontend dependencies. `input.rs` defines backend-independent key codes and modifiers used by modes and keybinding configuration. Mode status bars, terminal color/style adapters, and terminal render caches are gated by `tui`; GUI filter-style caches are gated by `gui`. Existing `ui` paths re-export shared types for compatibility, and crate-root `theme` and `value_colors` re-export their shared modules.
 
 **GUI** (`gui/`, feature `gui`) — GPUI rendering and native controls use shared tab data with GUI-owned action and editor state. Mouse controls dispatch typed operations; the action launcher opens from its button, `:`, or `Ctrl+Shift+P`. TUI modes and keybindings do not handle GUI input. GPUI receives colors through a frontend adapter.
 
 **TUI & Rendering** (`ui/`, default feature `tui`) — The renderer reads tab state and produces widgets each frame; it never mutates state. The event loop dispatches key events to the active mode. Session state is persisted to SQLite and restored on reopen.
 
-**Persistence** (`db/`) — `Database` owns the SQLite connection pool and schema migrations. `Database::open`/`in_memory` run pragmas and every `migrate_to_vN` step on one dedicated connection acquired up front, rather than letting each statement round-trip through the pool independently — schema-changing statements (especially the `filters` table rebuild in `migrate_to_v12`) must not be interleaved with another pooled connection observing a stale view of the schema. Storage is accessed through four traits: `FilterStore` (filter definitions), `FileContextStore` (per-file scroll/search/display context), `SessionStore` (open file list), and `AppSettingsStore` (runtime toggles keyed by `SettingsKey`). `LogManager` builds `FilterManager` instances from persisted filter definitions. `MarkManager` and `CommentManager` are in-memory managers owned by `TabState`; their state is flushed to SQLite via `FileContext` on tab close/switch. Session save/restore is coordinated by `SessionManager` in `shared/session.rs`.
+**Persistence** (`db/`) — `Database` owns the SQLite connection pool and schema migrations. `Database::open`/`in_memory` run pragmas and every `migrate_to_vN` step on one dedicated connection acquired up front, rather than letting each statement round-trip through the pool independently — schema-changing statements (especially the `filters` table rebuild in `migrate_to_v12`) must not be interleaved with another pooled connection observing a stale view of the schema. Storage is accessed through four traits: `FilterStore` (filter definitions), `FileContextStore` (per-file scroll/search/display context), `SessionStore` (open file list), and `AppSettingsStore` (runtime toggles keyed by `SettingsKey`). `LogManager` builds `FilterManager` instances from persisted filter definitions. `MarkManager` and `CommentManager` are in-memory managers owned by `TabState`; their state is flushed to SQLite via `FileContext` on tab close/switch. The TUI coordinates session save/restore through `SessionManager` in `shared/session.rs`. The GUI uses `gui/persistence.rs` for preferences, file context, and session persistence, sharing storage keys and the `shared::session::session_source_files` eligibility helper.
 
 ## Custom Schema Loading
 
 User-defined schemas are loaded once at startup into a process-level `OnceLock` via `config::init_schemas()`. Every call to `detect_format` reads them from `config::custom_schemas()` without any parameter threading — schemas are automatically available to all code paths (startup, `:open`, streaming sources, Docker, DLT).
 
-`config::load_schemas` returns both the successfully loaded schemas and a list of per-file errors (malformed JSON); `parser::validate_custom_schemas` additionally compiles each loaded schema's template/pattern and collects compilation errors. Both error lists feed into `app.session.startup_warnings`, surfaced as a notification once the TUI opens, instead of silently dropping the offending schema from format detection.
+`config::load_schemas` returns both the successfully loaded schemas and a list of per-file errors (malformed JSON); `parser::validate_custom_schemas` additionally compiles each loaded schema's template/pattern and collects compilation errors. Both error lists feed into `app.session.startup_warnings`, surfaced as a notification once the TUI opens, instead of silently dropping the offending schema from format detection. The GUI entry point performs the same schema initialization and validation, reporting startup schema warnings to stderr before opening its window.
 
 ```mermaid
 graph LR
@@ -52,10 +67,17 @@ For a `template`-based schema, `CustomParser` also compiles the template into an
 
 ```mermaid
 graph TD
-    CLI[CLI / main.rs] -->|creates| App[App]
-    App -->|owns| Tab[TabState ×N]
+    CLI["logana / src/main.rs"] -->|creates| App["ui::App (tui)"]
+    Desktop["logana-gui / crates/logana-gui/src/main.rs"] -->|creates| GuiApp["gui::app::App (gui)"]
+    App -->|owns| Tab["shared::TabState ×N (per frontend)"]
     App -->|owns| Session[SessionManager]
-    App -->|renders via| Renderer[Renderer]
+    App -->|renders via| Renderer["ui renderer / Ratatui"]
+    GuiApp -->|owns| GuiState[GuiState]
+    GuiState -->|owns| Tab
+    GuiApp -->|renders via| View["gui::view / GPUI Kit"]
+    View -->|reads| GuiState
+    GuiApp -->|saves via| Persistence["gui::persistence"]
+    Persistence -->|shared storage traits| DB
     Tab -->|owns| Scroll[ScrollState]
     Tab -->|owns| Filter[FilterState]
     Tab -->|owns| Search[SearchState]
@@ -74,12 +96,36 @@ graph TD
     FileReader -->|reads| Files[(Log files / stdin / streams)]
     Renderer -->|reads| Tab
     App -->|snapshot| MCP[MCP Server]
+    GuiApp -->|snapshot| MCP
     MCP -->|McpCommand| App
+    MCP -->|McpCommand| GuiApp
 ```
 
 `TabState` is decomposed into focused sub-structs (`ScrollState`, `FilterState`, `SearchState`, `CacheState`, `StreamState`, `DisplayConfig`, `InteractionState`). All `impl TabState` methods remain on `TabState` to avoid cross-cutting borrow complexity.
 
+## Frontend Control Flow
+
+The TUI entry point owns terminal setup/cleanup and the Tokio event loop. `ui::App` routes input to `mode/` implementations and applies their `KeyResult` effects; `ui/render.rs` and `ui/widgets/` render the resulting state. The `ui` application, handlers, renderer, and widgets compile only with `tui`; mode logic remains available without terminal rendering.
+
+The GUI entry point initializes GPUI Kit, assets, the theme, and a window containing `gui::app::App`. Its `GuiState` owns shared tabs plus desktop preferences, selections, editors, and navigation state. Native controls and GUI keybindings produce `Message` values. `gui::update::update` changes state and returns an `Effect`; `App` executes asynchronous work or widget actions and dispatches completion messages. `gui::runtime` supplies the Tokio runtime for background work.
+
+```mermaid
+graph LR
+    Input[GUI controls / keyboard] --> Message
+    Message --> Dispatch[App.dispatch]
+    Dispatch --> Update[gui::update::update]
+    Update --> State[GuiState / shared tabs]
+    Update --> Effect
+    Effect --> Work[App effect execution / background tasks]
+    Work -->|completion Message| Dispatch
+    State --> View[gui::view]
+```
+
+Both frontends reuse ingestion and tab operations rather than routing GUI input through TUI modes. In particular, `ingestion/loading.rs::build_preview_tab` creates the initial file preview; full indexing runs in the background and updates the existing tab while preserving interaction state. Each frontend owns task scheduling, completion handling, and presentation.
+
 ## Merged View
+
+The flow below describes the TUI orchestration; the GUI coordinates merges in `gui/merge.rs` using the same shared merged-reader/index machinery.
 
 The `:merge` command opens a source-selection popup, then creates a new tab interleaving lines from the selected source tabs sorted by timestamp. No data is copied — the merged tab holds `Arc` references to the source `FileReader` instances.
 
@@ -101,11 +147,11 @@ Live updates are driven by `advance_merged_tabs`, which compares per-source line
 
 ## Commands
 
-`src/commands/` contains clap-derived command definitions shared across layers. `src/ui/commands/` contains the handlers that execute `:` commands.
+`src/commands/` contains shared clap-derived command definitions and completion support. `src/shared/command_helpers.rs` provides reusable command operations. `src/ui/commands/` contains TUI `:` command handlers. The GUI owns action/editor definitions in `gui/actions.rs`, launcher handling in `gui/palette.rs`, and dispatch through its message/effect flow; it reuses shared command definitions and helpers without invoking TUI modes.
 
 ## MCP Server
 
-An optional embedded MCP server (`mcp/`) exposes marks and annotations as resources and accepts tool calls that mutate TUI state. Tool calls are sent over an mpsc channel and applied by the event loop, keeping all mutable state on the TUI thread.
+An optional embedded MCP server (`mcp/`) exposes marks and annotations as resources for either frontend. The active frontend publishes an `McpSnapshot`; tool calls return over an mpsc channel as `McpCommand` values. The TUI applies them in its event loop; `gui/mcp.rs` polls and applies them to `GuiState`. Mutable application state stays on the owning frontend thread.
 
 ```mermaid
 graph LR
@@ -113,11 +159,13 @@ graph LR
     Snapshot -->|read_resource| Client[MCP Client]
     Client -->|tool call| Server[LoganaServer]
     Server -->|McpCommand| Ch[mpsc channel]
-    Ch -->|poll each frame| App[App event loop]
+    Ch -->|poll each frame| App[Owning frontend event loop]
     App -->|mutate| Tab
 ```
 
 ## Headless Mode
+
+`headless.rs`, `headless_merge.rs`, and CLI dispatch in `cli.rs` are shared and compile without either frontend. Both `logana` and `logana-gui` can process `--headless` before entering their interactive event loops.
 
 ```mermaid
 graph LR
@@ -156,6 +204,8 @@ graph LR
 ```
 
 ## Archive Decompression
+
+The flow below describes the TUI picker. The GUI owns its archive window and loading tasks in `gui/archive_window.rs` and `gui/loading.rs`, reusing `ingestion::archive_tree`, cancellable `ingestion::archive_job` operations, and shared archive selection/search helpers.
 
 Opening a compressed or archive file first lists its contents in a picker popup instead of extracting immediately; only the confirmed selection is extracted. No tab is created for the archive itself — only tabs for the extracted files the user selected.
 
