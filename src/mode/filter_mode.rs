@@ -35,6 +35,7 @@ pub struct FilterManagementMode {
 /// `NormalMode`'s discipline.
 fn stay_at(idx: usize, tab: &mut TabState) -> (Box<dyn Mode>, KeyResult) {
     tab.interaction.g_key_pressed = false;
+    tab.filter.navigation = None;
     (Box::new(FilterManagementMode::new(idx)), KeyResult::Handled)
 }
 
@@ -474,10 +475,12 @@ impl Mode for FilterManagementMode {
         }
 
         if kb.filter.exit_mode.matches(key, modifiers) {
+            tab.filter.navigation = None;
             tab.interaction.g_key_pressed = false;
             return (Box::new(NormalMode::default()), KeyResult::Handled);
         }
         if kb.filter.search.matches(key, modifiers) {
+            tab.filter.navigation = None;
             self.pre_search_selected = Some(self.selected_filter_index);
             self.search = String::new();
             self.searching = true;
@@ -531,6 +534,18 @@ impl Mode for FilterManagementMode {
                 return stay_at(idx, tab);
             }
             tab.interaction.g_key_pressed = true;
+            return (self, KeyResult::Handled);
+        }
+        if kb.filter.next_match.matches(key, modifiers)
+            || kb.filter.prev_match.matches(key, modifiers)
+        {
+            let count = self.count.take().unwrap_or(1);
+            tab.interaction.g_key_pressed = false;
+            tab.begin_selected_filter_match(
+                self.selected_filter_index,
+                kb.filter.next_match.matches(key, modifiers),
+                count,
+            );
             return (self, KeyResult::Handled);
         }
         if kb.filter.toggle_filter.matches(key, modifiers) {
@@ -632,6 +647,18 @@ impl Mode for FilterManagementMode {
         );
         status_entry(&mut spans, kb.filter.edit_filter.display(), "edit", theme);
         status_entry(&mut spans, kb.filter.set_color.display(), "color", theme);
+        status_entry(
+            &mut spans,
+            kb.filter.next_match.display(),
+            "next match",
+            theme,
+        );
+        status_entry(
+            &mut spans,
+            kb.filter.prev_match.display(),
+            "previous match",
+            theme,
+        );
         // Move up/down: <K/J>
         spans.push(Span::styled("<", Style::default().fg(theme.text)));
         spans.push(Span::styled(
@@ -764,6 +791,34 @@ mod tests {
     use crate::ingestion::FileReader;
     use crate::shared::{KeyResult, TabState};
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn selected_filter_navigation_handles_n_without_leaving_filter_mode() {
+        let mut tab = make_tab(&["hit one", "other", "hit two"]).await;
+        add_filter(&mut tab, "hit", FilterType::Highlight).await;
+        let (mode, result) = press(filter_mode(0), &mut tab, KeyCode::Char('n')).await;
+        assert!(matches!(result, KeyResult::Handled));
+        assert!(matches!(
+            mode.render_state(),
+            ModeRenderState::FilterManagement { .. }
+        ));
+        for (key, expected) in [(None, 2), (Some(KeyCode::Char('N')), 0)] {
+            if let Some(key) = key {
+                press(filter_mode(0), &mut tab, key).await;
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    if tab.advance_selected_filter_match().is_some() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(tab.scroll.scroll_offset, expected);
+        }
+    }
 
     async fn make_tab(lines: &[&str]) -> TabState {
         let data = lines.join("\n").into_bytes();

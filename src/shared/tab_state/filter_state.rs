@@ -53,6 +53,7 @@ pub struct FilterState {
     pub saved_view: Option<FilterViewSnapshot>,
     pub cached_scan: Option<CachedScanResult>,
     pub handle: Option<FilterHandle>,
+    pub navigation: Option<super::filter_navigation::FilterNavigation>,
     /// Parent line indices whose continuation-line visibility has been
     /// individually flipped away from `DisplayConfig::collapse_continuations`
     /// (the default) via the normal-mode `<` and `>` keys. A parent's
@@ -100,6 +101,7 @@ impl Default for FilterState {
             saved_view: None,
             cached_scan: None,
             handle: None,
+            navigation: None,
             overridden_groups: HashSet::new(),
             pre_collapse_visible: None,
         }

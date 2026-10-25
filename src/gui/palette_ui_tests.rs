@@ -3004,3 +3004,194 @@ fn timestamp_choices_keep_one_selection_when_clicked(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn selected_filter_navigation_uses_n_and_shift_n_from_the_sidebar(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1100., 900.), "dracula");
+    let db = Arc::new(runtime::handle().block_on(Database::in_memory()).unwrap());
+    let mut manager = runtime::handle().block_on(crate::db::LogManager::new(db, None));
+    runtime::handle().block_on(manager.add_filter_with_color(
+        "hit".into(),
+        crate::filters::FilterType::Highlight,
+        crate::filters::FilterOptions::default(),
+    ));
+    let id = manager.get_filters()[0].id;
+    cx.update_window(handle.into(), |_, window, cx| {
+        app.update(cx, |app, cx| {
+            let mut tab = crate::shared::TabState::new(
+                crate::ingestion::FileReader::from_bytes(
+                    b"hit first\nother\nhit second\n".to_vec(),
+                ),
+                manager,
+                "navigation.log".into(),
+            );
+            tab.display.show_sidebar = true;
+            app.state.tabs.push(tab);
+            app.root_focus.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.click(("filter-condition", id), cx);
+    })
+    .unwrap();
+    for (key, expected) in [("n", 2), ("shift-n", 0), ("shift-n", 2)] {
+        cx.update_window(handle.into(), |_, window, cx| window.press(key, cx))
+            .unwrap();
+        let started = std::time::Instant::now();
+        loop {
+            cx.background_executor
+                .advance_clock(std::time::Duration::from_millis(16));
+            cx.run_until_parked();
+            if cx.update(|cx| app.read(cx).state.tabs[0].filter.navigation.is_none()) {
+                break;
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(3));
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let state = &app.read(cx).state;
+            assert_eq!(state.tabs[0].scroll.scroll_offset, expected);
+            assert_eq!(
+                state.log_selection,
+                Some((state.tabs[0].id, expected, expected))
+            );
+            assert_eq!(state.sidebar_cursor, 0);
+            assert!(state.tabs[0].search.query.get_pattern().is_none());
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn search_navigation_moves_selection_with_buttons_and_keys(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            let tab = &mut app.state.tabs[0];
+            tab.file_reader =
+                crate::ingestion::FileReader::from_bytes(b"hit hit\nother\nhit\n".to_vec());
+            tab.filter.visible_indices = crate::shared::VisibleLines::All(3);
+            tab.search
+                .query
+                .search("hit", 0..3, |i| {
+                    Some(String::from_utf8_lossy(&tab.file_reader.get_line(i)).into_owned())
+                })
+                .unwrap();
+            tab.scroll.scroll_offset = 1;
+            tab.stream.tail_mode = true;
+            app.state.log_selection = Some((tab.id, 1, 1));
+            app.root_focus.focus(window, cx);
+        });
+        window.render_frame(cx);
+        for (key, expected, occurrence) in [
+            ("n", 0, 1),
+            ("n", 2, 0),
+            ("shift-n", 0, 1),
+            ("shift-n", 0, 0),
+            ("shift-n", 2, 0),
+        ] {
+            window.press(key, cx);
+            window.render_frame(cx);
+            let state = &app.read(cx).state;
+            let tab = &state.tabs[0];
+            assert_eq!(state.log_selection, Some((tab.id, expected, expected)));
+            assert_eq!(tab.scroll.scroll_offset, expected);
+            assert_eq!(tab.search.query.get_current_occurrence_index(), occurrence);
+            assert!(!tab.stream.tail_mode);
+        }
+        app.update(cx, |app, cx| {
+            app.dispatch(super::message::Message::SearchPopup(true), window, cx)
+        });
+        window.render_frame(cx);
+        for (button, expected) in [("search-next", 0), ("search-previous", 2)] {
+            window.click(button, cx);
+            window.render_frame(cx);
+            let state = &app.read(cx).state;
+            assert_eq!(
+                state.log_selection,
+                Some((state.tabs[0].id, expected, expected))
+            );
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn escape_and_mode_changes_clear_search_results(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        for key in ["f", "ctrl-g", ":"] {
+            app.update(cx, |app, cx| {
+                app.dispatch(
+                    super::message::Message::SearchEdited("plain".into()),
+                    window,
+                    cx,
+                );
+                app.root_focus.focus(window, cx);
+            });
+            window.render_frame(cx);
+            window.press(key, cx);
+            window.render_frame(cx);
+            let tab = &app.read(cx).state.tabs[0];
+            assert!(tab.search.query.get_pattern().is_none(), "{key}");
+            assert!(tab.search.query.get_results().is_empty());
+            assert!(tab.search.handle.is_none());
+            window.press("escape", cx);
+            window.render_frame(cx);
+        }
+        // Escape must clear even when a sidebar or visual selection consumes it.
+        for visual in [false, true] {
+            app.update(cx, |app, cx| {
+                app.dispatch(
+                    super::message::Message::SearchEdited("plain".into()),
+                    window,
+                    cx,
+                );
+                app.state.visual_lines = visual;
+                app.state.keyboard_sidebar = (!visual).then_some(super::state::SidebarTab::Filters);
+                app.root_focus.focus(window, cx);
+            });
+            window.render_frame(cx);
+            window.press("escape", cx);
+            window.render_frame(cx);
+            assert!(
+                app.read(cx).state.tabs[0]
+                    .search
+                    .query
+                    .get_pattern()
+                    .is_none()
+            );
+            assert!(app.read(cx).state.tabs[0].search.handle.is_none());
+        }
+        app.update(cx, |app, cx| {
+            app.state.tabs[0].display.sidebar_side = crate::shared::SidebarSide::Left;
+            app.state.tabs[0].display.show_sidebar = true;
+            app.dispatch(
+                super::message::Message::SearchEdited("plain".into()),
+                window,
+                cx,
+            );
+            app.dispatch(super::message::Message::SearchPopup(true), window, cx);
+        });
+        window.render_frame(cx);
+        window.click("sidebar-fields", cx);
+        window.render_frame(cx);
+        assert!(!app.read(cx).state.search_open);
+        assert!(app.read(cx).root_focus.is_focused(window));
+        assert!(
+            app.read(cx).state.tabs[0]
+                .search
+                .query
+                .get_pattern()
+                .is_none()
+        );
+        app.update(cx, |app, cx| {
+            app.dispatch(super::message::Message::SearchPopup(true), window, cx)
+        });
+        window.render_frame(cx);
+        assert_eq!(window.find("log-search-input").value(), Some(""));
+    })
+    .unwrap();
+}

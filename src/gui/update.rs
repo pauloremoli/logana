@@ -23,6 +23,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+pub(super) fn clear_search(state: &mut GuiState) {
+    state.search_open = false;
+    if let Some(tab) = state.active_tab_mut() {
+        tab.cancel_search();
+    }
+}
+
 /// The central reducer: every user intent (`Message`) flows through here,
 /// mutating `state` directly and returning an `Effect` describing any
 /// async work or imperative widget action the gpui glue layer (`App` in
@@ -68,7 +75,24 @@ pub fn update(state: &mut GuiState, message: Message) -> Effect {
     let before = source
         .and_then(|id| state.tabs.iter().find(|tab| tab.id == id))
         .map(crate::gui::history::Snapshot::new);
+    // Search belongs to the current interaction mode; navigation within that
+    // mode keeps it, while entering or leaving another mode discards it.
+    let interaction_mode = |state: &GuiState| {
+        (
+            state.keyboard_sidebar,
+            state.nav_page,
+            state.editor.as_ref().map(|editor| editor.action),
+            state.palette.visible(),
+            state.visual_lines,
+            state.facet_browser_open,
+            state.time_range_open,
+        )
+    };
+    let previous_mode = interaction_mode(state);
     let effect = update_inner(state, message);
+    if previous_mode != interaction_mode(state) {
+        clear_search(state);
+    }
     if let Some(editor) = state.editor.as_mut()
         && editor
             .validation_pending
@@ -679,13 +703,14 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
                 };
                 if let Some(result) = result {
                     let line = result.line_idx;
-                    tab.scroll.scroll_offset = tab
-                        .filter
-                        .visible_indices
-                        .position_of(line)
-                        .unwrap_or(tab.scroll.scroll_offset);
-                    if let Some(handle) = &mut tab.filter.handle {
-                        handle.scroll_anchor = Some(line);
+                    if let Some(row) = tab.filter.visible_indices.position_of(line) {
+                        tab.scroll.scroll_offset = row;
+                        tab.stream.tail_mode = false;
+                        if let Some(handle) = &mut tab.filter.handle {
+                            handle.scroll_anchor = Some(line);
+                        }
+                        let id = tab.id;
+                        state.log_selection = Some((id, row, row));
                     }
                 }
             }
@@ -2736,6 +2761,64 @@ mod tests {
             reloaded.get_group_styles(),
             "empty"
         ));
+    }
+
+    #[tokio::test]
+    async fn search_navigation_selects_the_current_result_row_and_stops_following() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let tab = &mut state.tabs[0];
+        tab.file_reader = FileReader::from_bytes(b"hit hit\nother\nhit\n".to_vec());
+        tab.filter.visible_indices = VisibleLines::All(3);
+        tab.search
+            .query
+            .search("hit", 0..3, |i| {
+                Some(String::from_utf8_lossy(&tab.file_reader.get_line(i)).into_owned())
+            })
+            .unwrap();
+        let id = tab.id;
+        tab.scroll.scroll_offset = 1;
+        tab.stream.tail_mode = true;
+        state.log_selection = Some((id, 1, 1));
+        for (forward, row, occurrence) in [
+            (true, 0, 1),
+            (true, 2, 0),
+            (false, 0, 1),
+            (false, 0, 0),
+            (false, 2, 0),
+        ] {
+            update(&mut state, Message::SearchNext(forward));
+            assert_eq!(state.log_selection, Some((id, row, row)));
+            assert_eq!(state.tabs[0].scroll.scroll_offset, row);
+            assert_eq!(
+                state.tabs[0].search.query.get_current_occurrence_index(),
+                occurrence
+            );
+            assert!(!state.tabs[0].stream.tail_mode);
+        }
+    }
+
+    #[tokio::test]
+    async fn changing_gui_modes_clears_search_and_cancels_pending_results() {
+        use crate::gui::actions::Action;
+        use crate::input::{KeyCode, KeyModifiers};
+        for message in [
+            Message::KeyPressed(KeyCode::Char('f'), KeyModifiers::NONE),
+            Message::KeyPressed(KeyCode::Char('g'), KeyModifiers::CONTROL),
+            Message::KeyPressed(KeyCode::Char('V'), KeyModifiers::NONE),
+            Message::GuiAction(Action::Filter),
+            Message::OpenCommands,
+            Message::SidebarTabSelected(crate::gui::state::SidebarTab::Groups),
+        ] {
+            let (mut state, _file) = state_with_one_tab().await;
+            update(&mut state, Message::SearchEdited("line".into()));
+            let cancel = state.tabs[0].search.handle.as_ref().unwrap().cancel.clone();
+            update(&mut state, message);
+            assert!(state.tabs[0].search.query.get_pattern().is_none());
+            assert!(state.tabs[0].search.query.get_results().is_empty());
+            assert!(state.tabs[0].search.handle.is_none());
+            assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+            assert!(!state.search_open);
+        }
     }
 
     async fn state_with_one_tab() -> (GuiState, tempfile::NamedTempFile) {

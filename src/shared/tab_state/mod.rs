@@ -21,6 +21,7 @@ use crate::utils::search::SearchResult;
 pub mod cache_state;
 pub mod display_config;
 mod filter_completion;
+pub mod filter_navigation;
 pub mod filter_state;
 pub mod interaction_state;
 pub mod merged;
@@ -1707,6 +1708,7 @@ impl TabState {
 
     /// Cancel any in-flight search, clear results, and invalidate the render cache.
     pub fn cancel_search(&mut self) {
+        self.filter.navigation = None;
         if let Some(ref h) = self.search.handle {
             h.cancel.store(true, Ordering::Relaxed);
         }
@@ -1885,6 +1887,7 @@ impl TabState {
     }
 
     pub fn begin_filter_refresh(&mut self) {
+        self.filter.navigation = None;
         self.filter.prepared = None;
         self.filter.completed = None;
         if let Some(ref h) = self.filter.handle {

@@ -215,6 +215,26 @@ impl App {
                                 }
                             }
                         }
+                        let mut no_filter_match = false;
+                        for (index, tab) in app.state.tabs.iter_mut().enumerate() {
+                            if let Some(found) = tab.advance_selected_filter_match() {
+                                filtering = true;
+                                if found {
+                                    let row = tab.scroll.scroll_offset;
+                                    if index == app.state.active_tab {
+                                        app.state.log_selection = Some((tab.id, row, row));
+                                        app.log_scroll.scroll_to_reveal_item(row);
+                                    }
+                                } else if index == app.state.active_tab {
+                                    no_filter_match = true;
+                                }
+                            }
+                        }
+                        if no_filter_match {
+                            app.state.notify(StatusMessage::Info(
+                                "No visible messages match the selected filter.".into(),
+                            ));
+                        }
                         app.finish_context_scroll();
                         if filtering {
                             if app
@@ -483,6 +503,7 @@ impl App {
             self.state.keyboard_sidebar,
             self.state.sidebar_cursor,
         );
+        let had_search_popup = self.state.search_open;
         let selection_viewport = self
             .state
             .log_selection
@@ -562,11 +583,28 @@ impl App {
         if let Some(open) = search_popup {
             if open && self.state.search_open {
                 if let Some(input) = &self.log_search {
+                    let query = self
+                        .state
+                        .active_tab()
+                        .and_then(|tab| tab.search.query.get_pattern())
+                        .unwrap_or_default()
+                        .to_string();
+                    if input.read(cx).value().as_ref() != query {
+                        input.update(cx, |input, cx| input.set_value(query, window, cx));
+                    }
                     input.read(cx).focus_handle(cx).focus(window, cx);
                 }
             } else if !open {
                 self.root_focus.focus(window, cx);
             }
+        }
+        if had_search_popup
+            && !self.state.search_open
+            && self.state.editor.is_none()
+            && !self.state.palette.visible()
+            && !self.state.time_range_open
+        {
+            self.root_focus.focus(window, cx);
         }
         if (closing_palette || had_editor)
             && self.state.editor.is_none()
@@ -1359,7 +1397,7 @@ impl Render for App {
                 &input,
                 window,
                 |app, input, event: &InputEvent, window, cx| match event {
-                    InputEvent::Change | InputEvent::Focus => {
+                    InputEvent::Change | InputEvent::Focus if app.state.search_open => {
                         app.dispatch(
                             Message::SearchEdited(input.read(cx).value().to_string()),
                             window,
@@ -1997,6 +2035,7 @@ impl Render for App {
                 if stroke.key == "escape" && app.state.visual_lines && context == "LoganaLogs" {
                     app.state.visual_lines = false;
                     app.state.log_selection = None;
+                    app.dispatch(Message::SearchEdited(String::new()), window, cx);
                     cx.stop_propagation();
                     cx.notify();
                     return;
@@ -2008,6 +2047,7 @@ impl Render for App {
                         && !app.state.search_open
                         && app.state.keyboard_sidebar.take().is_some()
                     {
+                        app.dispatch(Message::SearchEdited(String::new()), window, cx);
                         cx.stop_propagation();
                         cx.notify();
                         return;

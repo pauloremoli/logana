@@ -52,6 +52,7 @@ Press `f` to open the filter manager popup, which lists all active filters. Navi
 | `PageDown` / `PageUp` | Full page down / up |
 | `gg` / `G` | Jump to the first / last filter — `{count}gg` or `{count}G` jumps to filter N |
 | `/` | Search the filter list (see below) |
+| `n` / `N` | Jump to the next / previous visible log message matching the selected filter (wraps at either end) |
 | `Space` | Toggle selected filter on/off |
 | `e` | Edit selected filter's pattern |
 | `d` | Delete selected filter |

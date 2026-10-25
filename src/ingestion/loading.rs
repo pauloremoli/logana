@@ -1561,6 +1561,7 @@ impl App {
         use tokio::sync::mpsc::error::TryRecvError;
 
         for tab in &mut self.tabs {
+            tab.advance_selected_filter_match();
             let Some(ref mut h) = tab.search.handle else {
                 continue;
             };

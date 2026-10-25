@@ -222,6 +222,8 @@ fn filter_row(
             gpui_kit::gpui::MouseButton::Left,
             cx.listener(move |app, _, window, cx| {
                 app.root_focus.focus(window, cx);
+                crate::gui::update::clear_search(&mut app.state);
+                app.state.tabs[tab_idx].filter.navigation = None;
                 app.state.keyboard_sidebar = Some(crate::gui::state::SidebarTab::Filters);
                 app.state.sidebar_cursor = app.state.tabs[tab_idx]
                     .log_manager

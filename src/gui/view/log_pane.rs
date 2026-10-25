@@ -929,10 +929,58 @@ pub(crate) fn raw_log_text(text: &str) -> String {
         .to_string()
 }
 
+/// Map the active raw-text occurrence to this cell, even when another column
+/// contains identical text. Parser slices retain their original byte offsets.
+fn current_search_range(
+    tab: &TabState,
+    line: usize,
+    field: &str,
+    text: &str,
+) -> Option<std::ops::Range<usize>> {
+    let result = tab
+        .search
+        .query
+        .get_current_match()
+        .filter(|r| r.line_idx == line)?;
+    let &(start, end) = result
+        .matches
+        .get(tab.search.query.get_current_occurrence_index())?;
+    // Searches and displayed values both use normalized source bytes.
+    let raw = tab.file_reader.get_line(line);
+    let parts = tab.display.format.as_ref().and_then(|p| p.parse_line(&raw));
+    let value = if matches!(field, "message" | "msg") {
+        row_message_bytes(tab, &raw)
+    } else {
+        crate::filters::resolve_field(field, parts.as_ref()?)?.as_bytes()
+    };
+    let offset = (value.as_ptr() as usize).checked_sub(raw.as_ptr() as usize)?;
+    if offset.checked_add(value.len())? > raw.len()
+        || start >= offset + value.len()
+        || end <= offset
+    {
+        return None;
+    }
+    if matches!(field, "level" | "lvl") {
+        return Some(0..text.len());
+    }
+    let prefix = if tab.display.show_keys
+        && !matches!(field, "timestamp" | "time" | "ts" | "message" | "msg")
+    {
+        field.len() + 1
+    } else {
+        0
+    };
+    let start = prefix + start.saturating_sub(offset);
+    let end = (prefix + end.saturating_sub(offset)).min(text.len());
+    (start < end && text.is_char_boundary(start) && text.is_char_boundary(end))
+        .then_some(start..end)
+}
+
 fn search_highlights(
     text: &str,
     search: &crate::utils::search::Search,
     theme: &TuiTheme,
+    current: Option<std::ops::Range<usize>>,
     highlights: Vec<(std::ops::Range<usize>, gpui_kit::gpui::HighlightStyle)>,
 ) -> Vec<(std::ops::Range<usize>, gpui_kit::gpui::HighlightStyle)> {
     let Some(pattern) = search.get_compiled_pattern() else {
@@ -943,11 +991,16 @@ fn search_highlights(
         .filter(|m| m.start() < m.end())
         .map(|m| m.range())
         .collect();
-    if matches.is_empty() {
+    if matches.is_empty() && current.is_none() {
         return highlights;
     }
     let mut boundaries = vec![0, text.len()];
-    for range in highlights.iter().map(|(range, _)| range).chain(&matches) {
+    for range in highlights
+        .iter()
+        .map(|(range, _)| range)
+        .chain(&matches)
+        .chain(current.iter())
+    {
         boundaries.extend([range.start, range.end]);
     }
     boundaries.sort_unstable();
@@ -963,6 +1016,14 @@ fn search_highlights(
             if matches.iter().any(|range| range.contains(&pair[0])) {
                 style.color = color_to_gpui(theme.search_fg).map(Into::into);
                 style.background_color = color_to_gpui(theme.text_highlight_fg).map(Into::into);
+            }
+            if current
+                .as_ref()
+                .is_some_and(|range| range.contains(&pair[0]))
+            {
+                style.color = color_to_gpui(theme.text_highlight_fg).map(Into::into);
+                style.background_color = color_to_gpui(theme.search_fg).map(Into::into);
+                style.font_weight = Some(FontWeight::BOLD);
             }
             (pair[0]..pair[1], style)
         })
@@ -1134,7 +1195,8 @@ fn selectable_cell(
         highlights = overlay_filter(&raw, text, Some(filter), highlights);
     }
     let filter_style = filter_styles.iter().find(|style| style.whole_line);
-    highlights = search_highlights(text, &tab.search.query, theme, highlights);
+    let current = current_search_range(tab, line, field, text);
+    highlights = search_highlights(text, &tab.search.query, theme, current, highlights);
     let selection = document.borrow().range(position, column, text.len());
     let chunks = if tab.display.wrap {
         wrap_text(text, (width - 16.).max(8.) / font_scale)
@@ -1450,7 +1512,8 @@ mod tests {
         let mut search = crate::utils::search::Search::new();
         search.set_pattern(regex::Regex::new("(?i)érr(or)?").unwrap(), true);
         let text = "éRRor plain érr";
-        let highlights = search_highlights(text, &search, &theme, vec![(0..text.len(), original)]);
+        let highlights =
+            search_highlights(text, &search, &theme, None, vec![(0..text.len(), original)]);
         for (range, style) in &highlights {
             if text[range.clone()].starts_with('é') {
                 assert_eq!(style.color, color_to_gpui(theme.search_fg).map(Into::into));
@@ -1466,8 +1529,58 @@ mod tests {
         assert_eq!(highlights.len(), 3);
         search.clear();
         assert_eq!(
-            search_highlights(text, &search, &theme, vec![(0..text.len(), original)]).len(),
+            search_highlights(text, &search, &theme, None, vec![(0..text.len(), original)]).len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn current_search_highlight_tracks_occurrences_and_raw_column_offsets() {
+        let mut tab = tab().await;
+        let raw = br#"{"level":"INFO","target":"needle","message":"needle needle"}"#;
+        tab.file_reader = FileReader::from_bytes(raw.to_vec());
+        tab.display.format = crate::parser::detect_format(&[raw.as_slice()]).map(Arc::from);
+        tab.search
+            .query
+            .search("needle", std::iter::once(0), |_| {
+                Some(String::from_utf8_lossy(raw).into_owned())
+            })
+            .unwrap();
+        assert_eq!(
+            current_search_range(&tab, 0, "target", "needle"),
+            Some(0..6)
+        );
+        assert_eq!(
+            current_search_range(&tab, 0, "message", "needle needle"),
+            None
+        );
+        tab.search.query.next_match();
+        assert_eq!(current_search_range(&tab, 0, "target", "needle"), None);
+        assert_eq!(
+            current_search_range(&tab, 0, "message", "needle needle"),
+            Some(0..6)
+        );
+        tab.search.query.next_match();
+        let active = current_search_range(&tab, 0, "message", "needle needle");
+        assert_eq!(active, Some(7..13));
+        assert_eq!(
+            current_search_range(&tab, 1, "message", "needle needle"),
+            None
+        );
+        let theme = TuiTheme::default();
+        let highlights =
+            search_highlights("needle needle", &tab.search.query, &theme, active, vec![]);
+        let ordinary = highlights.iter().find(|(r, _)| r.start == 0).unwrap().1;
+        let current = highlights.iter().find(|(r, _)| r.start == 7).unwrap().1;
+        assert_ne!(ordinary.background_color, current.background_color);
+        assert_eq!(current.color, ordinary.background_color);
+        assert_eq!(current.background_color, ordinary.color);
+        assert_eq!(current.font_weight, Some(FontWeight::BOLD));
+        tab.search.query.next_match();
+        tab.display.show_keys = true;
+        assert_eq!(
+            current_search_range(&tab, 0, "target", "target=needle"),
+            Some(7..13)
         );
     }
 

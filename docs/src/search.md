@@ -55,3 +55,5 @@ When wrap is disabled, navigating to a match with `n` or `N` also adjusts the ho
 | Regex support | Yes | Yes |
 
 Use **filters** to permanently narrow the view. Use **search** to navigate through specific patterns within the already-filtered view.
+
+Switching to another interaction mode, such as the filter or group sidebar, clears the current search and its highlights. Escape also cancels any search still running in the background.

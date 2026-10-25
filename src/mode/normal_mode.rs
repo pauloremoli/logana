@@ -42,6 +42,21 @@ impl Mode for NormalMode {
         // Clone the Arc so we can mutate `tab` freely in each branch.
         let kb = tab.interaction.keybindings.clone();
 
+        if [
+            &kb.normal.filter_mode,
+            &kb.normal.group_mode,
+            &kb.normal.command_mode,
+            &kb.normal.enter_ui_mode,
+            &kb.normal.visual_mode,
+            &kb.normal.visual_char,
+            &kb.normal.show_keybindings,
+        ]
+        .iter()
+        .any(|binding| binding.matches(key, modifiers))
+        {
+            tab.cancel_search();
+        }
+
         // Digits 1-9 start a count; 0 appends when count is already active.
         if let KeyCode::Char(c @ '1'..='9') = key
             && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
@@ -1285,6 +1300,23 @@ mod tests {
             mode.render_state(),
             ModeRenderState::KeybindingsHelp { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn changing_modes_clears_inflight_search() {
+        for (key, modifiers) in [
+            (KeyCode::Char('f'), KeyModifiers::NONE),
+            (KeyCode::Char('g'), KeyModifiers::CONTROL),
+            (KeyCode::Char(':'), KeyModifiers::NONE),
+        ] {
+            let mut tab = make_tab(&["error line", "info line"]).await;
+            tab.begin_search("error", true, true);
+            let cancel = tab.search.handle.as_ref().unwrap().cancel.clone();
+            press(&mut tab, key, modifiers).await;
+            assert!(tab.search.query.get_pattern().is_none());
+            assert!(tab.search.handle.is_none());
+            assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+        }
     }
 
     #[tokio::test]

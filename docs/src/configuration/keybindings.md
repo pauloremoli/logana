@@ -95,6 +95,8 @@ Multiple alternatives:
 
 ```json
 "filter": {
+  "next_match": "n",
+  "prev_match": "N",
   "toggle_filter": "Space",
   "edit_filter": "e",
   "delete_filter": "d",
@@ -114,6 +116,8 @@ Multiple alternatives:
 ```
 
 The filter manager also reuses the shared `navigation` group above (`scroll_down`/`scroll_up`/`half_page_down`/`half_page_up`/`page_down`/`page_up`) and, for jump-to-top/bottom, the `normal.go_to_top_chord`/`normal.go_to_bottom` bindings — no separate fields needed for those.
+
+While a filter is selected in the filter sidebar, `filter.next_match` and `filter.prev_match` navigate matching visible messages without changing the text search. In the log view, `normal.next_match` and `normal.prev_match` continue navigating search results.
 
 ## Group Mode
 

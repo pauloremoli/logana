@@ -502,6 +502,15 @@ pub fn shortcuts(state: &GuiState) -> Vec<(&'static str, String, String)> {
             ),
         ),
         (
+            "Investigate",
+            "Next / previous selected filter match (filter sidebar)".into(),
+            format!(
+                "{} / {}",
+                kb.filter.next_match.display(),
+                kb.filter.prev_match.display()
+            ),
+        ),
+        (
             "General",
             "Available actions".into(),
             "Ctrl+Shift+P / :".into(),
@@ -680,6 +689,12 @@ pub fn sidebar_handled(state: &GuiState, key: KeyCode, modifiers: KeyModifiers) 
         return false;
     }
     let kb = bindings(state);
+    if state.keyboard_sidebar == Some(crate::gui::state::SidebarTab::Filters)
+        && (kb.filter.next_match.matches(key, modifiers)
+            || kb.filter.prev_match.matches(key, modifiers))
+    {
+        return true;
+    }
     [
         &kb.navigation.scroll_down,
         &kb.navigation.scroll_up,
@@ -709,6 +724,9 @@ fn apply_sidebar(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) ->
     let kb = bindings(state);
     let group = state.keyboard_sidebar == Some(SidebarTab::Groups);
     if kb.filter.exit_mode.matches(key, modifiers) {
+        if let Some(tab) = state.active_tab_mut() {
+            tab.filter.navigation = None;
+        }
         state.keyboard_sidebar = None;
         return Effect::None;
     }
@@ -722,9 +740,22 @@ fn apply_sidebar(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) ->
         tab.log_manager.get_filters().len()
     };
     state.sidebar_cursor = state.sidebar_cursor.min(count.saturating_sub(1));
+    if !group
+        && (kb.filter.next_match.matches(key, modifiers)
+            || kb.filter.prev_match.matches(key, modifiers))
+    {
+        let selected = state.sidebar_cursor;
+        state.tabs[state.active_tab].begin_selected_filter_match(
+            selected,
+            kb.filter.next_match.matches(key, modifiers),
+            1,
+        );
+        return Effect::None;
+    }
     if kb.navigation.scroll_down.matches(key, modifiers)
         || kb.navigation.page_down.matches(key, modifiers)
     {
+        state.tabs[state.active_tab].filter.navigation = None;
         state.sidebar_cursor = (state.sidebar_cursor
             + if kb.navigation.page_down.matches(key, modifiers) {
                 10
@@ -737,6 +768,7 @@ fn apply_sidebar(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) ->
     if kb.navigation.scroll_up.matches(key, modifiers)
         || kb.navigation.page_up.matches(key, modifiers)
     {
+        state.tabs[state.active_tab].filter.navigation = None;
         state.sidebar_cursor =
             state
                 .sidebar_cursor
@@ -844,6 +876,52 @@ fn apply_sidebar(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) ->
 #[cfg(test)]
 mod sidebar_tests {
     use super::*;
+    #[tokio::test]
+    async fn selected_filter_navigation_respects_custom_keys_and_sidebar_scope() {
+        let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let mut manager = crate::db::LogManager::new(db.clone(), None).await;
+        manager
+            .add_filter_with_color(
+                "hit".into(),
+                crate::filters::FilterType::Highlight,
+                crate::filters::FilterOptions::default(),
+            )
+            .await;
+        let mut state = GuiState::new(db);
+        let mut tab = crate::shared::TabState::new(
+            crate::ingestion::FileReader::from_bytes(b"start\nhit\n".to_vec()),
+            manager,
+            "test".into(),
+        );
+        let mut keys = crate::config::Keybindings::default();
+        keys.filter.next_match = serde_json::from_str("\"F6\"").unwrap();
+        tab.interaction.keybindings = std::sync::Arc::new(keys);
+        state.tabs.push(tab);
+        assert!(!sidebar_handled(&state, KeyCode::F(6), KeyModifiers::NONE));
+        state.keyboard_sidebar = Some(crate::gui::state::SidebarTab::Groups);
+        assert!(!sidebar_handled(&state, KeyCode::F(6), KeyModifiers::NONE));
+        state.keyboard_sidebar = Some(crate::gui::state::SidebarTab::Filters);
+        assert!(sidebar_handled(&state, KeyCode::F(6), KeyModifiers::NONE));
+        assert!(!sidebar_handled(
+            &state,
+            KeyCode::Char('n'),
+            KeyModifiers::NONE
+        ));
+        apply(&mut state, KeyCode::F(6), KeyModifiers::NONE);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if state.tabs[0].advance_selected_filter_match().is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(state.tabs[0].scroll.scroll_offset, 1);
+        assert!(state.tabs[0].search.query.get_pattern().is_none());
+    }
+
     #[tokio::test]
     async fn filter_keys_are_scoped_and_auto_filter_opens_a_prefilled_draft() {
         let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());

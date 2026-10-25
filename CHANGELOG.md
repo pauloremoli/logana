@@ -6,6 +6,7 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- [gui][tui] Jump to the next or previous visible message matching the selected filter with `n` / `N` in the filter sidebar.
 - [gui] Add an About page in the Help menu and command palette with version, author, license, and project links.
 - [gui] Add a separate file and folder picker, filename search, hidden-file visibility, and selections preserved while browsing.
 - [gui] Add an archive picker with automatic nested-archive listing, saved glob patterns reused across sessions, output folder selection.
@@ -20,6 +21,8 @@ All notable changes to logana will be documented in this file.
 - [gui] Default archive extraction to the archive's folder (or `--out`), save merged logs under an archive-named folder.
 
 ### Fixed
+- [gui][tui] Clear search results and highlights on Escape and when switching interaction modes, including entering the filter sidebar.
+- [gui] Move row selection with search navigation and distinguish the active occurrence with bold, reversed highlighting.
 - [gui] Use solid accent fills for selected options across editors and controls, with readable labels and improved switch-thumb contrast in light and dark themes.
 - [core] Generate readable text colors for Notepad++ filter imports with a background but no text color.
 - [gui] Disable bookmark styling in marks-only mode and restore it when returning to all logs.

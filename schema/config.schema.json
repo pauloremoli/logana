@@ -73,6 +73,8 @@
           "exit_mode": "Esc",
           "move_filter_down": "J",
           "move_filter_up": "K",
+          "next_match": "n",
+          "prev_match": "N",
           "search": "/",
           "set_color": "c",
           "toggle_all_filters": "A",
@@ -451,6 +453,8 @@
             "exit_mode": "Esc",
             "move_filter_down": "J",
             "move_filter_up": "K",
+            "next_match": "n",
+            "prev_match": "N",
             "search": "/",
             "set_color": "c",
             "toggle_all_filters": "A",
@@ -1108,6 +1112,22 @@
     "FilterKeybindings": {
       "type": "object",
       "properties": {
+        "next_match": {
+          "default": "n",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "prev_match": {
+          "default": "N",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
         "toggle_filter": {
           "default": "Space",
           "allOf": [

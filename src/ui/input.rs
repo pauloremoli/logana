@@ -318,6 +318,7 @@ impl App {
         } else {
             (current + delta as usize).min(num_filters - 1)
         };
+        tab.cancel_search();
         tab.interaction.mode = Box::new(FilterManagementMode::new(new_idx));
     }
 
@@ -359,11 +360,13 @@ impl App {
         }
         match sidebar_hit {
             Some(super::input_handler::SidebarHit::Filter(idx)) => {
+                self.tabs[self.active_tab].cancel_search();
                 self.tabs[self.active_tab].interaction.mode =
                     Box::new(FilterManagementMode::new(idx));
                 return;
             }
             Some(super::input_handler::SidebarHit::Group(name)) => {
+                self.tabs[self.active_tab].cancel_search();
                 self.tabs[self.active_tab].interaction.mode =
                     Box::new(crate::mode::group_mode::GroupManagementMode::new(name));
                 return;

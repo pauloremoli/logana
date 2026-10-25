@@ -370,6 +370,14 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
 
     rows.push(HelpRow::Header("Filter Mode".to_string()));
     rows.push(HelpRow::Entry {
+        action: "Next matching log message".into(),
+        keys: f.next_match.display(),
+    });
+    rows.push(HelpRow::Entry {
+        action: "Previous matching log message".into(),
+        keys: f.prev_match.display(),
+    });
+    rows.push(HelpRow::Entry {
         action: "Add include filter".into(),
         keys: f.add_include_filter.display(),
     });

@@ -726,6 +726,10 @@ fn default_filter_search() -> KeyBindings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FilterKeybindings {
+    #[serde(default = "default_next_match")]
+    pub next_match: KeyBindings,
+    #[serde(default = "default_prev_match")]
+    pub prev_match: KeyBindings,
     #[serde(default = "default_filter_toggle")]
     pub toggle_filter: KeyBindings,
     #[serde(default = "default_filter_delete")]
@@ -761,6 +765,8 @@ pub struct FilterKeybindings {
 impl Default for FilterKeybindings {
     fn default() -> Self {
         Self {
+            next_match: default_next_match(),
+            prev_match: default_prev_match(),
             toggle_filter: default_filter_toggle(),
             delete_filter: default_filter_delete(),
             move_filter_up: default_filter_move_up(),
@@ -1811,6 +1817,8 @@ impl Keybindings {
             ("navigation.page_up", &nav.page_up),
             ("normal.go_to_top_chord", &self.normal.go_to_top_chord),
             ("normal.go_to_bottom", &self.normal.go_to_bottom),
+            ("filter.next_match", &self.filter.next_match),
+            ("filter.prev_match", &self.filter.prev_match),
             ("filter.toggle_filter", &self.filter.toggle_filter),
             ("filter.delete_filter", &self.filter.delete_filter),
             ("filter.move_filter_up", &self.filter.move_filter_up),
