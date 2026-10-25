@@ -24,7 +24,6 @@ pub(super) fn page(cx: &mut Context<App>) -> impl IntoElement {
                         .text_color(cx.theme().muted_foreground)
                         .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
                 )
-                .child(env!("CARGO_PKG_DESCRIPTION"))
                 .child(format!("Created by {}", env!("CARGO_PKG_AUTHORS")))
                 .child(format!("License: {}", env!("CARGO_PKG_LICENSE")))
                 .child(

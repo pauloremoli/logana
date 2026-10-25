@@ -12,6 +12,7 @@ All notable changes to logana will be documented in this file.
 - [gui] Add optional automatic merging of numbered log rotations to open files and archive extraction.
 
 ### Changed
+- [gui] Remove the product description from the About page.
 - [gui] Add an explicit time-only option to timestamp filters for matching clock times across all dates.
 - [gui] Separate text and field filters in the filter editor, with visible controls to add, edit, and remove any number of field conditions.
 - [gui] Collect unique field values in the background after file loading, filtering, and log rendering finish.
