@@ -13,7 +13,7 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::color_picker::ColorPicker;
 use gpui_kit::component::date_picker::DatePicker;
 use gpui_kit::component::description_list::DescriptionList;
-use gpui_kit::component::group_box::GroupBoxVariant;
+use gpui_kit::component::group_box::{GroupBox, GroupBoxVariant, GroupBoxVariants};
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::select::Select;
@@ -262,6 +262,8 @@ fn timestamp_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
             } else {
                 "To (inclusive)"
             }
+        } else if time_only {
+            "Time"
         } else {
             "Date and time"
         });
@@ -287,11 +289,50 @@ fn timestamp_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
         .flex()
         .flex_col()
         .gap_3()
-        .child(if time_only {
-            "Clock-time condition"
-        } else {
-            "Date and time condition"
-        })
+        .child(
+            ButtonGroup::new("timestamp-scope")
+                .outline()
+                .small()
+                .child(
+                    Button::new("timestamp-date-and-time")
+                        .label("Date and time")
+                        .selected(!time_only)
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            let pattern = &app.state.editor.as_ref().unwrap().values[0];
+                            let (operator, _, _) = crate::gui::time_range::timestamp_parts(pattern);
+                            if time_only {
+                                let value =
+                                    crate::gui::time_range::timestamp_pattern(operator, "", "");
+                                app.dispatch(Message::EditorText(0, value), window, cx);
+                            }
+                        })),
+                )
+                .child(
+                    Button::new("timestamp-time-only")
+                        .label("Time only")
+                        .selected(time_only)
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            if !time_only {
+                                let pattern = &app.state.editor.as_ref().unwrap().values[0];
+                                let (operator, start, end) =
+                                    crate::gui::time_range::timestamp_parts(pattern);
+                                let clock = |bound: &str| {
+                                    bound
+                                        .split(['T', ' '])
+                                        .find(|part| part.contains(':'))
+                                        .unwrap_or("00:00:00")
+                                        .to_owned()
+                                };
+                                let value = crate::gui::time_range::timestamp_pattern(
+                                    operator,
+                                    &clock(start),
+                                    &clock(end),
+                                );
+                                app.dispatch(Message::EditorText(0, value), window, cx);
+                            }
+                        })),
+                ),
+        )
         .child(
             div()
                 .id("timestamp-comparison")
@@ -486,42 +527,126 @@ fn filter_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
             );
         }
         body = body.child(kinds);
+        let text_section = GroupBox::new()
+            .outline()
+            .title("Text filter")
+            .gap_2()
+            .child(text(app, 0, "Contains text (optional)", cx));
+        let mut options = div().flex().flex_wrap().gap_4();
+        for (i, (label, on)) in [
+            ("Regular expression", e.regex),
+            ("Ignore case", e.ignore_case),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            options = options.child(
+                Switch::new(("filter-option", i))
+                    .small()
+                    .label(label)
+                    .checked(on)
+                    .disabled(!e.values[1].is_empty() || !e.conditions.is_empty())
+                    .on_click(cx.listener(move |app, _, window, cx| {
+                        app.dispatch(Message::EditorToggle(i), window, cx)
+                    })),
+            );
+        }
         body = body.child(
+            div()
+                .id("filter-text-section")
+                .test_support()
+                .child(text_section.child(options)),
+        );
+        let mut fields = GroupBox::new()
+            .outline()
+            .title("Field filters")
+            .gap_3()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("All field filters and the text filter must match."),
+            );
+        for (i, (field, value)) in e.conditions.iter().enumerate() {
+            fields = fields.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .text_sm()
+                            .child(format!("{field} contains {value}")),
+                    )
+                    .child(
+                        Button::new(("condition-edit", i))
+                            .ghost()
+                            .small()
+                            .icon(IconName::Pencil)
+                            .accessibility_label("Edit condition")
+                            .tooltip("Edit condition")
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.dispatch(Message::EditorConditionEdit(i), window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new(("condition-remove", i))
+                            .ghost()
+                            .small()
+                            .icon(IconName::X)
+                            .accessibility_label("Remove condition")
+                            .tooltip("Remove condition")
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.dispatch(Message::EditorConditionRemove(i), window, cx)
+                            })),
+                    ),
+            );
+        }
+        fields = fields.child(
             div()
                 .flex()
                 .flex_col()
-                .gap_1()
-                .child(if app.field_discovery_task.is_some() {
-                    "Match in · loading fields…"
+                .gap_2()
+                .child(if e.condition_edit.is_some() {
+                    "Edit field filter"
                 } else {
-                    "Match in"
+                    "Add a field filter"
                 })
                 .children(app.editor_field_select.as_ref().map(|state| {
                     Select::new(state)
                         .id("filter-field-select")
                         .w_full()
-                        .placeholder("All text")
+                        .placeholder("Choose a field…")
                         .search_placeholder("Search fields…")
-                        .accessibility_label("Match in")
+                        .accessibility_label("Field")
                         .cleanable(true)
-                })),
+                }))
+                .child(text(app, 2, "Contains value", cx))
+                .child(
+                    button(
+                        "condition-add",
+                        if e.condition_edit.is_some() {
+                            "Update field filter"
+                        } else {
+                            "Add field filter"
+                        },
+                        || Message::EditorConditionAdd,
+                        cx,
+                    )
+                    .small()
+                    .outline()
+                    .icon(IconName::Plus)
+                    .disabled(e.values[1].trim().is_empty() || e.values[2].is_empty()),
+                ),
         );
-        body = body.child(if e.values[1].is_empty() {
-            text(app, 0, "Contains", cx)
-        } else {
-            text(app, 2, "Contains", cx)
-        });
-        if e.conditions.len() > 1 || (!e.conditions.is_empty() && e.condition_edit.is_none()) {
-            body = body.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!(
-                        "{} additional field conditions",
-                        e.conditions.len() - usize::from(e.condition_edit.is_some())
-                    )),
-            );
-        }
+        body = body.child(
+            div()
+                .id("filter-fields-section")
+                .test_support()
+                .child(fields),
+        );
     } else {
         body = body.child(timestamp_editor(app, cx));
     }
@@ -595,17 +720,11 @@ fn filter_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
                     } else {
                         IconName::ChevronDown
                     })
-                    .label(
-                        if e.regex
-                            || e.ignore_case
-                            || !e.values[3].is_empty()
-                            || e.conditions.len() > 1
-                        {
-                            "Advanced · active"
-                        } else {
-                            "Advanced"
-                        },
-                    )
+                    .label(if !e.values[3].is_empty() {
+                        "Advanced · active"
+                    } else {
+                        "Advanced"
+                    })
                     .on_click(cx.listener(|app, _, window, cx| {
                         app.dispatch(Message::EditorAdvanced, window, cx)
                     })),
@@ -647,82 +766,6 @@ fn filter_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
             .pt_3()
             .border_t_1()
             .border_color(cx.theme().border);
-        if !timestamp {
-            if !e.values[1].is_empty() {
-                advanced = advanced.child(text(app, 0, "Also contains text (optional)", cx));
-            }
-            let mut options = div().flex().flex_wrap().gap_4();
-            for (i, (label, on)) in [
-                ("Regular expression", e.regex),
-                ("Ignore case", e.ignore_case),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                options = options.child(
-                    Switch::new(("filter-option", i))
-                        .small()
-                        .label(label)
-                        .checked(on)
-                        .disabled(!e.values[1].is_empty() || !e.conditions.is_empty())
-                        .on_click(cx.listener(move |app, _, window, cx| {
-                            app.dispatch(Message::EditorToggle(i), window, cx)
-                        })),
-                );
-            }
-            advanced = advanced.child(options);
-            if !e.values[1].is_empty() {
-                advanced = advanced.child(
-                    button(
-                        "condition-add",
-                        "Keep condition and add another",
-                        || Message::EditorConditionAdd,
-                        cx,
-                    )
-                    .small()
-                    .outline()
-                    .icon(IconName::Plus)
-                    .disabled(e.values[2].is_empty()),
-                );
-            }
-            for (i, (field, value)) in e.conditions.iter().enumerate() {
-                advanced = advanced.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .text_sm()
-                                .child(format!("{field} contains {value}")),
-                        )
-                        .child(
-                            Button::new(("condition-edit", i))
-                                .ghost()
-                                .small()
-                                .icon(IconName::Pencil)
-                                .accessibility_label("Edit condition")
-                                .tooltip("Edit condition")
-                                .on_click(cx.listener(move |app, _, window, cx| {
-                                    app.dispatch(Message::EditorConditionEdit(i), window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new(("condition-remove", i))
-                                .ghost()
-                                .small()
-                                .icon(IconName::X)
-                                .accessibility_label("Remove condition")
-                                .tooltip("Remove condition")
-                                .on_click(cx.listener(move |app, _, window, cx| {
-                                    app.dispatch(Message::EditorConditionRemove(i), window, cx)
-                                })),
-                        ),
-                );
-            }
-        }
         advanced = advanced.child(
             div()
                 .flex()

@@ -395,7 +395,7 @@ fn expand_preview(
         if let Some(handle) = full.search.handle.take() {
             handle.cancel.store(true, Ordering::Relaxed);
         }
-        tab.begin_search(&query, true, false);
+        tab.begin_raw_search(&query, true, false);
     }
     if index == state.active_tab {
         state.column_widths = widths;

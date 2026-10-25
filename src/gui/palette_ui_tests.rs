@@ -1072,20 +1072,21 @@ fn filter_editor_timestamp_time_only_uses_segmented_time_control(cx: &mut TestAp
 }
 
 #[gpui_kit::test]
-fn filter_editor_common_case_is_compact_and_supports_auto_style(cx: &mut TestAppContext) {
+fn filter_editor_sections_support_auto_style(cx: &mut TestAppContext) {
     use crate::gui::{actions::Action, message::Message};
-    let (handle, app) = palette_window(cx, (800., 650.), "github-light");
+    let (handle, app) = palette_window(cx, (800., 1000.), "github-light");
     cx.update_window(handle.into(), |_, window, cx| {
         add_log_tab(&app, cx, true);
         app.update(cx, |app, cx| {
             app.dispatch(Message::GuiAction(Action::Filter), window, cx)
         });
         window.render_frame(cx);
-        assert!(window.find("editor-content").bounds().size.height < px(350.));
+        assert!(window.try_find("filter-text-section").is_some());
+        assert!(window.try_find("filter-fields-section").is_some());
         assert!(window.try_find("filter-field-select").is_some());
         assert!(window.try_find("filter-group-select").is_none());
         assert!(window.try_find(("color-reset", 0usize)).is_none());
-        assert!(window.try_find(("filter-option", 0usize)).is_none());
+        assert!(window.try_find(("filter-option", 0usize)).is_some());
         assert!(!app.read(cx).state.editor.as_ref().unwrap().auto_style);
         window.click("filter-auto-style", cx);
         assert!(app.read(cx).state.editor.as_ref().unwrap().auto_style);
@@ -2803,6 +2804,133 @@ fn invalid_regex_worker_keeps_the_editor_interactive(cx: &mut TestAppContext) {
         assert!(window.try_find("filter-validation").is_some());
         assert_eq!(editor.values[0], "[");
         assert!(editor.validation_pending.is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn about_page_opens_from_help_without_files_and_returns_to_logs(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("app-menu-bar")
+            .within(5usize)
+            .click("menu", cx);
+        window.within("popup-menu").click(2usize, cx);
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(app.read(cx).state.nav_page, super::state::NavPage::About);
+        assert!(window.find("about-back").bounds().size.height > px(0.));
+        window.click("about-back", cx);
+        assert_eq!(app.read(cx).state.nav_page, super::state::NavPage::Logs);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn composed_filter_keeps_text_separate_and_field_controls_visible(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (1100., 1100.), "github-light");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx);
+            app.dispatch(Message::EditorText(0, "timeout".into()), window, cx);
+            app.dispatch(Message::EditorMatchField(Some("level".into())), window, cx);
+            assert_eq!(app.state.editor.as_ref().unwrap().values[0], "timeout");
+            app.dispatch(Message::EditorText(2, "ERROR".into()), window, cx);
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("filter-text-section").is_some());
+        assert!(window.try_find("filter-fields-section").is_some());
+        window.click("condition-add", cx);
+        window.render_frame(cx);
+        assert!(!app.read(cx).state.editor.as_ref().unwrap().advanced);
+        assert!(window.try_find(("condition-edit", 0usize)).is_some());
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                Message::EditorMatchField(Some("service".into())),
+                window,
+                cx,
+            );
+            app.dispatch(Message::EditorText(2, "api".into()), window, cx);
+        });
+        window.render_frame(cx);
+        window.click("condition-add", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().conditions.len(),
+            2
+        );
+        window.click(("condition-edit", 0usize), cx);
+        window.render_frame(cx);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::EditorText(2, "WARN".into()), window, cx)
+        });
+        window.render_frame(cx);
+        window.click("condition-add", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().conditions[0].1,
+            "WARN"
+        );
+        window.click(("condition-remove", 1usize), cx);
+        window.render_frame(cx);
+        let editor = app.read(cx).state.editor.as_ref().unwrap();
+        assert_eq!(editor.conditions.len(), 1);
+        assert_eq!(editor.values[0], "timeout");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn timestamp_filter_can_choose_time_without_a_date(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx)
+        });
+        window.render_frame(cx);
+        window.click("filter-target-timestamp", cx);
+        window.render_frame(cx);
+        window.click("timestamp-time-only", cx);
+        window.render_frame(cx);
+        assert!(window.try_find(("timestamp-time", 0usize)).is_some());
+        assert!(window.try_find(("timestamp-date", 0usize)).is_none());
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                Message::EditorTimestampPart(1, "09:30:00".into()),
+                window,
+                cx,
+            );
+        });
+        window.render_frame(cx);
+        window.click(("timestamp-operator", 5usize), cx);
+        window.render_frame(cx);
+        assert!(window.try_find(("timestamp-time", 1usize)).is_some());
+        app.update(cx, |app, cx| {
+            app.dispatch(
+                Message::EditorTimestampPart(2, "10:30:00".into()),
+                window,
+                cx,
+            )
+        });
+        let pattern = &app.read(cx).state.editor.as_ref().unwrap().values[0];
+        assert_eq!(
+            crate::gui::time_range::timestamp_parts(pattern),
+            ("..", "09:30:00", "10:30:00")
+        );
+        assert!(
+            crate::filters::parse_date_filter(
+                pattern.strip_prefix(crate::filters::DATE_PREFIX).unwrap()
+            )
+            .is_ok()
+        );
     })
     .unwrap();
 }

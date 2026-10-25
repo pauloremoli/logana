@@ -40,6 +40,7 @@ pub struct DisplayConfig {
     pub sidebar_side: SidebarSide,
     pub show_mode_bar: bool,
     pub show_borders: bool,
+    /// Render source text while retaining the detected parser for analysis.
     pub raw_mode: bool,
     pub show_keys: bool,
     pub format: Option<Arc<dyn LogFormatParser>>,

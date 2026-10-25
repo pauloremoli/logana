@@ -291,7 +291,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "raw",
         usage: "raw",
-        description: "Toggle raw mode — disables the format parser and shows unformatted log lines.",
+        description: "Toggle raw display — show input text while keeping format parsing enabled.",
         examples: &[],
     },
     CommandInfo {

@@ -186,7 +186,7 @@ fn apply_snapshot(tab: &mut TabState, reader: FileReader, merged: MergedState) {
     tab.filter.saved_view = None;
     tab.begin_filter_refresh();
     if let Some(query) = tab.search.query.get_pattern().map(str::to_owned) {
-        tab.begin_search(&query, true, false);
+        tab.begin_raw_search(&query, true, false);
     }
     if let Some(handle) = &mut tab.filter.handle {
         handle.scroll_anchor = anchor;
@@ -423,7 +423,7 @@ mod tests {
         state.tabs[1].file_reader =
             FileReader::from_bytes(b"Jan  1 00:00:04 host tag: replaced\n".to_vec());
         let (reader, merged) = build(Sources::refresh(&state, &state.tabs[2]).unwrap());
-        state.tabs[2].begin_search("replaced", true, false);
+        state.tabs[2].begin_raw_search("replaced", true, false);
         let old_search = state.tabs[2].search.handle.as_ref().unwrap().cancel.clone();
         apply_snapshot(&mut state.tabs[2], reader, merged);
         assert!(old_search.load(std::sync::atomic::Ordering::Relaxed));

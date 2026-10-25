@@ -1,3 +1,4 @@
+mod about;
 pub mod action_editor;
 pub mod annotations;
 pub mod bookmarks;
@@ -94,6 +95,9 @@ pub fn view(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl I
 }
 
 fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoElement {
+    if app.state.nav_page == NavPage::About {
+        return about::page(cx).into_any_element();
+    }
     if app.state.nav_page == NavPage::Annotations {
         return annotations::page(app, cx).into_any_element();
     }

@@ -466,21 +466,6 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
         }
         Message::EditorMatchField(value) => {
             if let Some(e) = &mut state.editor {
-                if value.is_none()
-                    && e.conditions.len() == 1
-                    && e.condition_edit == Some(0)
-                    && e.values[0].is_empty()
-                {
-                    e.conditions.clear();
-                    e.condition_edit = None;
-                }
-                if e.conditions.is_empty() {
-                    if value.is_some() && e.values[1].is_empty() {
-                        e.values[2] = std::mem::take(&mut e.values[0]);
-                    } else if value.is_none() {
-                        e.values[0] = std::mem::take(&mut e.values[2]);
-                    }
-                }
                 e.values[1] = value.unwrap_or_default();
                 e.error = None;
             }
@@ -887,7 +872,7 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
                 if query.is_empty() {
                     tab.cancel_search();
                 } else {
-                    tab.begin_search(&query, tab.search.query.is_forward(), false);
+                    tab.begin_raw_search(&query, tab.search.query.is_forward(), false);
                 }
             }
             Effect::None
@@ -1682,7 +1667,7 @@ pub(super) fn prepare_tab_with_merge(
             tab.restore_scroll_to_line(Some(context.scroll_offset));
         }
         if !context.search_query.is_empty() {
-            tab.begin_search(&context.search_query, true, false);
+            tab.begin_raw_search(&context.search_query, true, false);
         }
     }
     if cancel.load(std::sync::atomic::Ordering::Relaxed) {

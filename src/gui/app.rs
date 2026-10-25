@@ -168,7 +168,7 @@ impl App {
                                 if tab.filter.handle.is_none() && tab.filter.prepared.is_none() {
                                     let query = tab.search.query.get_pattern().map(str::to_owned);
                                     if let Some(query) = query {
-                                        tab.begin_search(&query, true, false);
+                                        tab.begin_raw_search(&query, true, false);
                                     }
                                 }
                                 if tab.stream.tail_mode && !tab.stream.paused {

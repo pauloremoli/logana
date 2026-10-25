@@ -24,7 +24,7 @@ pub fn search_popup(app: &App, cx: &mut Context<App>) -> Option<gpui_kit::gpui::
         .map(|input| input.read(cx).value().to_string())
         .unwrap_or_default();
     let summary = if query.is_empty() {
-        "Search visible log text · regular expressions supported".to_string()
+        "Search raw log text in visible rows · regular expressions supported".to_string()
     } else if searching {
         format!("Searching… {total} matches found")
     } else if total == 0 {

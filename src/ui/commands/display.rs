@@ -450,12 +450,9 @@ mod tests {
         panic!("filter scan did not complete in time");
     }
 
-    /// Regression test: toggling raw mode via `:raw` (`cmd_raw`) must bypass
-    /// a stale multiline continuation map the same way `:schema none` does —
-    /// this exercises the real production scan path
-    /// (`App::advance_filter_computation`), not just the sync test helper.
+    /// Raw rendering retains parsed multiline records through the command path.
     #[tokio::test]
-    async fn test_cmd_raw_bypasses_stale_continuation_grouping_end_to_end() {
+    async fn test_cmd_raw_preserves_continuation_grouping_end_to_end() {
         use crate::filters::{FilterOptions, FilterType};
         use crate::parser::CustomParser;
 
@@ -521,11 +518,8 @@ mod tests {
             .iter()
             .collect();
         assert_eq!(
-            visible,
-            vec![1],
-            "raw mode must evaluate lines independently of the stale multiline \
-             continuation map — only the individually matching line, no group \
-             promotion — got {visible:?}"
+            visible, grouped,
+            "raw rendering must preserve parsed records"
         );
     }
 

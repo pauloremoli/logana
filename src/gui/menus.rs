@@ -78,7 +78,7 @@ const MENU_ACTIONS: &[(&str, &[Action])] = &[
             Action::DisableMcp,
         ],
     ),
-    ("Help", &[Action::Help, Action::FileInfo]),
+    ("Help", &[Action::Help, Action::FileInfo, Action::About]),
 ];
 
 pub fn install(cx: &mut App) {

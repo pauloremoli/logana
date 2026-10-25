@@ -31,6 +31,7 @@ pub enum Action {
     ShowLogs,
     ToggleBookmarks,
     Help,
+    About,
     SwitchFile,
     Merge,
     EnableMcp,
@@ -86,6 +87,7 @@ impl Action {
             | Self::DefaultFilters
             | Self::EnableMcp
             | Self::DisableMcp
+            | Self::About
             | Self::Help => "Settings",
             Self::CloseFile
             | Self::CloseAllFiles
@@ -131,6 +133,13 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::About,
+        label: "About logana",
+        description: "Application version, author, license, and project links",
+        aliases: "about version license credits",
+        tab: false,
+    },
     Descriptor {
         action: Action::Undo,
         label: "Undo",
@@ -685,6 +694,7 @@ pub fn open(
             && !matches!(
                 action,
                 Action::ShowLogs
+                    | Action::About
                     | Action::ShowBookmarks
                     | Action::ToggleBookmarks
                     | Action::Bookmark
@@ -755,6 +765,10 @@ pub fn open(
                 tab.filter.show_marks_only = !tab.filter.show_marks_only;
             }
             crate::gui::update::refresh_filters(state, state.active_tab);
+            return Effect::None;
+        }
+        Action::About => {
+            crate::gui::view::bookmarks::set_view(state, crate::gui::state::NavPage::About);
             return Effect::None;
         }
         Action::ShowLogs => {
@@ -1842,6 +1856,22 @@ mod tests {
         update::{gui_outcome, update},
     };
     #[tokio::test]
+    async fn about_opens_from_palette_without_files() {
+        let mut state = state().await;
+        state.tabs.clear();
+        update(&mut state, Message::OpenCommands);
+        update(&mut state, Message::PaletteEdited("about".into()));
+        assert_eq!(matching("about")[0].action, Action::About);
+        update(
+            &mut state,
+            Message::PaletteKey(crate::input::KeyCode::Enter, Default::default()),
+        );
+        assert_eq!(state.nav_page, crate::gui::state::NavPage::About);
+        assert!(!state.palette.open);
+        assert!(state.editor.is_none());
+    }
+
+    #[tokio::test]
     async fn bookmark_annotation_and_navigation_actions_follow_source_selection() {
         let mut state = state().await;
         let source = state.tabs[0].id;
@@ -2262,7 +2292,7 @@ mod tests {
         assert!(matching("").iter().all(|d| !d.label.contains("recent")));
     }
     #[tokio::test]
-    async fn filter_scope_switch_keeps_the_value_and_can_replace_a_single_field_rule() {
+    async fn filter_field_selection_preserves_independent_text() {
         let mut state = state().await;
         open(&mut state, Action::Filter, None, None);
         update(&mut state, Message::EditorText(0, "timeout".into()));
@@ -2271,14 +2301,14 @@ mod tests {
             Message::EditorMatchField(Some("message".into())),
         );
         let e = state.editor.as_mut().unwrap();
-        assert_eq!(e.values[2], "timeout");
-        assert!(e.values[0].is_empty());
+        assert!(e.values[2].is_empty());
+        assert_eq!(e.values[0], "timeout");
         e.conditions = vec![("message".into(), "timeout".into())];
         e.condition_edit = Some(0);
         update(&mut state, Message::EditorMatchField(None));
         let e = state.editor.as_ref().unwrap();
         assert_eq!(e.values[0], "timeout");
-        assert!(e.conditions.is_empty());
+        assert_eq!(e.conditions, vec![("message".into(), "timeout".into())]);
         assert!(e.values[1].is_empty());
     }
 

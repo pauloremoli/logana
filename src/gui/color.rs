@@ -184,12 +184,11 @@ pub fn row_styles(tab: &crate::shared::TabState, raw: &[u8]) -> Vec<LineStyle> {
     let mut collector = MatchCollector::new(raw);
     collector.with_priority(500);
     manager.evaluate_into(&mut collector);
-    if !tab.display.raw_mode
-        && let Some(parts) = tab
-            .display
-            .format
-            .as_deref()
-            .and_then(|parser| parser.parse_line(raw))
+    if let Some(parts) = tab
+        .display
+        .format
+        .as_deref()
+        .and_then(|parser| parser.parse_line(raw))
     {
         for date in dates {
             if parts
@@ -720,6 +719,40 @@ mod tests {
 
 #[cfg(test)]
 mod cache_tests {
+    #[tokio::test]
+    async fn raw_display_retains_field_highlights() {
+        use crate::{
+            db::{Database, LogManager},
+            filters::{FilterOptions, FilterType},
+            ingestion::FileReader,
+            shared::TabState,
+        };
+        let line = r#"{"level":"ERROR","message":"failed"}"#;
+        let db = std::sync::Arc::new(Database::in_memory().await.unwrap());
+        let mut tab = TabState::new(
+            FileReader::from_bytes(line.as_bytes().to_vec()),
+            LogManager::new(db, None).await,
+            "logs".into(),
+        );
+        tab.display.raw_mode = true;
+        tab.log_manager
+            .add_filter_with_color(
+                crate::filters::encode_field_filter(&[("level".into(), "ERROR".into())], None),
+                FilterType::Highlight,
+                FilterOptions::default().fg("Red"),
+            )
+            .await;
+        tab.rebuild_filter_manager_cache();
+        let styles = super::row_styles(&tab, line.as_bytes());
+        assert!(!styles.is_empty());
+        let start = line.find("ERROR").unwrap();
+        assert!(
+            styles
+                .iter()
+                .any(|style| style.spans.contains(&(start, start + 5)))
+        );
+    }
+
     #[tokio::test]
     async fn many_filters_reuse_compiled_manager_and_invalidate_colors() {
         use crate::{

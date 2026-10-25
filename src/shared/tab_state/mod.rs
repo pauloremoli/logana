@@ -1312,9 +1312,6 @@ impl TabState {
     /// resolution `log_panel.rs`'s render loop already uses for coloring —
     /// level classification here must agree with what's actually rendered.
     fn parser_for_line(&self, line_idx: usize) -> Option<&dyn LogFormatParser> {
-        if self.display.raw_mode {
-            return None;
-        }
         if let Some(entries) = self.file_reader.merged_entries()
             && let Some(merged) = self.merged.as_ref()
         {
@@ -1432,11 +1429,7 @@ impl TabState {
             let field_defs =
                 crate::filters::extract_field_filters_ordered(self.log_manager.get_filters());
             let all_filter_defs = self.log_manager.get_filters().to_vec();
-            let parser = if self.display.raw_mode {
-                None
-            } else {
-                self.display.format.as_deref()
-            };
+            let parser = self.display.format.as_deref();
             let field_layout = &self.display.field_layout;
             let hidden_fields = &self.display.hidden_fields;
             let show_keys = self.display.show_keys;
@@ -1728,6 +1721,15 @@ impl TabState {
     /// via [`SearchHandle`] and polled each frame by `App::advance_search`.
     /// When `navigate` is true the view scrolls to the first match on completion.
     pub fn begin_search(&mut self, pattern: &str, forward: bool, navigate: bool) {
+        self.begin_search_inner(pattern, forward, navigate, false);
+    }
+
+    /// Search source text, independent of displayed columns and hidden fields.
+    pub fn begin_raw_search(&mut self, pattern: &str, forward: bool, navigate: bool) {
+        self.begin_search_inner(pattern, forward, navigate, true);
+    }
+
+    fn begin_search_inner(&mut self, pattern: &str, forward: bool, navigate: bool, raw: bool) {
         if pattern.is_empty() {
             self.cancel_search();
             return;
@@ -1820,14 +1822,18 @@ impl TabState {
                         if cancel_clone.load(Ordering::Relaxed) {
                             return None;
                         }
-                        let text = display_text_for_line(
-                            line_idx,
-                            &file_reader,
-                            &detected_format,
-                            &field_layout,
-                            &hidden_fields,
-                            show_keys,
-                        );
+                        let text = if raw {
+                            String::from_utf8_lossy(&file_reader.get_line(line_idx)).into_owned()
+                        } else {
+                            display_text_for_line(
+                                line_idx,
+                                &file_reader,
+                                &detected_format,
+                                &field_layout,
+                                &hidden_fields,
+                                show_keys,
+                            )
+                        };
                         let matches: Vec<(usize, usize)> = if let Some(ac) = ac_ref {
                             ac.find_iter(&text).map(|m| (m.start(), m.end())).collect()
                         } else {
@@ -2061,12 +2067,7 @@ impl TabState {
         let file_reader = self.file_reader.clone();
         let fm_arc = self.filter.manager.clone();
         let all_filter_defs = self.log_manager.get_filters().to_vec();
-        let raw_mode = self.display.raw_mode;
-        let parser = if raw_mode {
-            None
-        } else {
-            self.display.format.clone()
-        };
+        let parser = self.display.format.clone();
         let field_layout = self.display.field_layout.clone();
         let hidden_fields = self.display.hidden_fields.clone();
         let show_keys = self.display.show_keys;
@@ -2435,10 +2436,7 @@ impl TabState {
         // Extend the continuation map for the newly-appended lines.
         if let (Some(cmap), Some(parser)) = (
             self.continuation_map.as_mut(),
-            self.display
-                .format
-                .as_deref()
-                .filter(|_| !self.display.raw_mode),
+            self.display.format.as_deref(),
         ) {
             let map = Arc::make_mut(cmap);
             let mut last_parent = map.last().copied().unwrap_or(0);
@@ -2517,11 +2515,7 @@ impl TabState {
         let (inc_ff, exc_ff) =
             crate::filters::extract_field_filters(self.log_manager.get_filters());
         let has_text_includes = self.filter.manager.has_include();
-        let parser: Option<&dyn crate::parser::LogFormatParser> = if self.display.raw_mode {
-            None
-        } else {
-            self.display.format.as_deref()
-        };
+        let parser = self.display.format.as_deref();
         let synthetic_level = parser.is_some_and(|p| p.has_synthetic_level())
             && self.filter.manager.filter_count() > 0;
         let needs_parse =
@@ -2906,13 +2900,9 @@ impl TabState {
         self.begin_filter_refresh();
     }
 
-    /// The continuation map to use for multiline grouping, or `None` when
-    /// raw mode bypasses format-aware parsing (matching the parser
-    /// selection every scan already uses). Consulting the map while raw
-    /// mode is on would hide lines that individually match a filter just
-    /// because their old structured "parent" line doesn't.
+    /// The detected format's continuation map, independent of rendering mode.
     pub(crate) fn active_continuation_map(&self) -> Option<&Arc<Vec<usize>>> {
-        if self.display.raw_mode || self.display.format.is_none() {
+        if self.display.format.is_none() {
             None
         } else {
             self.continuation_map.as_ref()
@@ -4873,6 +4863,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn raw_search_and_filter_match_service_separators() {
+        let line = "1 service <2024-01-01T00:00:00Z> 42 ERR/Component/Feature, failed";
+        let mut tab = make_tab(&[
+            line,
+            "2 service <2024-01-01T00:00:01Z> 42 INF/Other/Feature, ready",
+        ])
+        .await;
+        tab.display.format = crate::parser::find_builtin_parser("service").map(Arc::from);
+        assert!(tab.display.format.is_some());
+        tab.display.hidden_fields.insert("component".into());
+        tab.begin_raw_search("ERR/Component", true, false);
+        drain_search(&mut tab).await;
+        let results = tab.search.query.get_results();
+        assert_eq!(results.len(), 1);
+        let start = line.find("ERR/Component").unwrap();
+        assert_eq!(
+            results[0].matches,
+            vec![(start, start + "ERR/Component".len())]
+        );
+
+        tab.begin_raw_search("ERR/Comp.*?/Feature", true, false);
+        drain_search(&mut tab).await;
+        assert_eq!(tab.search.query.get_results().len(), 1);
+
+        tab.log_manager
+            .add_filter_with_color(
+                "ERR/Component".into(),
+                FilterType::Include,
+                FilterOptions::default(),
+            )
+            .await;
+        tab.refresh_visible();
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0]
+        );
+        tab.begin_filter_refresh_background();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while tab.filter.handle.is_some() || tab.filter.prepared.is_some() {
+                tab.advance_filter_computation();
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+            vec![0]
+        );
+    }
+
+    #[tokio::test]
     async fn test_begin_search_uses_display_text_not_raw() {
         // JSON line where the key "secret_key" should be hidden.
         let line =
@@ -5047,6 +5089,58 @@ mod tests {
             text, line,
             "raw mode must return the raw line, not parsed text"
         );
+    }
+
+    #[tokio::test]
+    async fn raw_display_preserves_field_and_date_filters() {
+        let lines = [
+            r#"{"timestamp":"2024-01-01T01:30:00Z","level":"ERROR","msg":"keep"}"#,
+            r#"{"timestamp":"2024-01-01T05:00:00Z","level":"INFO","msg":"hide"}"#,
+        ];
+        for pattern in [
+            crate::filters::encode_field_filter(&[("level".into(), "ERROR".into())], None),
+            format!("{}01:00 .. 02:00", crate::filters::DATE_PREFIX),
+        ] {
+            let mut tab = make_tab(&lines).await;
+            tab.display.raw_mode = true;
+            assert_eq!(tab.get_display_text(0), lines[0]);
+            assert!(tab.parser_for_line(0).is_some());
+            tab.log_manager
+                .add_filter_with_color(pattern, FilterType::Include, FilterOptions::default())
+                .await;
+            tab.refresh_visible();
+            assert_eq!(
+                tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+                vec![0]
+            );
+            tab.begin_filter_refresh_background();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while tab.filter.handle.is_some() || tab.filter.prepared.is_some() {
+                    tab.advance_filter_computation();
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+                vec![0]
+            );
+            tab.file_reader = FileReader::from_bytes(
+                format!(
+                    "{}\n{}\n{}",
+                    lines[0],
+                    lines[1],
+                    r#"{"timestamp":"2024-01-01T01:45:00Z","level":"ERROR","msg":"new"}"#
+                )
+                .into_bytes(),
+            );
+            tab.filter_new_lines(2);
+            assert_eq!(
+                tab.filter.visible_indices.iter().collect::<Vec<_>>(),
+                vec![0, 2]
+            );
+        }
     }
 
     #[tokio::test]
@@ -6488,14 +6582,8 @@ mod tests {
         );
     }
 
-    /// Regression test: toggling raw mode on a tab whose format was
-    /// (correctly or incorrectly) detected as a multiline schema must not
-    /// leave the old continuation map gating visibility. A line that
-    /// individually matches an include filter has to show up even though,
-    /// under the stale multiline grouping, its structured "parent" line
-    /// doesn't match.
     #[tokio::test]
-    async fn test_raw_mode_bypasses_stale_continuation_grouping() {
+    async fn test_raw_mode_preserves_continuation_grouping() {
         // Only the continuation line mentions "NullPointerException" — the
         // header line's own text ("hello") does not.
         let mut tab = make_tab(&[
@@ -6530,11 +6618,8 @@ mod tests {
 
         let visible: Vec<usize> = tab.filter.visible_indices.iter().collect();
         assert_eq!(
-            visible,
-            vec![1],
-            "raw mode must evaluate lines independently of the stale multiline \
-             continuation map — only the individually matching line, no group \
-             promotion — got {visible:?}"
+            visible, grouped,
+            "raw rendering must preserve parsed records"
         );
     }
 

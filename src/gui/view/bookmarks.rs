@@ -66,6 +66,6 @@ fn refresh(tab: &mut crate::shared::TabState) {
     let _guard = handle.enter();
     tab.begin_filter_refresh_background();
     if let Some(query) = tab.search.query.get_pattern().map(str::to_owned) {
-        tab.begin_search(&query, true, false);
+        tab.begin_raw_search(&query, true, false);
     }
 }

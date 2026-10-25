@@ -80,7 +80,7 @@ See [Filtering](filtering/index.md), [Date & Time Filters](filtering/date-filter
 | `:line-numbers` | Toggle the line number gutter on/off (persisted across sessions) |
 | `:relative-line-numbers` | Toggle relative line numbers — other rows show their distance from the selected row (persisted across sessions) |
 | `:tail` | Toggle tail mode (auto-scroll on new content) |
-| `:raw` | Toggle raw mode — bypass the format parser and show unformatted log lines; title shows `[RAW]` when active |
+| `:raw` | Toggle raw display — show input text while keeping format parsing enabled; title shows `[RAW]` when active |
 | `:collapse` | Hide continuation lines file-wide, showing only each entry's first line |
 | `:expand` | Reveal continuation lines previously hidden by `:collapse` |
 | `:level-colors` | Open the level colors dialog — toggle coloring per level (TRACE, DEBUG, INFO, NOTICE, WARNING, ERROR, FATAL); INFO/TRACE/DEBUG/NOTICE are off by default |

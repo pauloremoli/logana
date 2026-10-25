@@ -90,7 +90,7 @@ pub struct FileContext {
     pub file_hash: Option<String>,
     pub comments: Vec<Comment>,
     pub show_keys: bool,
-    /// When true, the format parser is bypassed and lines are shown as raw bytes.
+    /// When true, lines render as raw text; the format parser remains available.
     pub raw_mode: bool,
     /// Set of hidden field names (e.g. `"span.request_id"`, `"level"`).
     pub hidden_fields: HashSet<String>,
