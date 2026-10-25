@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-26
+
 ### Added
 - [gui][tui] Jump to the next or previous visible message matching the selected filter with `n` / `N` in the filter sidebar.
 - [gui] Add an About page in the Help menu and command palette with version, author, license, and project links.
