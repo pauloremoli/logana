@@ -8,7 +8,7 @@ use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
@@ -16,9 +16,24 @@ use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{Context, Empty, div, px};
 
+#[derive(Clone, Copy)]
+enum FilterMenuAction {
+    Edit,
+    Toggle,
+    Move(usize),
+    Delete,
+}
+
+#[derive(Clone)]
+struct FilterDrag {
+    tab_idx: usize,
+    id: usize,
+}
+
 /// Native filter controls: add, edit, enable, remove, and drag to reorder.
 pub fn filter_pane(
     tab_idx: usize,
+    source: crate::shared::TabId,
     filter_defs: &[FilterDef],
     group_defs: &[GroupDef],
     selected: Option<usize>,
@@ -164,6 +179,7 @@ pub fn filter_pane(
     for (index, def) in filter_defs.iter().enumerate() {
         col = col.child(filter_row(
             tab_idx,
+            source,
             def,
             group_defs,
             selected == Some(index),
@@ -203,12 +219,14 @@ pub(crate) fn display_pattern(pattern: &str) -> String {
 }
 fn filter_row(
     tab_idx: usize,
+    source: crate::shared::TabId,
     def: &FilterDef,
     group_defs: &[GroupDef],
     selected: bool,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let id = def.id;
+    let entity = cx.entity();
     let condition = display_pattern(&def.pattern);
     let full_condition = condition.clone();
     let type_label = filter_type_label(&def.filter_type);
@@ -216,6 +234,7 @@ fn filter_row(
     let background = filter_row_bg_color(def, group_defs);
     div()
         .id(("filter-row", id))
+        .test_support()
         .group("filter-row")
         .flex_shrink_0()
         .on_mouse_down(
@@ -338,12 +357,81 @@ fn filter_row(
                     app.dispatch(Message::FilterRemoved(tab_idx, id), window, cx)
                 })),
         )
-}
-
-#[derive(Clone)]
-struct FilterDrag {
-    tab_idx: usize,
-    id: usize,
+        .context_menu(move |mut menu, _, cx| {
+            let Some(tab) = entity
+                .read(cx)
+                .state
+                .tabs
+                .iter()
+                .find(|tab| tab.id == source)
+            else {
+                return menu;
+            };
+            let filters = tab.log_manager.get_filters();
+            let Some(index) = filters.iter().position(|filter| filter.id == id) else {
+                return menu;
+            };
+            use FilterMenuAction::*;
+            for (label, action, disabled) in [
+                ("Edit filter", Edit, false),
+                (
+                    if filters[index].enabled {
+                        "Disable filter"
+                    } else {
+                        "Enable filter"
+                    },
+                    Toggle,
+                    false,
+                ),
+                (
+                    "Move up",
+                    Move(filters[index.saturating_sub(1)].id),
+                    index == 0,
+                ),
+                (
+                    "Move down",
+                    Move(filters[(index + 1).min(filters.len() - 1)].id),
+                    index + 1 == filters.len(),
+                ),
+                ("Move to top", Move(filters[0].id), index == 0),
+                (
+                    "Move to bottom",
+                    Move(filters[filters.len() - 1].id),
+                    index + 1 == filters.len(),
+                ),
+                ("Delete filter", Delete, false),
+            ] {
+                let entity = entity.clone();
+                menu = menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(
+                    move |_, window, cx| {
+                        entity.update(cx, |app, cx| {
+                            let Some(tab_idx) =
+                                app.state.tabs.iter().position(|tab| tab.id == source)
+                            else {
+                                return;
+                            };
+                            if !app.state.tabs[tab_idx]
+                                .log_manager
+                                .get_filters()
+                                .iter()
+                                .any(|filter| filter.id == id)
+                            {
+                                return;
+                            }
+                            app.dispatch(Message::TabSelected(tab_idx), window, cx);
+                            let message = match action {
+                                Edit => Message::EditFilter(id),
+                                Toggle => Message::FilterToggled(tab_idx, id),
+                                Move(target) => Message::FilterReordered(tab_idx, id, target),
+                                Delete => Message::FilterRemoved(tab_idx, id),
+                            };
+                            app.dispatch(message, window, cx);
+                        });
+                    },
+                ));
+            }
+            menu
+        })
 }
 
 /// Explicit labels keep rule behavior readable in the GUI.

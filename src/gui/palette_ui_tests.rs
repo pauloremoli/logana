@@ -47,6 +47,122 @@ fn palette_window(
     })
 }
 #[gpui_kit::test]
+fn filter_context_menu_targets_clicked_filter(cx: &mut TestAppContext) {
+    // Filter changes persist on the real Tokio runtime.
+    cx.background_executor.allow_parking();
+    let (handle, app) = palette_window(cx, (1100., 900.), "dracula");
+    let ids = cx.update(|cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            for pattern in ["first", "second", "third"] {
+                runtime::handle().block_on(app.state.tabs[0].log_manager.add_filter_with_color(
+                    pattern.into(),
+                    crate::filters::FilterType::Highlight,
+                    crate::filters::FilterOptions::default(),
+                ));
+            }
+            app.state.keyboard_sidebar = Some(crate::gui::state::SidebarTab::Filters);
+            app.state.sidebar_cursor = 0;
+            cx.notify();
+            app.state.tabs[0]
+                .log_manager
+                .get_filters()
+                .iter()
+                .map(|f| f.id)
+                .collect::<Vec<_>>()
+        })
+    });
+    // The second row is the target even though the first row is selected.
+    for (item, expected) in [
+        (4usize, vec![ids[1], ids[0], ids[2]]),
+        (4, vec![ids[1], ids[0], ids[2]]),
+        (2, vec![ids[1], ids[0], ids[2]]),
+        (5, vec![ids[0], ids[2], ids[1]]),
+        (5, vec![ids[0], ids[2], ids[1]]),
+        (3, vec![ids[0], ids[2], ids[1]]),
+        (2, vec![ids[0], ids[1], ids[2]]),
+        (3, vec![ids[0], ids[2], ids[1]]),
+    ] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.right_click(("filter-row", ids[1]), cx);
+        })
+        .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.within("popup-menu").click(item, cx);
+            window.press("escape", cx);
+        })
+        .unwrap();
+        cx.update(|cx| {
+            assert_eq!(
+                app.read(cx).state.tabs[0]
+                    .log_manager
+                    .get_filters()
+                    .iter()
+                    .map(|f| f.id)
+                    .collect::<Vec<_>>(),
+                expected
+            )
+        });
+    }
+    for (item, enabled) in [(1usize, false), (1, true), (0, true), (6, true)] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.right_click(("filter-row", ids[1]), cx);
+        })
+        .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.within("popup-menu").click(item, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        if item == 6 {
+            let started = std::time::Instant::now();
+            while cx.update(|cx| {
+                app.read(cx).state.tabs[0]
+                    .log_manager
+                    .get_filters()
+                    .iter()
+                    .any(|f| f.id == ids[1])
+            }) {
+                assert!(started.elapsed() < std::time::Duration::from_secs(5));
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                cx.run_until_parked();
+            }
+        }
+        cx.update(|cx| {
+            let state = &app.read(cx).state;
+            match item {
+                1 => assert_eq!(
+                    state.tabs[0]
+                        .log_manager
+                        .get_filters()
+                        .iter()
+                        .find(|f| f.id == ids[1])
+                        .unwrap()
+                        .enabled,
+                    enabled
+                ),
+                0 => assert_eq!(state.editor.as_ref().unwrap().edit_id, Some(ids[1])),
+                _ => assert!(
+                    !state.tabs[0]
+                        .log_manager
+                        .get_filters()
+                        .iter()
+                        .any(|f| f.id == ids[1])
+                ),
+            }
+        });
+        if item == 0 {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.click("editor-cancel", cx);
+            })
+            .unwrap();
+        }
+    }
+}
+
+#[gpui_kit::test]
 fn application_menus_dispatch_filter_view_export_and_close_actions(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
     cx.update(|cx| add_log_tab(&app, cx, false));

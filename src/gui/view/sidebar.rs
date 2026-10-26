@@ -66,6 +66,7 @@ pub fn sidebar(
         SidebarTab::Filters => {
             let filters_pane = filter_pane::filter_pane(
                 tab_idx,
+                tab.id,
                 filter_defs,
                 group_defs,
                 keyboard_selection

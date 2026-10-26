@@ -5,6 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- [gui] Right-click a filter to edit, enable or disable, delete, or move it up, down, to the top, or to the bottom.
+
 ## [0.8.2] - 2026-10-26
 
 ### Added
