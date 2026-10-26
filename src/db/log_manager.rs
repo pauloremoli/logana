@@ -49,6 +49,7 @@ fn filter_options_from_def(def: &FilterDef) -> FilterOptions {
 #[derive(Clone, Debug)]
 pub struct LogManager {
     pub db: Arc<Database>,
+    pub import_warnings: Vec<String>,
     source_file: Option<String>,
     filter_defs: Vec<FilterDef>,
     group_defs: Vec<GroupDef>,
@@ -70,6 +71,7 @@ impl LogManager {
     pub async fn new(db: Arc<Database>, source_file: Option<String>) -> Self {
         let mut mgr = LogManager {
             db,
+            import_warnings: Vec::new(),
             source_file,
             filter_defs: Vec::new(),
             group_defs: Vec::new(),
@@ -594,7 +596,10 @@ impl LogManager {
     /// entirely, same as `load_filters`.
     pub async fn import_npp_filters(&mut self, path: &str, append: bool) -> anyhow::Result<()> {
         let xml = std::fs::read_to_string(path)?;
-        let filters = crate::commands::convert_npp_xml(&xml).map_err(anyhow::Error::msg)?;
+        self.import_warnings.clear();
+        let imported = crate::commands::convert_npp_xml(&xml).map_err(anyhow::Error::msg)?;
+        self.import_warnings = imported.warnings;
+        let filters = imported.filters;
         if append {
             self.merge_filters_and_groups(filters, Vec::new()).await;
             Ok(())
@@ -1409,7 +1414,7 @@ mod tests {
         assert_eq!(error_filter.group.as_deref(), Some("errs"));
         assert_eq!(
             error_filter.color_config.as_ref().unwrap().bg,
-            Some(crate::style::Color::Green)
+            Some(crate::style::Color::Rgb(0, 128, 0))
         );
     }
 

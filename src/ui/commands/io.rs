@@ -272,7 +272,12 @@ impl App {
                 .import_npp_filters(&expanded, append)
                 .await
                 .map_err(|e| format!("Failed to import filters from '{}': {}", expanded, e))?;
-            self.tabs[self.active_tab].begin_filter_refresh();
+            let tab = &mut self.tabs[self.active_tab];
+            let warnings = std::mem::take(&mut tab.log_manager.import_warnings);
+            if !warnings.is_empty() {
+                tab.set_notification(warnings.join("\n"));
+            }
+            tab.begin_filter_refresh();
         }
         Ok(false)
     }

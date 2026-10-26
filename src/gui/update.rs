@@ -904,7 +904,13 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
         }
         Message::CommandExecuted(tab_idx, result) => {
             match result {
-                Ok(log_manager) => apply_log_manager(state, tab_idx, log_manager),
+                Ok(mut log_manager) => {
+                    let warnings = std::mem::take(&mut log_manager.import_warnings);
+                    apply_log_manager(state, tab_idx, log_manager);
+                    if !warnings.is_empty() {
+                        state.notify(StatusMessage::Info(warnings.join("\n")));
+                    }
+                }
                 Err(err) => state.notify(StatusMessage::Error(err)),
             }
             Effect::None
@@ -3860,6 +3866,34 @@ mod tests {
     /// the actual `update()` dispatch calls run as a plain, non-async
     /// `#[test]` with no tokio context of their own — exactly like gpui's
     /// render thread — to prove `dispatch_key` supplies one itself.
+
+    #[tokio::test]
+    async fn import_unknown_color_applies_filters_and_shows_warning() {
+        let (mut state, _file) = state_with_one_tab().await;
+        let xml = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            xml.path(),
+            r#"<AnalyseDoc><SearchText bgColor="unknown">line</SearchText></AnalyseDoc>"#,
+        )
+        .unwrap();
+        let lm = execute_command(
+            state.tabs[0].log_manager.clone(),
+            Commands::ImportFilters {
+                path: xml.path().display().to_string(),
+                append: false,
+            },
+            TEST_THEME_BG,
+            None,
+        )
+        .await
+        .unwrap();
+        update(&mut state, Message::CommandExecuted(0, Ok(lm)));
+        assert_eq!(state.tabs[0].log_manager.get_filters().len(), 1);
+        assert!(
+            matches!(&state.status, Some(StatusMessage::Info(message)) if message.contains("unknown"))
+        );
+        assert!(state.tabs[0].log_manager.import_warnings.is_empty());
+    }
 
     #[tokio::test]
     async fn command_executed_ok_applies_the_log_manager_and_recomputes() {

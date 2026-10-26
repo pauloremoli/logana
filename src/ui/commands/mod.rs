@@ -800,6 +800,29 @@ mod tests {
     "##;
 
     #[tokio::test]
+    async fn import_unknown_color_completes_and_notifies() {
+        let mut app = make_app(&["line"]).await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            tmp.path(),
+            r#"<AnalyseDoc><SearchText bgColor="unknown">line</SearchText></AnalyseDoc>"#,
+        )
+        .unwrap();
+        app.run_command(&format!("import-filters {}", tmp.path().display()))
+            .await
+            .unwrap();
+        assert_eq!(app.tabs[0].log_manager.get_filters().len(), 1);
+        assert!(
+            app.tabs[0]
+                .interaction
+                .notification
+                .as_ref()
+                .unwrap()
+                .contains("unknown")
+        );
+    }
+
+    #[tokio::test]
     async fn test_import_filters_replaces_existing_filters_by_default() {
         let mut app = make_app(&["line"]).await;
         app.execute_command_str("filter old".to_string()).await;
