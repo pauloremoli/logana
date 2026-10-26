@@ -34,6 +34,7 @@ pub struct Preferences {
     pub column_widths: std::collections::BTreeMap<String, std::collections::BTreeMap<String, f32>>,
     pub archive_patterns: Vec<String>,
     pub archive_merge_rotations: bool,
+    pub last_open_directory: Option<PathBuf>,
     pub locked: Vec<SettingsKey>,
 }
 impl Default for Preferences {
@@ -48,7 +49,8 @@ impl Default for Preferences {
             font_size: 13.,
             column_widths: Default::default(),
             archive_patterns: Vec::new(),
-            archive_merge_rotations: false,
+            archive_merge_rotations: true,
+            last_open_directory: None,
             locked: Vec::new(),
         }
     }
@@ -160,7 +162,12 @@ impl Preferences {
         prefs.archive_merge_rotations = db
             .load_app_setting(SettingsKey::ArchiveMergeRotations)
             .await?
-            .is_some_and(|value| value == "true");
+            .map(|value| value == "true")
+            .unwrap_or(prefs.archive_merge_rotations);
+        prefs.last_open_directory = db
+            .load_app_setting(SettingsKey::GuiLastOpenDirectory)
+            .await?
+            .and_then(|value| serde_json::from_str(&value).ok());
         Ok(prefs)
     }
     pub(super) fn settings(&self) -> Vec<(SettingsKey, String)> {
@@ -170,6 +177,10 @@ impl Preferences {
             .map(|(k, v)| (k, v.to_string()))
             .collect();
         settings.extend([
+            (
+                SettingsKey::GuiLastOpenDirectory,
+                serde_json::to_string(&self.last_open_directory).expect("directory path"),
+            ),
             (
                 SettingsKey::RestoreSession,
                 self.restore_session.to_string(),
@@ -573,6 +584,25 @@ pub(super) async fn prepare_loaded(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn picker_defaults_and_directory_survive_reload() {
+        let db = Database::in_memory().await.unwrap();
+        let mut prefs = Preferences::load(&db, &Config::default()).await.unwrap();
+        assert!(prefs.archive_merge_rotations);
+        prefs.last_open_directory = Some(std::path::PathBuf::from("/logs"));
+        prefs.archive_merge_rotations = false;
+        Save {
+            settings: prefs.settings(),
+            ..Default::default()
+        }
+        .persist(&db)
+        .await
+        .unwrap();
+        let loaded = Preferences::load(&db, &Config::default()).await.unwrap();
+        assert_eq!(loaded.last_open_directory, prefs.last_open_directory);
+        assert!(!loaded.archive_merge_rotations);
+    }
+
     #[tokio::test]
     async fn archive_patterns_and_rotation_option_survive_reloading_preferences() {
         let db = Database::in_memory().await.unwrap();

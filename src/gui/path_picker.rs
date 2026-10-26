@@ -4,7 +4,7 @@ use gpui_kit::{
     assets::IconName,
     base::{Disableable, StyledExt, TestSupportExt},
     component::{
-        ActiveTheme, Sizable, TitleBar,
+        ActiveTheme, Icon, Sizable, TitleBar,
         button::{Button, ButtonVariants},
         checkbox::Checkbox,
         h_resizable,
@@ -57,6 +57,19 @@ pub(super) struct PathPicker {
     error: Option<String>,
     scan: Control,
     task: Option<Task<()>>,
+}
+
+fn display_path(path: &std::path::Path) -> String {
+    let value = path.to_string_lossy();
+    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = value.strip_prefix(r"\\?\")
+        && rest.as_bytes().get(1) == Some(&b':')
+    {
+        rest.to_owned()
+    } else {
+        value.into_owned()
+    }
 }
 
 fn read_directory(
@@ -179,6 +192,7 @@ impl PathPicker {
         owner: WeakEntity<App>,
         purpose: Purpose,
         directory: PathBuf,
+        merge: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -209,7 +223,7 @@ impl PathPicker {
             path_input,
             search,
             hidden: false,
-            merge: false,
+            merge,
             cursor: 0,
             focus: cx.focus_handle(),
             loading: false,
@@ -268,6 +282,16 @@ impl PathPicker {
                 match result {
                     Ok(listing) => {
                         this.directory = listing.directory;
+                        if this.purpose == Purpose::Open {
+                            let directory = this.directory.clone();
+                            this.owner
+                                .update(cx, |app, _| {
+                                    let mut prefs = app.state.preferences.clone();
+                                    prefs.last_open_directory = Some(directory);
+                                    app.save_preferences(prefs);
+                                })
+                                .ok();
+                        }
                         this.entries = listing.entries;
                         this.ready = true;
                         this.error = listing.warning;
@@ -275,7 +299,7 @@ impl PathPicker {
                             this.selected.insert(file, false);
                         }
                         this.path_input.update(cx, |input, cx| {
-                            input.set_value(this.directory.display().to_string(), window, cx)
+                            input.set_value(display_path(&this.directory), window, cx)
                         });
                         this.refresh(cx);
                         this.focus.focus(window, cx);
@@ -284,7 +308,7 @@ impl PathPicker {
                     Err(error) => {
                         this.error = Some(error);
                         this.path_input.update(cx, |input, cx| {
-                            input.set_value(this.directory.display().to_string(), window, cx)
+                            input.set_value(display_path(&this.directory), window, cx)
                         });
                     }
                 }
@@ -344,7 +368,9 @@ impl PathPicker {
                 let merge = self.merge;
                 self.owner
                     .update(cx, |app, cx| {
-                        app.state.preferences.archive_merge_rotations = merge;
+                        let mut prefs = app.state.preferences.clone();
+                        prefs.archive_merge_rotations = merge;
+                        app.save_preferences(prefs);
                         if merge {
                             app.queue_rotation_selection(paths, cx);
                         } else {
@@ -432,6 +458,7 @@ impl Render for PathPicker {
         let directory_mode = self.purpose != Purpose::Open;
         let list = div()
             .id("path-entries")
+            .test_support()
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
@@ -451,7 +478,7 @@ impl Render for PathPicker {
                     .flex_shrink_0()
                     .py_2()
                     .flex()
-                    .items_start()
+                    .items_center()
                     .gap_2()
                     .px_2()
                     .when(self.cursor == row, |d| d.bg(cx.theme().secondary))
@@ -473,6 +500,25 @@ impl Render for PathPicker {
                     )
                     .child(
                         div()
+                            .id(("path-icon", index))
+                            .test_support()
+                            .flex_shrink_0()
+                            .child(
+                                Icon::new(if is_dir {
+                                    IconName::Folder
+                                } else {
+                                    IconName::File
+                                })
+                                .size_4()
+                                .text_color(if is_dir {
+                                    cx.theme().warning
+                                } else {
+                                    cx.theme().primary
+                                }),
+                            ),
+                    )
+                    .child(
+                        div()
                             .id(("path-name", index))
                             .test_support()
                             .flex_1()
@@ -487,12 +533,6 @@ impl Render for PathPicker {
                                     this.toggle(browse.clone(), false, cx);
                                 }
                             })),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(if is_dir { "Folder" } else { "File" }),
                     )
             }));
         let selected = div()
@@ -522,7 +562,7 @@ impl Render for PathPicker {
                             .min_h(px(36.))
                             .flex_shrink_0()
                             .flex()
-                            .items_start()
+                            .items_center()
                             .gap_2()
                             .py_2()
                             .when(child, |d| d.pl_4())
@@ -542,7 +582,7 @@ impl Render for PathPicker {
                                     .flex_1()
                                     .min_w(px(0.))
                                     .whitespace_normal()
-                                    .child(path.display().to_string()),
+                                    .child(display_path(&path)),
                             )
                             .when(!output, |d| {
                                 d.child(
@@ -562,6 +602,7 @@ impl Render for PathPicker {
                     }),
             );
         let files = div()
+            .w_full()
             .h_full()
             .flex()
             .flex_col()
@@ -595,42 +636,206 @@ impl Render for PathPicker {
                         d.child("No matching files or folders.")
                     })
                     .child(list),
+            );
+        let selection = div()
+            .id("path-selection-pane")
+            .test_support()
+            .w_full()
+            .h_full()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .pl_3()
+            .min_w(px(0.))
+            .child(
+                div()
+                    .font_semibold()
+                    .child(format!("Selected paths ({})", self.selected.len())),
+            )
+            .child(div().flex_1().min_h(px(0.)).child(selected))
+            .child(
+                Button::new("path-clear")
+                    .small()
+                    .label("Clear selection")
+                    .disabled(self.selected.is_empty())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.selected.clear();
+                        this.refresh(cx);
+                        cx.notify();
+                    })),
+            );
+        let count = self.roots().len();
+        div()
+            .id("path-picker")
+            .test_support()
+            .track_focus(&self.focus)
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(cx.theme().background)
+            .child(
+                TitleBar::new()
+                    .child(if directory_mode {
+                        "Choose output folder"
+                    } else {
+                        "Open files and folders"
+                    })
+                    .on_close_window(cx.listener(|_, _, window, _| window.remove_window())),
             )
             .child(
                 div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Click a folder name to browse. Check it to include its contents."),
-            );
-        let selection = div().id("path-selection-pane").test_support().w_full().h_full().flex().flex_col().gap_2().pl_3().min_w(px(0.))
-            .child(div().font_semibold().child(format!("Selected paths ({})", self.selected.len())))
-            .child(div().flex_1().min_h(px(0.)).when(self.selected.is_empty(), |d| d.child(div().text_sm().text_color(cx.theme().muted_foreground).child(if directory_mode { "Browse to a folder and choose Use this folder." } else { "Select files, folders, or both. Folders include their subfolders." }))).child(selected))
-            .child(Button::new("path-clear").small().label("Clear selection").disabled(self.selected.is_empty()).on_click(cx.listener(|this, _, _, cx| { this.selected.clear(); this.refresh(cx); cx.notify(); })));
-        let count = self.roots().len();
-        div().id("path-picker").test_support().track_focus(&self.focus).size_full().flex().flex_col().bg(cx.theme().background)
-            .child(TitleBar::new().child(if directory_mode { "Choose output folder" } else { "Open files and folders" }).on_close_window(cx.listener(|_, _, window, _| window.remove_window())))
-            .child(div().flex_1().min_h(px(0.)).p_4().flex().flex_col().gap_3()
-                .child(div().flex().items_center().gap_2()
-                    .child(Button::new("path-home").small().label("Home").on_click(cx.listener(|this, _, _, cx| { if let Some(home) = dirs::home_dir() { this.navigate(home, cx); } })))
-                    .child(Button::new("path-parent").small().label("Up").disabled(self.directory.parent().is_none()).on_click(cx.listener(|this, _, _, cx| { if let Some(parent) = this.directory.parent() { this.navigate(parent.to_path_buf(), cx); } })))
-                    .child(Button::new("path-refresh").small().label("Refresh").on_click(cx.listener(|this, _, _, cx| this.navigate(this.directory.clone(), cx)))))
-                .child(div().flex().items_center().gap_2()
-                    .child(crate::gui::view::input(&self.path_input).id("path-location").aria_label("Folder or file path").flex_1())
-                    .child(Button::new("path-go").small().label("Go").on_click(cx.listener(|this, _, _, cx| this.navigate_text(this.path_input.read(cx).value().to_string(), cx)))))
-                .when(self.loading, |d| d.child(div().text_sm().text_color(cx.theme().muted_foreground).child("Reading folder…")))
-                .when_some(self.error.clone(), |d, error| d.child(div().id("path-error").test_support().text_sm().text_color(cx.theme().danger).child(error)))
-                .child(div().flex_1().min_h(px(0.)).child(h_resizable("path-picker-panes")
-                    .child(resizable_panel().size(px(500.)).size_range(px(240.)..px(2000.)).child(files))
-                    .child(resizable_panel().size(px(320.)).size_range(px(200.)..px(2000.)).child(selection))))
-                .when(!directory_mode, |d| d.child(Button::new("path-select-folder").small().label("Select current folder").disabled(self.loading)
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle(this.directory.clone(), true, cx)))))
-                .when(!directory_mode, |d| d.child(Switch::new("path-merge").label("Auto merge rotated logs").checked(self.merge)
-                    .on_click(cx.listener(|this, _, _, cx| { this.merge = !this.merge; cx.notify(); }))))
-                .when(!directory_mode, |d| d.child(div().text_xs().text_color(cx.theme().muted_foreground).child(if self.merge { "Combine numbered rotations of the same log, oldest first. Unrelated files open separately." } else { "Open files in separate tabs. Overlapping folder selections are opened once." })))
-                .child(div().flex().gap_2()
-                    .child(Button::new("path-confirm").primary().label(if directory_mode && count > 0 { "Use selected folder".into() } else if directory_mode { "Use this folder".into() } else { format!("Open {count} selected paths") })
-                        .disabled(self.loading || !self.ready || (!directory_mode && count == 0)).on_click(cx.listener(|this, _, window, cx| this.confirm(window, cx))))
-                    .child(Button::new("path-cancel").label("Cancel").on_click(cx.listener(|_, _, window, _| window.remove_window())))))
+                    .flex_1()
+                    .min_h(px(0.))
+                    .p_4()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(Button::new("path-home").small().label("Home").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    if let Some(home) = dirs::home_dir() {
+                                        this.navigate(home, cx);
+                                    }
+                                }),
+                            ))
+                            .child(
+                                Button::new("path-parent")
+                                    .small()
+                                    .label("Up")
+                                    .disabled(self.directory.parent().is_none())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(parent) = this.directory.parent() {
+                                            this.navigate(parent.to_path_buf(), cx);
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("path-refresh")
+                                    .small()
+                                    .label("Refresh")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.navigate(this.directory.clone(), cx)
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                crate::gui::view::input(&self.path_input)
+                                    .id("path-location")
+                                    .aria_label("Folder or file path")
+                                    .flex_1(),
+                            )
+                            .child(Button::new("path-go").small().label("Go").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.navigate_text(
+                                        this.path_input.read(cx).value().to_string(),
+                                        cx,
+                                    )
+                                }),
+                            )),
+                    )
+                    .when(self.loading, |d| {
+                        d.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Reading folder…"),
+                        )
+                    })
+                    .when_some(self.error.clone(), |d, error| {
+                        d.child(
+                            div()
+                                .id("path-error")
+                                .test_support()
+                                .text_sm()
+                                .text_color(cx.theme().danger)
+                                .child(error),
+                        )
+                    })
+                    .child(
+                        div().flex_1().min_h(px(0.)).child(
+                            h_resizable("path-picker-panes")
+                                .child(
+                                    resizable_panel()
+                                        .size(px(500.))
+                                        .size_range(px(240.)..px(2000.))
+                                        .child(files),
+                                )
+                                .child(
+                                    resizable_panel()
+                                        .size(px(320.))
+                                        .size_range(px(200.)..px(2000.))
+                                        .child(selection),
+                                ),
+                        ),
+                    )
+                    .when(!directory_mode, |d| {
+                        d.child(
+                            Button::new("path-select-folder")
+                                .small()
+                                .label("Select current folder")
+                                .disabled(self.loading)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.toggle(this.directory.clone(), true, cx)
+                                })),
+                        )
+                    })
+                    .when(!directory_mode, |d| {
+                        d.child(
+                            Switch::new("path-merge")
+                                .label("Auto merge rotated logs")
+                                .checked(self.merge)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.merge = !this.merge;
+                                    this.owner
+                                        .update(cx, |app, _| {
+                                            let mut prefs = app.state.preferences.clone();
+                                            prefs.archive_merge_rotations = this.merge;
+                                            app.save_preferences(prefs);
+                                        })
+                                        .ok();
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(
+                                Button::new("path-confirm")
+                                    .primary()
+                                    .label(if directory_mode && count > 0 {
+                                        "Use selected folder".into()
+                                    } else if directory_mode {
+                                        "Use this folder".into()
+                                    } else {
+                                        format!("Open {count} selected paths")
+                                    })
+                                    .disabled(
+                                        self.loading
+                                            || !self.ready
+                                            || (!directory_mode && count == 0),
+                                    )
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.confirm(window, cx)),
+                                    ),
+                            )
+                            .child(
+                                Button::new("path-cancel").label("Cancel").on_click(
+                                    cx.listener(|_, _, window, _| window.remove_window()),
+                                ),
+                            ),
+                    ),
+            )
             .on_key_down(cx.listener(Self::key))
             .into_any_element()
     }
@@ -653,6 +858,17 @@ impl App {
         {
             return;
         }
+        let initial = if purpose == Purpose::Open {
+            self.state
+                .preferences
+                .last_open_directory
+                .clone()
+                .filter(|path| path.is_dir())
+                .unwrap_or(initial)
+        } else {
+            initial
+        };
+        let merge = self.state.preferences.archive_merge_rotations;
         let owner = cx.entity().downgrade();
         let options = gpui::WindowOptions {
             window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::centered(
@@ -664,7 +880,7 @@ impl App {
             ..TitleBar::window_options()
         };
         match gpui_kit::open_window(options, cx, move |window, cx| {
-            cx.new(|cx| PathPicker::new(owner, purpose, initial, window, cx))
+            cx.new(|cx| PathPicker::new(owner, purpose, initial, merge, window, cx))
         }) {
             Ok((_, picker)) => self.path_picker = Some(picker.downgrade()),
             Err(error) => self.state.notify(StatusMessage::Error(format!(
@@ -678,6 +894,19 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn displays_windows_paths_without_extended_prefixes() {
+        for (path, expected) in [
+            (r"\\?\C:\Program Files", r"C:\Program Files"),
+            (r"\\?\UNC\server\share\logs", r"\\server\share\logs"),
+            (r"C:\logs", r"C:\logs"),
+            ("/tmp/logs", "/tmp/logs"),
+            (r"\\?\Volume{abc}\", r"\\?\Volume{abc}\"),
+        ] {
+            assert_eq!(display_path(std::path::Path::new(path)), expected);
+        }
+    }
 
     #[test]
     fn preview_groups_rotations_beneath_the_output() {
@@ -803,6 +1032,7 @@ mod ui_tests {
             .unwrap()
         });
         app.update(cx, |app, cx| {
+            app.state.preferences.archive_merge_rotations = false;
             app.show_path_picker(Purpose::Open, dir.path().into(), cx)
         });
         let picker = app.read_with(cx, |app, _| {
@@ -826,7 +1056,20 @@ mod ui_tests {
                 .iter()
                 .position(|e| e.path == first)
                 .unwrap();
+            assert_eq!(
+                app.read(cx)
+                    .state
+                    .preferences
+                    .last_open_directory
+                    .as_deref(),
+                Some(dir.path())
+            );
+            let files = window.find("path-entries").bounds();
+            let search = window.find("path-search").bounds();
+            assert!(files.size.width >= search.size.width - px(1.));
             let entry_label = window.find(("path-name", entry_index)).bounds();
+            let icon = window.find(("path-icon", entry_index)).bounds();
+            assert!(icon.right() <= entry_label.left());
             let entry_row = window.find(("path-row", entry_index)).bounds();
             assert!(entry_label.size.height > px(36.), "left filenames wrap");
             assert!(entry_row.size.height >= entry_label.size.height);
@@ -851,7 +1094,10 @@ mod ui_tests {
             assert!(row.right() <= picker_bounds.right());
             assert!(remove.right() <= row.right());
             assert!(remove.left() >= row.left());
+            assert!(!picker.read(cx).merge);
             window.click("path-merge", cx);
+            assert!(picker.read(cx).merge);
+            assert!(app.read(cx).state.preferences.archive_merge_rotations);
             window.render_frame(cx);
             window.click("path-confirm", cx);
         })

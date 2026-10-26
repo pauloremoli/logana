@@ -2049,8 +2049,9 @@ mod ui_tests {
                     .selected_rows,
                 vec![1]
             );
-            window.click("archive-merge-rotations", cx);
             assert!(app.read(cx).state.preferences.archive_merge_rotations);
+            window.click("archive-merge-rotations", cx);
+            assert!(!app.read(cx).state.preferences.archive_merge_rotations);
             window.click(("archive-pattern-remove", 0usize), cx);
             window.render_frame(cx);
             assert!(app.read(cx).state.preferences.archive_patterns.is_empty());
