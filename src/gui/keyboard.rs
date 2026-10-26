@@ -651,6 +651,7 @@ mod settings_tests {
 /// The same configured shortcut labels are used throughout the GUI.
 pub fn shortcut_for_action(kb: &crate::config::Keybindings, action: Action) -> String {
     match action {
+        Action::ShowBookmarks | Action::ToggleBookmarks => "Ctrl+Shift+B".into(),
         Action::Undo => "Ctrl+Z".into(),
         Action::Redo => "Ctrl+Shift+Z".into(),
         Action::CloseFile => kb.global.close_tab.display(),

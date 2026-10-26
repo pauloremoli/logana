@@ -14,6 +14,10 @@ All notable changes to logana will be documented in this file.
 ### Added
 - [gui] Right-click a filter to edit, enable or disable, delete, or move it up, down, to the top, or to the bottom.
 
+### Changed
+- [gui] Keep one Show bookmarks entry in the View menu and display its Ctrl+Shift+B shortcut.
+- [gui] Remove the column order preview from Select Columns.
+
 ## [0.8.2] - 2026-10-26
 
 ### Added

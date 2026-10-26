@@ -1384,22 +1384,8 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         Action::Columns | Action::ValueColors | Action::LevelColors => {
             let columns = e.action == Action::Columns;
             if columns {
-                let visible: Vec<_> = e.fields.iter().filter(|(_, on)| *on).collect();
-                let mut preview = div().flex().flex_wrap().gap_1();
-                for (name, _) in &visible {
-                    preview = preview.child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .rounded(px(3.))
-                            .child(name.clone()),
-                    );
-                }
-                body = body.child(format!("{} of {} columns visible", visible.len(), e.fields.len()))
-                    .child("Column order preview")
-                    .child(preview)
+                let visible = e.fields.iter().filter(|(_, on)| *on).count();
+                body = body.child(format!("{} of {} columns visible", visible, e.fields.len()))
                     .child("Move columns with the arrow controls. Bulk actions affect all columns, including those outside the search results.");
             }
             body = body.child(

@@ -53,7 +53,6 @@ const MENU_ACTIONS: &[(&str, &[Action])] = &[
         &[
             Action::ShowLogs,
             Action::ShowBookmarks,
-            Action::MarksOnly,
             Action::Bookmark,
             Action::Annotation,
             Action::View,
@@ -136,4 +135,26 @@ fn menus() -> Vec<Menu> {
         menus.push(Menu::new(name).items(items));
     }
     menus
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bookmarks_view_has_one_menu_entry_and_a_shortcut() {
+        let (_, actions) = MENU_ACTIONS
+            .iter()
+            .find(|(name, _)| *name == "View")
+            .unwrap();
+        assert!(actions.contains(&Action::ShowBookmarks));
+        assert!(!actions.contains(&Action::MarksOnly));
+        assert_eq!(
+            crate::gui::keyboard::shortcut_for_action(
+                &crate::config::Keybindings::default(),
+                Action::ShowBookmarks,
+            ),
+            "Ctrl+Shift+B",
+        );
+    }
 }
