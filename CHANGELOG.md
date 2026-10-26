@@ -6,6 +6,7 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- [gui] Sort field values alphabetically in the Fields filter tab.
 - [core] Import the full Notepad++ named palette with exact RGB values, accept gray/grey aliases and replace unknown import colors with generated colors and a warning instead of aborting.
 
 ### Added

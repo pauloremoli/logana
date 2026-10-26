@@ -3211,9 +3211,8 @@ impl TabState {
     /// checkboxes (`gui::view::field_facets`) — a separate function from
     /// `build_field_index` (same sampling strategy/cap) rather than a
     /// change to its return shape, so autocomplete's existing call sites
-    /// and tests are untouched. Values are sorted by count descending,
-    /// then alphabetically, matching a typical "most common first" facet
-    /// list. `timestamp`/`message` are excluded, same as
+    /// and tests are untouched. Values are sorted alphabetically.
+    /// `timestamp`/`message` are excluded, same as
     /// `build_field_index` (free text, not a meaningful facet).
     pub fn build_field_value_counts(&self) -> FieldValueCounts {
         Self::field_value_counts_for(&self.file_reader, self.display.format.as_deref())
@@ -3262,7 +3261,7 @@ impl TabState {
         for (name, value_counts) in &counts {
             let mut entries: Vec<(String, usize)> =
                 value_counts.iter().map(|(v, c)| (v.clone(), *c)).collect();
-            entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
             sorted_counts.insert(name.clone(), entries);
         }
 
@@ -3277,8 +3276,7 @@ impl TabState {
 }
 
 /// Per-field value occurrence counts, from `TabState::
-/// build_field_value_counts` — `counts[name]` is sorted by occurrence
-/// count descending, then alphabetically.
+/// build_field_value_counts` — `counts[name]` is sorted alphabetically.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FieldValueCounts {
     pub names: Vec<String>,
@@ -6891,10 +6889,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_build_field_value_counts_counts_occurrences() {
+    async fn test_build_field_value_counts_sorts_alphabetically_with_counts() {
         let lines = [
             r#"{"time":"2024-01-01T00:00:00Z","level":"info","msg":"a"}"#,
-            r#"{"time":"2024-01-01T00:00:01Z","level":"info","msg":"b"}"#,
+            r#"{"time":"2024-01-01T00:00:01Z","level":"warn","msg":"b"}"#,
             r#"{"time":"2024-01-01T00:00:02Z","level":"warn","msg":"c"}"#,
         ];
         let tab = make_tab(&lines).await;
@@ -6903,8 +6901,8 @@ mod tests {
         let level_counts = counts.counts.get("level").unwrap();
         assert_eq!(
             level_counts,
-            &vec![("info".to_string(), 2), ("warn".to_string(), 1)],
-            "sorted by count descending, then alphabetically"
+            &vec![("info".to_string(), 1), ("warn".to_string(), 2)],
+            "sorted alphabetically regardless of occurrence count"
         );
     }
 
