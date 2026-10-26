@@ -9,6 +9,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Debug GUI rendering exceeds Rust's 2 MiB test stack.
+  RUST_MIN_STACK: 8388608
 
 jobs:
   windows-check:
