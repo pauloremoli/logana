@@ -326,11 +326,7 @@ fn filter_row(
                         .max_w_full()
                         .truncate()
                         .when_some(background, |d, bg| d.bg(bg))
-                        .text_color(if def.enabled {
-                            foreground.map(Into::into).unwrap_or(cx.theme().foreground)
-                        } else {
-                            cx.theme().muted_foreground
-                        })
+                        .text_color(foreground.map(Into::into).unwrap_or(cx.theme().foreground))
                         .child(condition),
                 )
                 .tooltip(move |window, cx| Tooltip::new(full_condition.clone()).build(window, cx)),

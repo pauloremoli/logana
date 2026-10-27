@@ -18,6 +18,7 @@ All notable changes to logana will be documented in this file.
 - [gui] Right-click a filter to edit, enable or disable, delete, or move it up, down, to the top, or to the bottom.
 
 ### Changed
+- [gui] Keep disabled filters styled the same as enabled filters.
 - [gui] Expand the active file tab to fit its full filename.
 - [gui] Describe multiline message actions and options without exposing internal continuation terminology.
 - [gui] Keep one Show bookmarks entry in the View menu and display its Ctrl+Shift+B shortcut.
