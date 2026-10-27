@@ -205,6 +205,20 @@ impl RawBuffer {
     }
 }
 
+/// Cache identity that does not keep the file's contents alive or force a
+/// full buffer copy when a live source appends to its reader.
+#[cfg(feature = "gui")]
+pub(crate) struct ReaderSnapshot {
+    lines: std::sync::Weak<Vec<usize>>,
+    bytes: usize,
+}
+#[cfg(feature = "gui")]
+impl ReaderSnapshot {
+    pub(crate) fn matches(&self, reader: &FileReader) -> bool {
+        self.lines.as_ptr() == Arc::as_ptr(&reader.line_starts) && self.bytes == reader.total_len()
+    }
+}
+
 #[derive(Clone)]
 pub struct FileReader {
     #[cfg(feature = "gui")]
@@ -215,6 +229,14 @@ pub struct FileReader {
 }
 
 impl FileReader {
+    #[cfg(feature = "gui")]
+    pub(crate) fn cache_snapshot(&self) -> ReaderSnapshot {
+        ReaderSnapshot {
+            lines: Arc::downgrade(&self.line_starts),
+            bytes: self.total_len(),
+        }
+    }
+
     /// Whether two readers share the same immutable content snapshot.
     #[cfg(feature = "gui")]
     pub(crate) fn same_snapshot(&self, other: &Self) -> bool {
@@ -2271,6 +2293,28 @@ mod tests {
 
     fn make(content: &[u8]) -> FileReader {
         FileReader::from_bytes(content.to_vec())
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn cache_snapshot_detects_replacements_and_appends_without_retaining_data() {
+        let mut reader = make(b"first");
+        let snapshot = reader.cache_snapshot();
+        assert!(snapshot.matches(&reader));
+        if let Storage::Bytes(data) = &reader.storage {
+            assert_eq!(
+                Arc::strong_count(data),
+                1,
+                "a cache must not force a copy of streamed data"
+            );
+        } else {
+            panic!("in-memory test reader expected");
+        }
+        assert!(!snapshot.matches(&make(b"other")));
+        assert!(snapshot.matches(&reader.clone()));
+        reader.append_bytes(b" more");
+        assert_eq!(reader.line_count(), 1);
+        assert!(!snapshot.matches(&reader));
     }
 
     #[test]

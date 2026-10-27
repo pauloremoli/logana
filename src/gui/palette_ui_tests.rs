@@ -12,6 +12,25 @@ use gpui_kit::gpui;
 use gpui_kit::test::TestWindowExt;
 use std::sync::Arc;
 
+#[derive(Debug)]
+struct CountingParser {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    inner: Box<dyn crate::parser::LogFormatParser>,
+}
+impl crate::parser::LogFormatParser for CountingParser {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn parse_line<'a>(&self, line: &'a [u8]) -> Option<crate::parser::DisplayParts<'a>> {
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.parse_line(line)
+    }
+    fn collect_field_names(&self, lines: &[&[u8]]) -> Vec<String> {
+        self.inner.collect_field_names(lines)
+    }
+}
+
 fn palette_window(
     cx: &mut TestAppContext,
     dimensions: (f32, f32),
@@ -218,7 +237,7 @@ fn application_menus_dispatch_filter_view_export_and_close_actions(cx: &mut Test
     for (step, menu, item) in [
         (0, 2usize, 0usize),
         (1, 2, 0),
-        (2, 3, 2),
+        (2, 3, 1), // Show bookmarks, before the bookmark action separator.
         (3, 0, 8),
         (4, 0, 13),
     ] {
@@ -1731,7 +1750,8 @@ fn log_bookmark_background_covers_wrapped_rows_and_selection_takes_precedence(
                 cache_log_facets(app);
             });
             window.render_frame(cx);
-            let row = window.find(("log-row", 1usize)).bounds();
+            // The outer log-row includes the uncolored multiline-control gutter.
+            let row = window.find(("log-row-content", 1usize)).bounds();
             assert!(row.size.height > px(30.));
             let background =
                 crate::gui::color::color_to_gpui(app.read(cx).state.theme.mark_bg).unwrap();
@@ -3615,6 +3635,300 @@ fn active_file_tab_expands_to_fit_its_filename(cx: &mut TestAppContext) {
             );
             assert!(window.try_find(("tab-close", index)).is_some());
         }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn long_messages_expand_horizontal_scroll_extent(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update(|cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            let reader = crate::ingestion::FileReader::from_bytes(
+                format!("{}{}END\n", "short\n".repeat(600), "界x".repeat(5000)).into_bytes(),
+            );
+            let manager =
+                runtime::handle().block_on(crate::db::LogManager::new(app.state.db.clone(), None));
+            let mut tab = crate::shared::TabState::new(reader, manager, "long.log".into());
+            tab.display.wrap = false;
+            tab.collect_field_names();
+            app.state.tabs[0] = tab;
+            cx.notify();
+        });
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(app.read(cx).horizontal_scroll.max_offset().x < px(1000.));
+        app.update(cx, |app, cx| {
+            app.log_scroll.scroll_to(gpui::ListOffset {
+                item_ix: 600,
+                offset_in_item: px(0.),
+            });
+            cx.notify();
+        });
+        window.render_frame(cx);
+        let extent = app.read(cx).horizontal_scroll.max_offset().x;
+        assert!(extent > px(50000.), "long message is clipped: {extent:?}");
+        let measurements = app.read(cx).row_cache.measurements;
+        app.read(cx)
+            .horizontal_scroll
+            .set_offset(point(-extent, px(0.)));
+        window.render_frame(cx);
+        assert!(app.read(cx).horizontal_scroll.offset().x < -px(50000.));
+        assert_eq!(
+            app.read(cx).row_cache.measurements,
+            measurements,
+            "horizontal scrolling must reuse measured widths"
+        );
+        app.update(cx, |app, cx| {
+            app.state.tabs[0].display.wrap = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(app.read(cx).horizontal_scroll.max_offset().x < px(1000.));
+    })
+    .unwrap();
+}
+
+/// Reproducible phase timings; run explicitly with --ignored --nocapture.
+#[gpui_kit::test]
+#[ignore]
+fn profile_gui_pipeline(cx: &mut TestAppContext) {
+    use crate::filters::{FilterDecision, FilterManager, build_filter};
+    use std::{hint::black_box, time::Instant};
+    for message_len in [80usize, 10_000] {
+        let (handle, app) = palette_window(cx, (1200., 900.), "dracula");
+        let message = "x".repeat(message_len);
+        let bytes = (0..2000).map(|i| format!(
+            "{{\"timestamp\":\"2026-01-01T00:00:00Z\",\"level\":\"INFO\",\"message\":\"{message} row {i}\",\"service\":\"example\"}}\n"
+        )).collect::<String>().into_bytes();
+        let reader = crate::ingestion::FileReader::from_bytes(bytes);
+        let parser = crate::parser::find_builtin_parser("json").unwrap();
+        let start = Instant::now();
+        for _ in 0..5 {
+            for (_, line) in reader.iter() {
+                black_box(parser.parse_line(&line));
+            }
+        }
+        eprintln!(
+            "PROFILE message_len={message_len} parse_2000={:?}",
+            start.elapsed() / 5
+        );
+        for filters in [1usize, 30] {
+            let manager = FilterManager::new(
+                (0..filters)
+                    .map(|i| {
+                        build_filter(
+                            &format!("row {i}"),
+                            FilterDecision::Include,
+                            false,
+                            i as u8,
+                            false,
+                            false,
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+                true,
+            );
+            let start = Instant::now();
+            for _ in 0..5 {
+                black_box(manager.compute_visible(&reader));
+            }
+            eprintln!(
+                "PROFILE message_len={message_len} filters={filters} filter_2000={:?}",
+                start.elapsed() / 5
+            );
+        }
+        cx.update_window(handle.into(), |_, window, cx| {
+            let manager = runtime::handle().block_on(crate::db::LogManager::new(
+                app.read(cx).state.db.clone(),
+                None,
+            ));
+            app.update(cx, |app, cx| {
+                let mut tab = crate::shared::TabState::new(reader, manager, "profile.log".into());
+                tab.display.wrap = false;
+                tab.display.show_sidebar = false;
+                tab.collect_field_names();
+                app.state.tabs.push(tab);
+                cx.notify();
+            });
+            let start = Instant::now();
+            window.render_frame(cx);
+            eprintln!(
+                "PROFILE message_len={message_len} first_frame={:?}",
+                start.elapsed()
+            );
+            let start = Instant::now();
+            for _ in 0..20 {
+                window.render_frame(cx);
+            }
+            eprintln!(
+                "PROFILE message_len={message_len} unchanged_frame={:?}",
+                start.elapsed() / 20
+            );
+            let start = Instant::now();
+            for i in 0..20 {
+                app.update(cx, |app, cx| {
+                    app.dispatch(
+                        super::message::Message::SelectLog(i % 20, false),
+                        window,
+                        cx,
+                    )
+                });
+                window.render_frame(cx);
+            }
+            eprintln!(
+                "PROFILE message_len={message_len} select_frame={:?}",
+                start.elapsed() / 20
+            );
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn unchanged_message_rows_do_not_reparse_on_render(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    let calls = Arc::new(AtomicUsize::new(0));
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            let tab = &mut app.state.tabs[0];
+            tab.display.format = Some(Arc::new(CountingParser {
+                calls: calls.clone(),
+                inner: crate::parser::find_builtin_parser("json").unwrap(),
+            }));
+            tab.display.wrap = false;
+            tab.invalidate_parse_cache();
+            tab.collect_field_names();
+            cx.notify();
+        });
+        window.render_frame(cx);
+        window.render_frame(cx);
+        calls.store(0, Ordering::Relaxed);
+        for _ in 0..3 {
+            window.render_frame(cx);
+        }
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            0,
+            "warm message rows must reuse parsing and measurements"
+        );
+        let measured = app.read(cx).row_cache.measurements;
+        let rem_size = window.rem_size();
+        gpui_kit::component::theme::Theme::update(cx, |theme| theme.font_size = rem_size * 1.25);
+        window.render_frame(cx);
+        assert!(
+            app.read(cx).row_cache.measurements > measured,
+            "zoom must remeasure widths"
+        );
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            0,
+            "zoom must reuse parsed values"
+        );
+        gpui_kit::component::theme::Theme::update(cx, |theme| theme.font_size = rem_size);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn oversized_wrapped_message_prepares_only_visible_chunks(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (700., 500.), "dracula");
+    let message = format!("{}END", "word界 ".repeat(20_000));
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            let tab = &mut app.state.tabs[0];
+            tab.file_reader =
+                crate::ingestion::FileReader::from_bytes(format!("{message}\nnext\n").into_bytes());
+            tab.filter.visible_indices = crate::shared::VisibleLines::All(2);
+            tab.display.wrap = true;
+            tab.display.show_line_numbers = false;
+            tab.display.show_sidebar = false;
+            tab.invalidate_parse_cache();
+            cx.notify();
+        });
+        window.render_frame(cx);
+        app.read(cx).text_document.borrow_mut().prepared_chunks = 0;
+        window.render_frame(cx);
+        let prepared = app.read(cx).text_document.borrow().prepared_chunks;
+        eprintln!(
+            "WRAPPED_PROFILE message_bytes={} prepared_chunks={prepared}",
+            message.len()
+        );
+        assert!(
+            prepared <= 40,
+            "rendering one viewport must not build all wrapped lines"
+        );
+        app.update(cx, |app, cx| {
+            app.log_scroll.scroll_to(gpui::ListOffset {
+                item_ix: 0,
+                offset_in_item: px(10_000.),
+            });
+            cx.notify();
+        });
+        window.render_frame(cx);
+        let offsets = app.read(cx).text_document.borrow().mounted_offsets(0, 0);
+        assert!(
+            offsets.start > 0,
+            "scrolling inside a message must mount later text"
+        );
+        assert!(offsets.end - offsets.start < 5000);
+        let before_wheel = app.read(cx).log_scroll.logical_scroll_top().offset_in_item;
+        window.scroll(
+            "log-workspace",
+            gpui::ScrollDelta::Lines(point(0., -1.)),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(app.read(cx).log_scroll.logical_scroll_top().offset_in_item > before_wheel);
+        let offsets = app.read(cx).text_document.borrow().mounted_offsets(0, 0);
+        let start = offsets.start + message[offsets.start..].char_indices().nth(2).unwrap().0;
+        let end = offsets.start + message[offsets.start..].char_indices().nth(120).unwrap().0;
+        let from = app.read(cx).text_document.borrow().test_point(0, 0, start);
+        let to = app.read(cx).text_document.borrow().test_point(0, 0, end);
+        window.drag(from, to, cx);
+        window.press("ctrl-c", cx);
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().unwrap(),
+            message[start..end],
+            "copying wrapped text after scrolling must retain original byte offsets"
+        );
+        window.press("escape", cx);
+
+        app.update(cx, |app, cx| {
+            app.log_scroll.scroll_to(gpui::ListOffset {
+                item_ix: 0,
+                offset_in_item: px(1_000_000.),
+            });
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            app.read(cx)
+                .text_document
+                .borrow()
+                .mounted_offsets(0, 0)
+                .end,
+            message.len(),
+            "the end of an oversized message must remain reachable"
+        );
+        window.press("down", cx);
+        window.render_frame(cx);
+        assert_eq!(app.read(cx).state.tabs[0].scroll.scroll_offset, 1);
+        assert_eq!(
+            app.read(cx).text_document.borrow().mounted_offsets(1, 0),
+            0..4
+        );
+        window.press("up", cx);
+        app.read(cx).text_document.borrow_mut().prepared_chunks = 0;
+        window.render_frame(cx);
+        assert_eq!(app.read(cx).state.tabs[0].scroll.scroll_offset, 0);
+        assert!(app.read(cx).text_document.borrow().prepared_chunks <= 40);
     })
     .unwrap();
 }

@@ -182,6 +182,10 @@ fn body(app: &mut App, window: &mut Window, cx: &mut Context<App>) -> impl IntoE
                 top.item_ix = top.item_ix.saturating_add(row).saturating_sub(old_row);
                 app.log_scroll.scroll_to(top);
             }
+            log_pane::fit_visible_messages(
+                &app.state.tabs[active_tab], &app.log_scroll, &mut widths,
+                &fields, message_width, window, &mut app.row_cache,
+            );
             let tab = &app.state.tabs[active_tab];
             let sidebar_on_left = tab.display.sidebar_side.is_left();
             let show_sidebar = tab.display.show_sidebar;

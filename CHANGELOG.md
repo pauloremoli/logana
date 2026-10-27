@@ -6,6 +6,9 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- [gui] Render only visible wrapped text lines and cache wrapping boundaries so messages taller than the screen scroll smoothly without rebuilding every offscreen line.
+- [gui] Cache displayed rows and measured message widths so unchanged renders and horizontal scrolling avoid repeated parsing and text measurement.
+- [gui] Allow horizontal scrolling to the end of long unwrapped messages, sizing visible message cells from their full text.
 - [gui] Select the existing tab and show a notification when reopening an open file.
 - [gui] Remember the auto merge choice (enabled by default) and show colored folder/file icons before filenames.
 - [gui] Remember the open-file folder across restarts, center file rows, fill the file pane, display clean Windows paths, enable auto merge by default, and remove picker helper text.

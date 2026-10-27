@@ -20,6 +20,8 @@ pub struct Endpoint {
 }
 #[derive(Default)]
 pub struct Document {
+    #[cfg(test)]
+    pub(crate) prepared_chunks: usize,
     pub tab: Option<TabId>,
     pub columns: Vec<String>,
     pub selection: Option<(Endpoint, Endpoint)>,
@@ -408,6 +410,20 @@ impl Element for SelectionText {
 
 #[cfg(all(test, feature = "gui-test"))]
 impl Document {
+    pub(crate) fn mounted_offsets(&self, line: usize, column: usize) -> std::ops::Range<usize> {
+        let runs: Vec<_> = self
+            .runs
+            .iter()
+            .filter(|r| r.endpoint.line == line && r.endpoint.column == column)
+            .collect();
+        let start = runs.iter().map(|r| r.endpoint.offset).min().unwrap_or(0);
+        let end = runs
+            .iter()
+            .map(|r| r.endpoint.offset + r.text.len())
+            .max()
+            .unwrap_or(0);
+        start..end
+    }
     pub(crate) fn test_point(&self, line: usize, column: usize, offset: usize) -> Point<Pixels> {
         self.runs
             .iter()

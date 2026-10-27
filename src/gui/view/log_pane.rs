@@ -1,7 +1,7 @@
 use crate::gui::app::App;
 use crate::gui::color::{LineStyle, cell_style_spans, color_to_gpui};
 use crate::gui::column_widths::{ResizableColumn, TableWidths};
-use crate::gui::level::{classify_line_level, level_pill_colors};
+use crate::gui::level::level_pill_colors;
 use crate::gui::message::Message;
 use crate::parser::LogLevel;
 use crate::shared::TabState;
@@ -18,6 +18,100 @@ use gpui_kit::gpui::{
     AnyElement, Context, DragMoveEvent, Empty, FontWeight, ListOffset, ListState, MouseButton, div,
     list, px, rems,
 };
+
+/// Parsed row data shared by cell rendering and width measurement.
+pub(crate) struct DisplayedRow {
+    pub values: Vec<String>,
+    pub level: LogLevel,
+    pub target: Option<String>,
+    value_spans: std::cell::RefCell<Option<ValueSpanCache>>,
+    wrapped: std::cell::RefCell<Vec<Option<WrappedRanges>>>,
+}
+type WrappedRanges = (usize, std::rc::Rc<Vec<std::ops::Range<usize>>>);
+struct CellText {
+    data: std::rc::Rc<DisplayedRow>,
+    column: usize,
+    line: usize,
+    position: usize,
+    document: crate::gui::text_selection::SharedDocument,
+    highlights: Vec<(std::ops::Range<usize>, gpui_kit::gpui::HighlightStyle)>,
+    selection: Option<std::ops::Range<usize>>,
+    selection_background: Option<gpui_kit::gpui::Hsla>,
+    pill: Option<(gpui_kit::gpui::Rgba, gpui_kit::gpui::Rgba)>,
+}
+type ValueSpan = (usize, usize, crate::filters::manager::StyleId);
+struct ValueSpanCache {
+    disabled: std::collections::HashSet<String>,
+    columns: Vec<Option<std::rc::Rc<Vec<ValueSpan>>>>,
+}
+
+impl DisplayedRow {
+    fn wrapped_ranges(
+        &self,
+        column: usize,
+        width: f32,
+    ) -> std::rc::Rc<Vec<std::ops::Range<usize>>> {
+        let limit = (width / 7.2).floor().max(1.) as usize;
+        let mut cache = self.wrapped.borrow_mut();
+        let cached = &mut cache[column];
+        if let Some((old, ranges)) = cached
+            && *old == limit
+        {
+            return ranges.clone();
+        }
+        let ranges = std::rc::Rc::new(wrap_ranges(&self.values[column], limit));
+        *cached = Some((limit, ranges.clone()));
+        ranges
+    }
+
+    fn wrapped_height(
+        &self,
+        fields: &[String],
+        widths: &TableWidths,
+        message_width: f32,
+        font_scale: f32,
+    ) -> f32 {
+        let lines = fields
+            .iter()
+            .enumerate()
+            .map(|(column, field)| {
+                self.wrapped_ranges(
+                    column,
+                    (column_width(field, widths, message_width) - 16.).max(8.) / font_scale,
+                )
+                .len()
+            })
+            .max()
+            .unwrap_or(1);
+        ROW_HEIGHT_PX * lines as f32
+    }
+
+    fn value_spans(
+        &self,
+        column: usize,
+        colors: &crate::theme::ValueColors,
+    ) -> std::rc::Rc<Vec<ValueSpan>> {
+        let mut cache = self.value_spans.borrow_mut();
+        if cache
+            .as_ref()
+            .is_none_or(|cache| cache.disabled != colors.disabled)
+        {
+            *cache = Some(ValueSpanCache {
+                disabled: colors.disabled.clone(),
+                columns: vec![None; self.values.len()],
+            });
+        }
+        let spans = &mut cache.as_mut().unwrap().columns[column];
+        spans
+            .get_or_insert_with(|| {
+                std::rc::Rc::new(crate::shared::value_colors::collect_value_color_spans(
+                    &self.values[column],
+                    colors,
+                ))
+            })
+            .clone()
+    }
+}
 
 /// Minimum row height and initial height hint for offscreen rows.
 /// 30px deliberately leaves a few
@@ -152,6 +246,7 @@ pub fn log_pane(
     let table = div()
         .flex()
         .flex_col()
+        .flex_shrink_0()
         .w(px(table_width + 22.))
         .min_w(gpui_kit::gpui::relative(1.))
         .h_full()
@@ -188,8 +283,8 @@ pub fn log_pane(
                                 return Empty.into_any_element();
                             };
                                     let output = raw_log_message(&tab.file_reader, line_idx);
-                                    let displayed =
-                                        displayed_values(tab, line_idx, &row_fields).join("\t");
+                                    let data = app.row_cache.row(tab, line_idx, &row_fields);
+                                    let displayed = data.values.join("\t");
                                     let hidden_lines = tab.active_continuation_map()
                                         .map_or(0, |map| continuation_count(map, line_idx));
                                     let collapsed = tab.display.collapse_continuations
@@ -230,6 +325,7 @@ pub fn log_pane(
                                             message_width,
                                             (&row_document, pos),
                                             font_scale,
+                                            &data,
                                         ))
                                         .when(hidden_lines > 0, |row| {
                                             row.child(gpui_kit::component::button::Button::new(("toggle-multiline", line_idx))
@@ -399,8 +495,9 @@ pub fn log_pane(
                 .id("log-table-horizontal-scroll")
                 .track_scroll(horizontal_scroll)
                 .size_full()
-                .overflow_x_scrollbar()
-                .child(table),
+                .overflow_x_scroll()
+                .child(table)
+                .horizontal_scrollbar(horizontal_scroll),
         )
         .child(
             div()
@@ -481,6 +578,43 @@ pub fn message_width(
         / messages as f32)
         .max(160.)
 }
+/// Measure only the rows that can be mounted, so a long message anywhere in
+/// the file gets a scrollable cell without scanning the file on each frame.
+pub(super) fn fit_visible_messages(
+    tab: &TabState,
+    state: &ListState,
+    widths: &mut TableWidths,
+    fields: &[String],
+    message_width: f32,
+    window: &gpui_kit::gpui::Window,
+    cache: &mut crate::gui::row_cache::RowCache,
+) {
+    if tab.display.wrap {
+        return;
+    }
+    let columns = visible_columns(tab, fields);
+    if !columns
+        .iter()
+        .any(|field| matches!(field.as_str(), "message" | "msg"))
+    {
+        return;
+    }
+    let start = state.logical_scroll_top().item_ix;
+    let scale = f32::from(window.rem_size()) / 13.;
+    let count =
+        (f32::from(window.viewport_size().height) / (ROW_HEIGHT_PX * scale)).ceil() as usize + 2;
+    // GPUI clamps an end-of-list anchor during layout; include that final
+    // viewport now so the next frame does not have to discover its rows again.
+    let start = start.min(tab.filter.visible_indices.len().saturating_sub(count));
+    let lines = (start
+        ..start
+            .saturating_add(count)
+            .min(tab.filter.visible_indices.len()))
+        .filter_map(|pos| tab.filter.visible_indices.get_opt(pos))
+        .collect();
+    *widths = cache.fit(tab, lines, &columns, widths, message_width, window);
+}
+
 fn column_width(field: &str, widths: &TableWidths, message_width: f32) -> f32 {
     match field {
         "timestamp" | "time" | "ts" => widths.time,
@@ -712,29 +846,39 @@ fn row_message_bytes<'a>(tab: &TabState, bytes: &'a [u8]) -> &'a [u8] {
 /// which stacks children (the four cells) vertically instead of flowing
 /// them left to right; see `styled_line_row`'s doc comment for the exact
 /// failure mode that caused in an earlier version of this file.
+#[cfg(test)]
 fn wrap_text(text: &str, width: f32) -> Vec<String> {
+    wrap_ranges(text, (width / 7.2).floor().max(1.) as usize)
+        .into_iter()
+        .map(|range| text[range].to_owned())
+        .collect()
+}
+
+/// Cache byte ranges rather than allocating a String for every wrapped line.
+fn wrap_ranges(text: &str, limit: usize) -> Vec<std::ops::Range<usize>> {
     use unicode_width::UnicodeWidthChar;
-    let limit = (width / 7.2).floor().max(1.) as usize;
     let mut lines = Vec::new();
-    let mut line = String::new();
+    let mut start = 0;
     let mut used = 0;
-    for c in text.chars() {
+    for (offset, c) in text.char_indices() {
         if c == '\n' {
-            lines.push(std::mem::take(&mut line));
+            lines.push(start..offset);
+            start = offset + 1;
             used = 0;
             continue;
         }
         let size = c.width().unwrap_or(0);
-        if used + size > limit && !line.is_empty() {
-            lines.push(std::mem::take(&mut line));
+        if used + size > limit && offset > start {
+            lines.push(start..offset);
+            start = offset;
             used = 0;
         }
-        line.push(c);
         used += size;
     }
-    lines.push(line);
+    lines.push(start..text.len());
     lines
 }
+
 #[cfg(test)]
 fn wrapped_height(
     tab: &TabState,
@@ -745,6 +889,7 @@ fn wrapped_height(
 ) -> f32 {
     scaled_wrapped_height(tab, line, fields, widths, message_width, 1.)
 }
+#[cfg(test)]
 fn scaled_wrapped_height(
     tab: &TabState,
     line: usize,
@@ -753,7 +898,23 @@ fn scaled_wrapped_height(
     message_width: f32,
     font_scale: f32,
 ) -> f32 {
-    let count = displayed_values(tab, line, fields)
+    wrapped_height_for_values(
+        &displayed_values(tab, line, fields),
+        fields,
+        widths,
+        message_width,
+        font_scale,
+    )
+}
+#[cfg(test)]
+fn wrapped_height_for_values(
+    values: &[String],
+    fields: &[String],
+    widths: &TableWidths,
+    message_width: f32,
+    font_scale: f32,
+) -> f32 {
+    let count = values
         .iter()
         .zip(fields)
         .map(|(text, field)| {
@@ -779,6 +940,7 @@ fn line_row_with_selection(
     message_width: f32,
     text_selection: (&crate::gui::text_selection::SharedDocument, usize),
     font_scale: f32,
+    data: &std::rc::Rc<DisplayedRow>,
 ) -> AnyElement {
     let palette = crate::gui::theme::GuiPalette::from_theme(theme);
     let rgb = |(r, g, b): (u8, u8, u8)| {
@@ -812,11 +974,13 @@ fn line_row_with_selection(
         ),
     );
     let mut row = div()
+        .id(("log-row-content", text_selection.1))
+        .test_support()
         .flex()
         .w_full()
         .h(rems(
             (if tab.display.wrap {
-                scaled_wrapped_height(tab, line_idx, fields, widths, message_width, font_scale)
+                data.wrapped_height(fields, widths, message_width, font_scale)
             } else {
                 ROW_HEIGHT_PX
             }) / 13.,
@@ -827,7 +991,6 @@ fn line_row_with_selection(
     if tab.display.show_line_numbers {
         row = row.child(number_cell).child(column_spacer());
     }
-    let values = displayed_values(tab, line_idx, fields);
     for (column, field) in fields.iter().enumerate() {
         let width = column_width(field, widths, message_width);
         let (document, position) = text_selection;
@@ -837,12 +1000,13 @@ fn line_row_with_selection(
             column,
             position,
             field,
-            &values[column],
+            &data.values[column],
             width,
             theme,
             &filter_styles,
             document,
             font_scale,
+            data,
         );
         row = row.child(cell).child(column_spacer());
     }
@@ -894,26 +1058,50 @@ fn line_row_with_selection(
 
 /// Text used for both table rendering and displayed-row/selection copying.
 pub(crate) fn displayed_values(tab: &TabState, line: usize, fields: &[String]) -> Vec<String> {
+    displayed_row(tab, line, fields).values
+}
+
+pub(crate) fn displayed_row(tab: &TabState, line: usize, fields: &[String]) -> DisplayedRow {
     let bytes = tab.file_reader.get_line(line);
     let parts = tab
         .display
         .format
         .as_ref()
         .and_then(|p| p.parse_line(&bytes));
-    fields
+    let level = parts
+        .as_ref()
+        .and_then(|parts| parts.level)
+        .map(|raw| crate::parser::classify_level(tab.display.format.as_deref(), raw))
+        .unwrap_or(LogLevel::Unknown);
+    let target = parts
+        .as_ref()
+        .and_then(|parts| parts.target)
+        .map(str::to_owned);
+    let raw_layout = uses_raw_layout(tab);
+    let values: Vec<String> = fields
         .iter()
         .map(|field| match field.as_str() {
-            "timestamp" | "time" | "ts" => row_time_text(tab, &bytes).unwrap_or_default(),
-            "level" | "lvl" => {
-                let level = classify_line_level(tab, &bytes);
-                match level {
-                    LogLevel::Unknown => String::new(),
-                    LogLevel::Warning => "WARN".into(),
-                    other => format!("{other:?}").to_uppercase(),
-                }
-            }
+            "timestamp" | "time" | "ts" => parts
+                .as_ref()
+                .and_then(|parts| parts.timestamp)
+                .unwrap_or_default()
+                .to_owned(),
+            "level" | "lvl" => match &level {
+                LogLevel::Unknown => String::new(),
+                LogLevel::Warning => "WARN".into(),
+                other => format!("{other:?}").to_uppercase(),
+            },
             "message" | "msg" => {
-                raw_log_text(&String::from_utf8_lossy(row_message_bytes(tab, &bytes)))
+                let message = if raw_layout {
+                    &bytes
+                } else {
+                    parts
+                        .as_ref()
+                        .and_then(|parts| parts.message)
+                        .map(str::as_bytes)
+                        .unwrap_or(&bytes)
+                };
+                raw_log_text(&String::from_utf8_lossy(message))
             }
             _ => {
                 // `get_col` (shared with the TUI) also resolves span/fields.*
@@ -945,7 +1133,14 @@ pub(crate) fn displayed_values(tab: &TabState, line: usize, fields: &[String]) -
                 }
             }
         })
-        .collect()
+        .collect();
+    DisplayedRow {
+        wrapped: std::cell::RefCell::new(vec![None; values.len()]),
+        values,
+        level,
+        target,
+        value_spans: Default::default(),
+    }
 }
 pub(crate) fn raw_log_message(reader: &crate::ingestion::FileReader, line: usize) -> String {
     String::from_utf8_lossy(&reader.get_raw_line(line)).into_owned()
@@ -1061,6 +1256,7 @@ fn search_highlights(
 
 /// Value colors are the base layer for every displayed column. Filters override
 /// only their matched spans and only the color attributes they actually set.
+#[cfg(test)]
 fn cell_highlights(
     raw: &[u8],
     text: &str,
@@ -1068,10 +1264,21 @@ fn cell_highlights(
     filter_style: Option<&LineStyle>,
     process_color: Option<crate::style::Color>,
 ) -> Vec<(std::ops::Range<usize>, gpui_kit::gpui::HighlightStyle)> {
+    let spans = crate::shared::value_colors::collect_value_color_spans(text, &theme.value_colors);
+    cell_highlights_with_spans(raw, text, theme, filter_style, process_color, &spans)
+}
+fn cell_highlights_with_spans(
+    raw: &[u8],
+    text: &str,
+    theme: &TuiTheme,
+    filter_style: Option<&LineStyle>,
+    process_color: Option<crate::style::Color>,
+    spans: &[ValueSpan],
+) -> Vec<(std::ops::Range<usize>, gpui_kit::gpui::HighlightStyle)> {
     use gpui_kit::gpui::HighlightStyle;
     let mut highlights = Vec::new();
     use crate::shared::value_colors::*;
-    for (start, end, style) in collect_value_color_spans(text, &theme.value_colors) {
+    for &(start, end, style) in spans {
         let colors = &theme.value_colors;
         let color = match style {
             VALUE_STYLE_HTTP_GET => colors.http_get,
@@ -1097,22 +1304,7 @@ fn cell_highlights(
         ));
     }
 
-    // GPUI requires sorted, disjoint ranges; detectors can overlap (IPv6 and status codes).
-    let mut boundaries = vec![0, text.len()];
-    for (range, _) in &highlights {
-        boundaries.extend([range.start, range.end]);
-    }
-    boundaries.sort_unstable();
-    boundaries.dedup();
-    highlights = boundaries
-        .windows(2)
-        .filter_map(|pair| {
-            highlights
-                .iter()
-                .find(|(range, _)| range.contains(&pair[0]))
-                .map(|(_, style)| (pair[0]..pair[1], *style))
-        })
-        .collect();
+    // collect_value_color_spans already returns sorted, disjoint ranges.
 
     if let Some(color) = process_color {
         highlights = vec![(
@@ -1194,25 +1386,12 @@ fn selectable_cell(
     filter_styles: &[LineStyle],
     document: &crate::gui::text_selection::SharedDocument,
     font_scale: f32,
+    data: &std::rc::Rc<DisplayedRow>,
 ) -> AnyElement {
-    use crate::gui::text_selection::{Endpoint, SelectionText};
-    use gpui_kit::gpui::StyledText;
     let raw = tab.file_reader.get_raw_line(line);
-    let parsed = if matches!(field, "pid" | "target") {
-        tab.display
-            .format
-            .as_deref()
-            .and_then(|parser| parser.parse_line(&raw))
-    } else {
-        None
-    };
-    let color = process_color(
-        theme,
-        field,
-        text,
-        parsed.as_ref().and_then(|parts| parts.target),
-    );
-    let mut highlights = cell_highlights(&raw, text, theme, None, color);
+    let color = process_color(theme, field, text, data.target.as_deref());
+    let spans = data.value_spans(column, &theme.value_colors);
+    let mut highlights = cell_highlights_with_spans(&raw, text, theme, None, color, &spans);
     for filter in filter_styles {
         highlights = overlay_filter(&raw, text, Some(filter), highlights);
     }
@@ -1220,41 +1399,123 @@ fn selectable_cell(
     let current = current_search_range(tab, line, field, text);
     highlights = search_highlights(text, &tab.search.query, theme, current, highlights);
     let selection = document.borrow().range(position, column, text.len());
-    let chunks = if tab.display.wrap {
-        wrap_text(text, (width - 16.).max(8.) / font_scale)
+    let pill = if !filter_style.is_some_and(|style| style.whole_line)
+        && matches!(field, "level" | "lvl")
+        && !tab
+            .display
+            .level_colors_disabled
+            .contains(&format!("{:?}", data.level).to_lowercase())
+    {
+        level_pill_colors(&data.level, theme)
     } else {
-        vec![text.into()]
+        None
     };
-    let mut cell = div()
+    let content = CellText {
+        data: data.clone(),
+        column,
+        line,
+        position,
+        document: document.clone(),
+        highlights,
+        selection,
+        selection_background: color_to_gpui(theme.cursor_bg).map(Into::into),
+        pill,
+    };
+    let cell = div()
         .flex_shrink_0()
         .w(px(width))
         .pl(px(8.))
         .overflow_hidden()
         .flex()
         .flex_col();
-    let mut offset = 0;
-    for (chunk_index, chunk) in chunks.into_iter().enumerate() {
-        let start = offset;
-        let end = start + chunk.len();
-        let local = highlights
+    if !tab.display.wrap {
+        return cell
+            .child(content.chunk(0, 0..text.len()))
+            .into_any_element();
+    }
+    let ranges = data.wrapped_ranges(column, (width - 16.).max(8.) / font_scale);
+    cell.child(content.wrapped(ranges, font_scale))
+        .into_any_element()
+}
+
+impl CellText {
+    /// Determine visibility after layout, using the same clip as the parent
+    /// list. This also handles scrolling partway through one oversized row.
+    fn wrapped(
+        self,
+        ranges: std::rc::Rc<Vec<std::ops::Range<usize>>>,
+        font_scale: f32,
+    ) -> impl IntoElement {
+        let height = ROW_HEIGHT_PX * font_scale;
+        let count = ranges.len();
+        gpui_kit::gpui::canvas(
+            move |bounds, window, cx| {
+                let visible = bounds.intersect(&window.content_mask().bounds);
+                let mut children = Vec::new();
+                if visible.size.width <= px(0.) || visible.size.height <= px(0.) {
+                    return children;
+                }
+                let first = ((f32::from(visible.top() - bounds.top()) / height)
+                    .floor()
+                    .max(0.) as usize)
+                    .min(count);
+                let last = ((f32::from(visible.bottom() - bounds.top()) / height)
+                    .ceil()
+                    .max(0.) as usize)
+                    .min(count);
+                for index in first..last {
+                    let mut child = self.chunk(index, ranges[index].clone());
+                    child.layout_as_root(
+                        gpui_kit::gpui::size(
+                            gpui_kit::gpui::AvailableSpace::Definite(bounds.size.width),
+                            gpui_kit::gpui::AvailableSpace::Definite(px(height)),
+                        ),
+                        window,
+                        cx,
+                    );
+                    child.prepaint_at(
+                        gpui_kit::gpui::point(
+                            bounds.left(),
+                            bounds.top() + px(index as f32 * height),
+                        ),
+                        window,
+                        cx,
+                    );
+                    children.push(child);
+                }
+                children
+            },
+            |_, mut children, window, cx| {
+                for child in &mut children {
+                    child.paint(window, cx);
+                }
+            },
+        )
+        .w_full()
+        .h(rems(count as f32 * ROW_HEIGHT_PX / 13.))
+        .flex_shrink_0()
+    }
+
+    fn chunk(&self, chunk_index: usize, range: std::ops::Range<usize>) -> AnyElement {
+        use crate::gui::text_selection::{Endpoint, SelectionText};
+        use gpui_kit::gpui::StyledText;
+        let local: Vec<_> = self
+            .highlights
             .iter()
-            .filter_map(|(range, style)| {
-                chunk_range(range, start, end).map(|range| (range, *style))
+            .filter_map(|(highlight, style)| {
+                chunk_range(highlight, range.start, range.end).map(|r| (r, *style))
             })
-            .collect::<Vec<_>>();
-        let selected = selection
+            .collect();
+        let selected = self
+            .selection
             .as_ref()
-            .and_then(|range| chunk_range(range, start, end));
-        let shared: gpui_kit::gpui::SharedString = chunk.into();
-        let mut styled = StyledText::new(shared.clone()).with_highlights(local);
-        // The text selection is a glyph highlight so it paints above filter backgrounds.
-        if let Some(range) = &selected {
-            let local = highlights
-                .iter()
-                .filter_map(|(r, style)| chunk_range(r, start, end).map(|range| (range, *style)))
-                .collect::<Vec<_>>();
-            // Split existing spans around selection and merge its background without losing foregrounds.
-            let mut boundaries = vec![0, shared.len(), range.start, range.end];
+            .and_then(|selection| chunk_range(selection, range.start, range.end));
+        let shared: gpui_kit::gpui::SharedString = self.data.values[self.column][range.clone()]
+            .to_owned()
+            .into();
+        let mut styled = StyledText::new(shared.clone()).with_highlights(local.clone());
+        if let Some(selected) = &selected {
+            let mut boundaries = vec![0, shared.len(), selected.start, selected.end];
             for (r, _) in &local {
                 boundaries.extend([r.start, r.end]);
             }
@@ -1269,58 +1530,49 @@ fn selectable_cell(
                         .find(|(r, _)| r.contains(&p[0]))
                         .map(|(_, s)| *s)
                         .unwrap_or_default();
-                    if range.contains(&p[0]) {
-                        style.background_color = color_to_gpui(theme.cursor_bg).map(Into::into);
+                    if selected.contains(&p[0]) {
+                        style.background_color = self.selection_background;
                     }
                     (p[0]..p[1], style)
                 })
                 .collect::<Vec<_>>();
             styled = StyledText::new(shared.clone()).with_highlights(merged);
         }
+        #[cfg(test)]
+        {
+            self.document.borrow_mut().prepared_chunks += 1;
+        }
         let content = SelectionText {
             text: shared,
             styled,
-            document: document.clone(),
+            document: self.document.clone(),
             endpoint: Endpoint {
-                line,
-                row: position,
-                column,
-                offset: start,
+                line: self.line,
+                row: self.position,
+                column: self.column,
+                offset: range.start,
             },
-            order: ((position as u64) << 32) | ((column as u64) << 16) | chunk_index as u64,
+            order: ((self.position as u64) << 32)
+                | ((self.column as u64) << 16)
+                | chunk_index as u64,
         };
-        let mut chunk_row = div()
+        let row = div()
             .h(rems(ROW_HEIGHT_PX / 13.))
             .flex()
             .items_center()
             .whitespace_nowrap();
-        if !filter_style.is_some_and(|style| style.whole_line) && matches!(field, "level" | "lvl") {
-            let level = classify_line_level(tab, &tab.file_reader.get_line(line));
-            let key = format!("{level:?}").to_lowercase();
-            if !tab.display.level_colors_disabled.contains(&key) {
-                if let Some((bg, fg)) = level_pill_colors(&level, theme) {
-                    chunk_row = chunk_row.child(
-                        Tag::custom(bg.into(), fg.into(), bg.into())
-                            .small()
-                            .rounded(px(5.))
-                            .child(content),
-                    );
-                } else {
-                    chunk_row = chunk_row.child(content);
-                }
-            } else {
-                chunk_row = chunk_row.child(content);
-            }
+        if let Some((bg, fg)) = self.pill {
+            row.child(
+                Tag::custom(bg.into(), fg.into(), bg.into())
+                    .small()
+                    .rounded(px(5.))
+                    .child(content),
+            )
+            .into_any_element()
         } else {
-            chunk_row = chunk_row.child(content);
-        }
-        cell = cell.child(chunk_row);
-        offset = end;
-        if text.as_bytes().get(offset) == Some(&b'\n') {
-            offset += 1;
+            row.child(content).into_any_element()
         }
     }
-    cell.into_any_element()
 }
 
 /// Convert an overlapping global span to chunk-local offsets. A span outside
@@ -1362,6 +1614,7 @@ fn line_row(
         message_width,
         (&document, line_idx),
         1.,
+        &std::rc::Rc::new(displayed_row(tab, line_idx, fields)),
     )
 }
 
@@ -1390,6 +1643,59 @@ mod tests {
     use crate::gui::column_widths::ColumnWidths;
     use crate::ingestion::FileReader;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn wrapped_ranges_keep_unicode_offsets_and_reuse_unchanged_widths() {
+        let t = tab().await;
+        let mut data = displayed_row(&t, 0, &["message".into()]);
+        data.values[0] = "a界b\n\nc".into();
+        let ranges = data.wrapped_ranges(0, 22.);
+        let text: Vec<_> = ranges.iter().map(|r| &data.values[0][r.clone()]).collect();
+        assert_eq!(text, ["a界", "b", "", "c"]);
+        assert!(
+            std::rc::Rc::ptr_eq(&ranges, &data.wrapped_ranges(0, 28.)),
+            "widths with the same character capacity must reuse line boundaries"
+        );
+        let narrower = data.wrapped_ranges(0, 15.);
+        assert!(!std::rc::Rc::ptr_eq(&ranges, &narrower));
+        assert_eq!(
+            narrower
+                .iter()
+                .map(|r| &data.values[0][r.clone()])
+                .collect::<Vec<_>>(),
+            ["a", "界", "b", "", "c"]
+        );
+    }
+
+    #[tokio::test]
+    async fn value_detection_cache_reuses_ranges_and_tracks_disabled_categories() {
+        use crate::shared::value_colors::VALUE_STYLE_HTTP_GET;
+        let t = tab().await;
+        let mut data = displayed_row(&t, 0, &["message".into()]);
+        data.values[0] = "GET /example 200".into();
+        let mut colors = crate::theme::ValueColors::default();
+        let first = data.value_spans(0, &colors);
+        assert!(
+            first
+                .iter()
+                .any(|(_, _, style)| *style == VALUE_STYLE_HTTP_GET)
+        );
+        assert!(std::rc::Rc::ptr_eq(&first, &data.value_spans(0, &colors)));
+        colors.http_get = crate::style::Color::Rgb(1, 2, 3);
+        assert!(
+            std::rc::Rc::ptr_eq(&first, &data.value_spans(0, &colors)),
+            "changing colors must reuse positions and resolve the new color at render time"
+        );
+        colors.disabled.insert("http_get".into());
+        assert!(
+            !data
+                .value_spans(0, &colors)
+                .iter()
+                .any(|(_, _, style)| *style == VALUE_STYLE_HTTP_GET)
+        );
+        colors.disabled.clear();
+        assert_eq!(data.value_spans(0, &colors).as_ref(), first.as_ref());
+    }
 
     #[test]
     fn highlight_spans_outside_wrapped_chunks_do_not_underflow() {

@@ -61,3 +61,5 @@ mod facet_query;
 mod archive_window;
 
 mod path_picker;
+
+mod row_cache;
