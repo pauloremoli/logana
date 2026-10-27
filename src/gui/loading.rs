@@ -538,6 +538,30 @@ impl App {
         args: Option<crate::cli::Args>,
         cx: &mut Context<Self>,
     ) {
+        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if let Some(tab) = self.state.tabs.iter().find(|tab| {
+            tab.log_manager.source_file().is_some_and(|source| {
+                let source = std::path::Path::new(source);
+                std::fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf()) == canonical
+            })
+        }) {
+            let tab_id = tab.id;
+            let message = format!("File '{}' is already open.", path.display());
+            cx.spawn(async move |this, cx| {
+                this.update_in(cx, |app, window, cx| {
+                    if let Some(index) = app.state.tabs.iter().position(|tab| tab.id == tab_id) {
+                        app.dispatch(Message::TabSelected(index), window, cx);
+                        app.state
+                            .notify(crate::gui::state::StatusMessage::Info(message));
+                        app.sync_notification_timer(cx);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
+            return;
+        }
         let preview_enabled = !args.as_ref().is_some_and(|args| args.tail);
         let preview_bytes = self.state.preferences.preview_bytes;
         self.loading.next_id += 1;

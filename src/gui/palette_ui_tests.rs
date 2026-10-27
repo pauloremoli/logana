@@ -3311,3 +3311,45 @@ fn escape_and_mode_changes_clear_search_results(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+async fn reopening_file_selects_existing_tab_without_loading(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let canonical = std::fs::canonicalize(file.path()).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            let manager = runtime::handle().block_on(crate::db::LogManager::new(
+                app.state.db.clone(),
+                Some(canonical.to_string_lossy().into_owned()),
+            ));
+            app.state.tabs.insert(
+                0,
+                crate::shared::TabState::new(
+                    crate::ingestion::FileReader::from_bytes(b"keep me\n".to_vec()),
+                    manager,
+                    "existing.log".into(),
+                ),
+            );
+            app.state.active_tab = 1;
+            app.dispatch(
+                super::message::Message::FileDialogResult(Some(file.path().to_path_buf())),
+                window,
+                cx,
+            );
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        let state = &app.read(cx).state;
+        assert_eq!(state.active_tab, 0);
+        assert_eq!(state.tabs.len(), 2);
+        assert_eq!(state.tabs[0].file_reader.get_line(0), b"keep me");
+        assert!(app.read(cx).loading.operations.is_empty());
+        assert!(matches!(&state.status, Some(super::state::StatusMessage::Info(text)) if text.contains("already open")));
+        window.render_frame(cx);
+        assert!(window.find("notification-popup").bounds().size.width > px(0.));
+    }).unwrap();
+}
