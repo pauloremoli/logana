@@ -202,10 +202,19 @@ pub(crate) fn display_pattern(pattern: &str) -> String {
         .strip_prefix(crate::filters::FIELD_PREFIX)
         .and_then(|e| crate::filters::parse_field_filter_expr(e).ok())
     {
+        let exact = pattern
+            .strip_prefix(crate::filters::FIELD_PREFIX)
+            .is_some_and(crate::filters::field_filter_is_exact);
         let mut parts: Vec<String> = expr
             .0
             .into_iter()
-            .map(|(k, v)| format!("{k}: {v}"))
+            .map(|(k, v)| {
+                if exact {
+                    format!("{k} equals {v}")
+                } else {
+                    format!("{k}: {v}")
+                }
+            })
             .collect();
         if let Some(text) = expr.1 {
             parts.push(format!("text: {text}"));

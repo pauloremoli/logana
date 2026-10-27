@@ -31,6 +31,8 @@ pub struct Preferences {
     pub preview_bytes: u64,
     pub mcp_port: u16,
     pub font_size: f32,
+    pub filter_auto_style: bool,
+    pub filter_text_only: bool,
     pub column_widths: std::collections::BTreeMap<String, std::collections::BTreeMap<String, f32>>,
     pub archive_patterns: Vec<String>,
     pub archive_merge_rotations: bool,
@@ -48,6 +50,8 @@ impl Default for Preferences {
             preview_bytes: crate::config::DEFAULT_PREVIEW_BYTES,
             mcp_port: 9876,
             font_size: 13.,
+            filter_auto_style: false,
+            filter_text_only: false,
             column_widths: Default::default(),
             archive_patterns: Vec::new(),
             archive_merge_rotations: true,
@@ -147,6 +151,16 @@ impl Preferences {
                 _ => unreachable!(),
             }
         }
+        prefs.filter_auto_style = db
+            .load_app_setting(SettingsKey::GuiFilterAutoStyle)
+            .await?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(false);
+        prefs.filter_text_only = db
+            .load_app_setting(SettingsKey::GuiFilterTextOnly)
+            .await?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(false);
         prefs.font_size = db
             .load_app_setting(SettingsKey::GuiFontSize)
             .await?
@@ -212,6 +226,14 @@ impl Preferences {
             (SettingsKey::PreviewBytes, self.preview_bytes.to_string()),
             (SettingsKey::McpPort, self.mcp_port.to_string()),
             (SettingsKey::GuiFontSize, self.font_size.to_string()),
+            (
+                SettingsKey::GuiFilterAutoStyle,
+                self.filter_auto_style.to_string(),
+            ),
+            (
+                SettingsKey::GuiFilterTextOnly,
+                self.filter_text_only.to_string(),
+            ),
             (
                 SettingsKey::ArchivePatterns,
                 serde_json::to_string(&self.archive_patterns).expect("archive patterns"),
@@ -605,6 +627,31 @@ pub(super) async fn prepare_loaded(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn filter_style_preferences_round_trip_and_default_to_no_style() {
+        let db = Database::in_memory().await.unwrap();
+        let defaults = Preferences::load(&db, &Config::default()).await.unwrap();
+        assert!(!defaults.filter_auto_style);
+        assert!(!defaults.filter_text_only);
+        for (automatic, text_only) in [(true, true), (true, false), (false, true)] {
+            let prefs = Preferences {
+                filter_auto_style: automatic,
+                filter_text_only: text_only,
+                ..defaults.clone()
+            };
+            Save {
+                settings: prefs.settings(),
+                ..Default::default()
+            }
+            .persist(&db)
+            .await
+            .unwrap();
+            let loaded = Preferences::load(&db, &Config::default()).await.unwrap();
+            assert_eq!(loaded.filter_auto_style, automatic);
+            assert_eq!(loaded.filter_text_only, text_only);
+        }
+    }
+
     #[tokio::test]
     async fn recent_files_are_unique_newest_first_bounded_and_persisted() {
         let db = Database::in_memory().await.unwrap();

@@ -556,7 +556,8 @@ impl App {
                 .unwrap_or_default();
             if let Some(editor) = self.state.editor.as_mut() {
                 editor.values[0] = selected;
-                editor.regenerate_auto_style();
+                editor.generate_style(&self.state.theme, self.state.preferences.filter_text_only);
+                editor.auto_style = true;
             }
         }
         if self.state.editor.is_some() || self.state.palette.visible() {

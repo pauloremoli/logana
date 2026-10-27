@@ -17,6 +17,7 @@ use gpui_kit::component::description_list::DescriptionList;
 use gpui_kit::component::group_box::{GroupBox, GroupBoxVariant, GroupBoxVariants};
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::list::ListItem;
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::select::Select;
 use gpui_kit::component::setting::{SettingGroup, SettingItem, SettingPage, Settings};
 use gpui_kit::component::switch::Switch;
@@ -141,6 +142,58 @@ fn keybinding_item(entity: &Entity<App>, app: &App, e: &Editor, index: usize) ->
             )
     })
     .keywords([label])
+}
+
+fn filter_style_settings(entity: &Entity<App>) -> SettingGroup {
+    let mut group = SettingGroup::new()
+        .title("Filter style")
+        .description("Default appearance for new filters. Existing filters keep their colors.");
+    for (index, title, id, labels) in [
+        (
+            4,
+            "Default style",
+            "setting-filter-style",
+            ["No style", "Auto style"],
+        ),
+        (
+            5,
+            "Auto style colors",
+            "setting-filter-colors",
+            ["Text and background", "Text only"],
+        ),
+    ] {
+        let entity = entity.clone();
+        group = group.item(
+            SettingItem::render(move |_, _, cx| {
+                entity.update(cx, |app, cx| {
+                    let Some(editor) = app.state.editor.as_ref() else {
+                        return div();
+                    };
+                    let disabled = index == 5 && editor.values[4] != "true";
+                    let selected = editor.values[index] == "true";
+                    let mut choices = ButtonGroup::new(id).small();
+                    for (choice, label) in labels.into_iter().enumerate() {
+                        choices = choices.child(
+                            Button::new((id, choice))
+                                .label(label)
+                                .selected_accent(selected == (choice == 1))
+                                .disabled(disabled)
+                                .on_click(cx.listener(move |app, _, window, cx| {
+                                    app.dispatch(
+                                        Message::EditorText(index, (choice == 1).to_string()),
+                                        window,
+                                        cx,
+                                    )
+                                })),
+                        );
+                    }
+                    div().flex().flex_col().gap_1().child(title).child(choices)
+                })
+            })
+            .keywords([title, "filter", "style", "color"]),
+        );
+    }
+    group
 }
 
 /// One restore-policy row (title + always/ask/never button group).
@@ -500,10 +553,136 @@ fn dlt_editor(app: &App, width: f32, height: f32, cx: &mut Context<App>) -> AnyE
         .into_any_element()
 }
 
+fn custom_style(app: &App, cx: &mut Context<App>) -> AnyElement {
+    let e = app.state.editor.as_ref().unwrap();
+    let mut body = div().flex().flex_col().gap_3();
+    let mut colors = div().flex().flex_wrap().gap_3();
+    for (index, label) in [(0, "Text color"), (1, "Background color")] {
+        if let Some(picker) = app.editor_colors.get(index) {
+            let unset = picker.read(cx).value().is_none();
+            let accessible_label = if unset {
+                format!("{label}: No color")
+            } else {
+                label.to_string()
+            };
+            colors = colors.child(
+                div()
+                    .id(("editor-color", index))
+                    .test_support()
+                    .role(gpui_kit::gpui::Role::Group)
+                    .aria_label(accessible_label.clone())
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        ColorPicker::new(picker)
+                            .label(label)
+                            .accessibility_label(accessible_label)
+                            .when(unset, |picker| picker.icon(IconName::Ban)),
+                    )
+                    .child(
+                        Button::new(("color-reset", index))
+                            .ghost()
+                            .small()
+                            .label("Default")
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.dispatch(
+                                    Message::EditorText(index + 4, String::new()),
+                                    window,
+                                    cx,
+                                )
+                            })),
+                    ),
+            );
+        }
+    }
+    body =
+        body.child(colors).child(
+            Checkbox::new("whole-line")
+                .label("Color whole line")
+                .checked(e.whole_line)
+                .on_click(cx.listener(|app, _, window, cx| {
+                    app.dispatch(Message::EditorToggle(2), window, cx)
+                })),
+        );
+    body.into_any_element()
+}
+
 fn filter_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
     let e = app.state.editor.as_ref().unwrap();
     let mut body = div().flex().flex_col().gap_3();
     let timestamp = e.values[0].starts_with(crate::filters::DATE_PREFIX);
+    body = body.child(
+        div()
+            .flex()
+            .justify_between()
+            .items_center()
+            .child(
+                Button::new("filter-advanced")
+                    .ghost()
+                    .small()
+                    .icon(if e.advanced {
+                        IconName::ChevronUp
+                    } else {
+                        IconName::ChevronDown
+                    })
+                    .label(if !e.values[3].is_empty() {
+                        "Advanced · active"
+                    } else {
+                        "Advanced"
+                    })
+                    .on_click(cx.listener(|app, _, window, cx| {
+                        app.dispatch(Message::EditorAdvanced, window, cx)
+                    })),
+            )
+            .child(
+                Button::new(if timestamp {
+                    "filter-target-text"
+                } else {
+                    "filter-target-timestamp"
+                })
+                .ghost()
+                .small()
+                .label(if timestamp {
+                    "Use text filter"
+                } else {
+                    "Use timestamp"
+                })
+                .on_click(cx.listener(move |app, _, window, cx| {
+                    app.dispatch(
+                        Message::EditorText(
+                            0,
+                            if timestamp {
+                                String::new()
+                            } else {
+                                format!("{}>= ", crate::filters::DATE_PREFIX)
+                            },
+                        ),
+                        window,
+                        cx,
+                    )
+                })),
+            ),
+    );
+    if e.kind != FilterType::Exclude || timestamp {
+        body = body.child(
+            div().id("filter-style-section").test_support().child(
+                GroupBox::new()
+                    .outline()
+                    .title("Style")
+                    .gap_3()
+                    .child(
+                        Button::new("filter-regenerate-style")
+                            .small()
+                            .label("Generate style")
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.dispatch(Message::EditorRegenerateStyle, window, cx)
+                            })),
+                    )
+                    .child(custom_style(app, cx)),
+            ),
+        );
+    }
     if !timestamp {
         let mut kinds = ButtonGroup::new("filter-behavior").small();
         for (i, (kind, label)) in [
@@ -564,19 +743,38 @@ fn filter_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
                     .text_color(cx.theme().muted_foreground)
                     .child("All field filters and the text filter must match."),
             );
+        let mut matching = ButtonGroup::new("field-match-mode").small();
+        for (index, (exact, label)) in [(false, "Contains"), (true, "Exact match")]
+            .into_iter()
+            .enumerate()
+        {
+            matching = matching.child(
+                Button::new(("field-match-mode", index))
+                    .label(label)
+                    .selected_accent(e.field_exact == exact)
+                    .on_click(cx.listener(move |app, _, window, cx| {
+                        app.dispatch(Message::EditorFieldExact(exact), window, cx)
+                    })),
+            );
+        }
+        fields = fields.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child("Match field values")
+                .child(matching),
+        );
         for (i, (field, value)) in e.conditions.iter().enumerate() {
             fields = fields.child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .text_sm()
-                            .child(format!("{field} contains {value}")),
-                    )
+                    .child(div().flex_1().min_w(px(0.)).text_sm().child(format!(
+                        "{field} {} {value}",
+                        if e.field_exact { "equals" } else { "contains" }
+                    )))
                     .child(
                         Button::new(("condition-edit", i))
                             .ghost()
@@ -620,7 +818,16 @@ fn filter_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
                         .accessibility_label("Field")
                         .cleanable(true)
                 }))
-                .child(text(app, 2, "Contains value", cx))
+                .child(text(
+                    app,
+                    2,
+                    if e.field_exact {
+                        "Exact value"
+                    } else {
+                        "Contains value"
+                    },
+                    cx,
+                ))
                 .child(
                     button(
                         "condition-add",
@@ -647,114 +854,6 @@ fn filter_editor(app: &App, cx: &mut Context<App>) -> AnyElement {
     } else {
         body = body.child(timestamp_editor(app, cx));
     }
-    if e.kind != FilterType::Exclude || timestamp {
-        let (color, background) = crate::gui::actions::automatic_filter_colors(
-            &e.style_key,
-            &app.state.theme,
-            e.style_seed,
-        );
-        body = body.child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_2()
-                .child(
-                    Button::new("filter-auto-style")
-                        .small()
-                        .selected_accent(e.auto_style)
-                        .label("Auto style")
-                        .on_click(cx.listener(|app, _, window, cx| {
-                            app.dispatch(Message::EditorStyle(true), window, cx)
-                        })),
-                )
-                .when(e.auto_style, |d| {
-                    d.child(
-                        Button::new("filter-regenerate-style")
-                            .ghost()
-                            .small()
-                            .label("Generate another")
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                app.dispatch(Message::EditorRegenerateStyle, window, cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .px_2()
-                            .py_1()
-                            .when_some(crate::gui::color::color_to_gpui(background), |d, bg| {
-                                d.bg(bg)
-                            })
-                            .when_some(crate::gui::color::color_to_gpui(color), |d, color| {
-                                d.text_color(color)
-                            })
-                            .child("Matched log text"),
-                    )
-                })
-                .child(
-                    Button::new("filter-custom-style")
-                        .ghost()
-                        .small()
-                        .label("Custom…")
-                        .on_click(cx.listener(|app, _, window, cx| {
-                            app.dispatch(Message::EditorStyle(false), window, cx)
-                        })),
-                ),
-        );
-    }
-    body = body.child(
-        div()
-            .flex()
-            .justify_between()
-            .items_center()
-            .child(
-                Button::new("filter-advanced")
-                    .ghost()
-                    .small()
-                    .icon(if e.advanced {
-                        IconName::ChevronUp
-                    } else {
-                        IconName::ChevronDown
-                    })
-                    .label(if !e.values[3].is_empty() {
-                        "Advanced · active"
-                    } else {
-                        "Advanced"
-                    })
-                    .on_click(cx.listener(|app, _, window, cx| {
-                        app.dispatch(Message::EditorAdvanced, window, cx)
-                    })),
-            )
-            .child(
-                Button::new(if timestamp {
-                    "filter-target-text"
-                } else {
-                    "filter-target-timestamp"
-                })
-                .ghost()
-                .small()
-                .label(if timestamp {
-                    "Use text filter"
-                } else {
-                    "Use timestamp"
-                })
-                .on_click(cx.listener(move |app, _, window, cx| {
-                    app.dispatch(
-                        Message::EditorText(
-                            0,
-                            if timestamp {
-                                String::new()
-                            } else {
-                                format!("{}>= ", crate::filters::DATE_PREFIX)
-                            },
-                        ),
-                        window,
-                        cx,
-                    )
-                })),
-            ),
-    );
     if e.advanced {
         let mut advanced = div()
             .flex()
@@ -814,6 +913,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
     );
     let height = (f32::from(viewport.height) * 0.8).min((f32::from(viewport.height) - 48.).max(0.));
     let header = div()
+        .flex_shrink_0()
         .flex()
         .justify_between()
         .items_center()
@@ -895,6 +995,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     .keywords([label]),
                 );
             }
+            let filters = filter_style_settings(&entity);
             let mut display = SettingGroup::new().title("New file defaults");
             for (index, (label, on)) in e.fields.iter().enumerate() {
                 let locked = app
@@ -973,7 +1074,12 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                         Settings::new("preferences-settings")
                             .sidebar_width(px(180.))
                             .with_group_variant(GroupBoxVariant::Outline)
-                            .page(SettingPage::new("General").resettable(false).group(general))
+                            .page(
+                                SettingPage::new("General")
+                                    .resettable(false)
+                                    .group(general)
+                                    .group(filters),
+                            )
                             .page(SettingPage::new("Display").resettable(false).group(display))
                             .page(
                                 SettingPage::new("Integrations")
@@ -1830,51 +1936,8 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         }
         _ => {}
     }
-    if matches!(e.action, Action::Filter | Action::Group)
-        && (e.kind != FilterType::Exclude || e.values[0].starts_with(crate::filters::DATE_PREFIX))
-        && (e.action == Action::Group || (e.advanced && !e.auto_style))
-    {
-        if e.action == Action::Filter {
-            body = body.child(
-                div()
-                    .mt_3()
-                    .font_weight(gpui_kit::gpui::FontWeight::SEMIBOLD)
-                    .child("Match appearance"),
-            );
-        }
-        let mut colors = div().flex().flex_wrap().gap_3();
-        for (index, label) in [(0, "Text color"), (1, "Background color")] {
-            if let Some(picker) = app.editor_colors.get(index) {
-                colors = colors.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(ColorPicker::new(picker).label(label))
-                        .child(
-                            Button::new(("color-reset", index))
-                                .ghost()
-                                .small()
-                                .label("Default")
-                                .on_click(cx.listener(move |app, _, window, cx| {
-                                    app.dispatch(
-                                        Message::EditorText(index + 4, String::new()),
-                                        window,
-                                        cx,
-                                    )
-                                })),
-                        ),
-                );
-            }
-        }
-        body = body.child(colors).child(
-            Checkbox::new("whole-line")
-                .label("Color whole line")
-                .checked(e.whole_line)
-                .on_click(cx.listener(|app, _, window, cx| {
-                    app.dispatch(Message::EditorToggle(2), window, cx)
-                })),
-        );
+    if e.action == Action::Group && e.kind != FilterType::Exclude {
+        body = body.child(custom_style(app, cx));
     }
     if let Some(error) = &e.error {
         body = body.child(validation_error(e, error));
@@ -1883,6 +1946,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         div()
             .flex()
             .justify_end()
+            .flex_shrink_0()
             .when(e.action == Action::Filter, |d| {
                 d.pt_3().border_t_1().border_color(cx.theme().border)
             })
@@ -1971,12 +2035,19 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
         .child(header)
         .child(
             div()
-                .id("editor-content")
-                .max_h(px((height - 130.).max(48.)))
-                .overflow_y_scroll()
-                .track_scroll(&app.command_scroll)
-                .test_support()
-                .child(body),
+                .relative()
+                .min_h(px(0.))
+                .child(
+                    div()
+                        .id("editor-content")
+                        .max_h(px((height - 130.).max(48.)))
+                        .overflow_y_scroll()
+                        .track_scroll(&app.command_scroll)
+                        .test_support()
+                        .pr_4()
+                        .child(body),
+                )
+                .child(Scrollbar::vertical(&app.command_scroll).mode(ScrollbarMode::Always)),
         )
         .child(footer);
     Some(

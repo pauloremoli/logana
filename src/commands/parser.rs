@@ -27,6 +27,9 @@ pub enum Commands {
         /// (AND), matched against the full line.
         #[arg(long = "field", short = 'f')]
         field: Vec<String>,
+        /// Match entire field values instead of substrings
+        #[arg(long, requires = "field")]
+        exact: bool,
         /// Treat pattern as a regular expression instead of a literal string
         #[arg(long = "regex", short = 'r')]
         regex: bool,
@@ -53,6 +56,9 @@ pub enum Commands {
         /// (AND), matched against the full line.
         #[arg(long = "field", short = 'f')]
         field: Vec<String>,
+        /// Match entire field values instead of substrings
+        #[arg(long, requires = "field")]
+        exact: bool,
         /// Treat pattern as a regular expression instead of a literal string
         #[arg(long = "regex", short = 'r')]
         regex: bool,
@@ -80,6 +86,9 @@ pub enum Commands {
         /// (AND), matched against the full line.
         #[arg(long = "field", short = 'f')]
         field: Vec<String>,
+        /// Match entire field values instead of substrings
+        #[arg(long, requires = "field")]
+        exact: bool,
         /// Treat pattern as a regular expression instead of a literal string
         #[arg(long = "regex", short = 'r')]
         regex: bool,
@@ -284,4 +293,30 @@ pub enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn field_exact_flag_requires_a_field_and_defaults_to_contains() {
+        for command in ["filter", "exclude", "highlight"] {
+            assert!(CommandLine::try_parse_from([command, "--exact", "Measurement"]).is_err());
+            for exact in [false, true] {
+                let mut args = vec![command, "--field", "target=Measurement"];
+                if exact {
+                    args.push("--exact");
+                }
+                let parsed = CommandLine::try_parse_from(args).unwrap();
+                let actual = match parsed.command.unwrap() {
+                    Commands::Filter { exact, .. }
+                    | Commands::Exclude { exact, .. }
+                    | Commands::Highlight { exact, .. } => exact,
+                    _ => unreachable!(),
+                };
+                assert_eq!(actual, exact);
+            }
+        }
+    }
 }

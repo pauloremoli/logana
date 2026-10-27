@@ -7,6 +7,7 @@ pub const COMMAND_FLAGS: &[(&str, &[&str])] = &[
         "filter",
         &[
             "--field",
+            "--exact",
             "-f",
             "--fg",
             "--bg",
@@ -26,6 +27,7 @@ pub const COMMAND_FLAGS: &[(&str, &[&str])] = &[
         "exclude",
         &[
             "--field",
+            "--exact",
             "-f",
             "--group",
             "-g",
@@ -39,6 +41,7 @@ pub const COMMAND_FLAGS: &[(&str, &[&str])] = &[
         "highlight",
         &[
             "--field",
+            "--exact",
             "-f",
             "--fg",
             "--bg",
@@ -1295,8 +1298,9 @@ mod tests {
     #[test]
     fn test_complete_flags_filter_all() {
         let flags = complete_flags("filter", "-");
-        assert_eq!(flags.len(), 14);
+        assert_eq!(flags.len(), 15);
         assert!(flags.contains(&"--field"));
+        assert!(flags.contains(&"--exact"));
         assert!(flags.contains(&"-f"));
         assert!(flags.contains(&"--fg"));
         assert!(flags.contains(&"--bg"));

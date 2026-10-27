@@ -633,6 +633,7 @@ pub struct Editor {
     pub fields: Vec<(String, bool)>,
     pub defaults: Vec<(String, bool)>,
     pub conditions: Vec<(String, String)>,
+    pub field_exact: bool,
     pub members: Vec<(usize, String, bool)>,
     pub discovery: std::sync::Arc<crate::commands::auto_complete::FieldIndex>,
     pub original_theme: crate::theme::Theme,
@@ -675,6 +676,21 @@ impl Editor {
         self.style_key = self.style_pattern_key();
         self.auto_style = true;
         self.error = None;
+    }
+    /// Generate editable colors, respecting the preferred auto-style color scope.
+    pub fn generate_style(&mut self, theme: &crate::theme::Theme, text_only: bool) {
+        self.regenerate_auto_style();
+        if text_only {
+            let (r, g, b) = crate::theme::random_readable_foreground_for(
+                crate::theme::color_to_rgb(theme.root_bg),
+            );
+            self.values[4] = crate::style::Color::Rgb(r, g, b).to_string();
+        } else {
+            let (fg, bg) = automatic_filter_colors(&self.style_key, theme, self.style_seed);
+            self.values[4] = fg.to_string();
+            self.values[5] = bg.to_string();
+        }
+        self.auto_style = false;
     }
     /// Switches to a manually chosen style.
     pub fn disable_auto_style(&mut self) {
@@ -941,6 +957,7 @@ pub fn open(
         fields: Vec::new(),
         defaults: Vec::new(),
         conditions: Vec::new(),
+        field_exact: false,
         members: Vec::new(),
         discovery,
         original_theme: state.theme.clone(),
@@ -994,6 +1011,9 @@ pub fn open(
                 .strip_prefix(FIELD_PREFIX)
                 .and_then(|x| crate::filters::parse_field_filter_expr(x).ok())
             {
+                e.field_exact = crate::filters::field_filter_is_exact(
+                    f.pattern.strip_prefix(FIELD_PREFIX).unwrap(),
+                );
                 e.conditions = expr.0;
                 e.values[0] = expr.1.unwrap_or_default();
             }
@@ -1079,6 +1099,8 @@ pub fn open(
         e.values[1] = prefs.restore_file.to_string();
         e.values[2] = prefs.preview_bytes.to_string();
         e.values[3] = prefs.mcp_port.to_string();
+        e.values[4] = prefs.filter_auto_style.to_string();
+        e.values[5] = prefs.filter_text_only.to_string();
         e.fields = [
             "Wrap lines",
             "Line numbers",
@@ -1165,6 +1187,10 @@ pub fn open(
     }
     state.palette.open = false;
     state.time_range_open = false;
+    if action == Action::Filter && edit_id.is_none() && state.preferences.filter_auto_style {
+        e.style_seed = e.epoch as usize;
+        e.generate_style(&state.theme, state.preferences.filter_text_only);
+    }
     state.editor = Some(e);
     if action == Action::DefaultFilters {
         return Effect::LoadDefaultMappings {
@@ -1284,6 +1310,12 @@ pub fn apply(state: &mut GuiState) -> Effect {
                     .filter(|p| *p > 0)
                     .ok_or("MCP port must be between 1 and 65535.")?;
             }
+            prefs.filter_auto_style = e.values[4]
+                .parse()
+                .map_err(|_| "Choose a default filter style.")?;
+            prefs.filter_text_only = e.values[5]
+                .parse()
+                .map_err(|_| "Choose auto-style colors.")?;
             for (i, (_, on)) in e.fields.iter().enumerate() {
                 if !prefs
                     .locked
@@ -1535,6 +1567,7 @@ pub fn apply(state: &mut GuiState) -> Effect {
                 FilterType::Exclude => Commands::Exclude {
                     pattern,
                     field,
+                    exact: e.field_exact,
                     regex: e.regex,
                     ignore_case: e.ignore_case,
                     group: nonempty(&e.values[3]),
@@ -1542,6 +1575,7 @@ pub fn apply(state: &mut GuiState) -> Effect {
                 FilterType::Highlight => Commands::Highlight {
                     pattern,
                     field,
+                    exact: e.field_exact,
                     regex: e.regex,
                     ignore_case: e.ignore_case,
                     group: nonempty(&e.values[3]),
@@ -1554,6 +1588,7 @@ pub fn apply(state: &mut GuiState) -> Effect {
                 _ => Commands::Filter {
                     pattern,
                     field,
+                    exact: e.field_exact,
                     regex: e.regex,
                     ignore_case: e.ignore_case,
                     group: nonempty(&e.values[3]),
@@ -1633,17 +1668,32 @@ pub fn apply(state: &mut GuiState) -> Effect {
         let pattern = if timestamp || e.conditions.is_empty() {
             e.values[0].clone()
         } else {
-            crate::filters::encode_field_filter(&e.conditions, nonempty(&e.values[0]).as_deref())
+            crate::filters::encode_field_filter_with_match(
+                &e.conditions,
+                nonempty(&e.values[0]).as_deref(),
+                e.field_exact,
+            )
         };
         let automatic = e.auto_style && (e.kind != FilterType::Exclude || timestamp);
         let (auto_fg, auto_bg) = automatic_filter_colors(&e.style_key, &state.theme, e.style_seed);
+        let auto_fg = if automatic && state.preferences.filter_text_only {
+            let (r, g, b) = crate::theme::random_readable_foreground_for(
+                crate::theme::color_to_rgb(state.theme.root_bg),
+            );
+            crate::style::Color::Rgb(r, g, b)
+        } else {
+            auto_fg
+        };
         let options = crate::filters::FilterOptions {
             fg: if automatic && e.values[4..6].iter().all(String::is_empty) {
                 Some(auto_fg.to_string())
             } else {
                 nonempty(&e.values[4])
             },
-            bg: if automatic && e.values[4..6].iter().all(String::is_empty) {
+            bg: if automatic
+                && !state.preferences.filter_text_only
+                && e.values[4..6].iter().all(String::is_empty)
+            {
                 Some(auto_bg.to_string())
             } else {
                 nonempty(&e.values[5])
@@ -1872,6 +1922,92 @@ mod tests {
         palette::ExecutionState,
         update::{gui_outcome, update},
     };
+    #[tokio::test]
+    async fn filter_style_defaults_apply_only_to_new_filters_and_generate_respects_scope() {
+        for text_only in [false, true] {
+            let mut state = state().await;
+            state.preferences.filter_auto_style = true;
+            state.preferences.filter_text_only = text_only;
+            open(&mut state, Action::Filter, None, None);
+            let e = state.editor.as_ref().unwrap();
+            assert!(!e.values[4].is_empty());
+            assert_eq!(e.values[5].is_empty(), text_only);
+            if text_only {
+                let fg = crate::theme::parse_color(&e.values[4]).unwrap();
+                assert!(
+                    crate::theme::contrast_ratio(
+                        crate::theme::color_to_rgb(fg),
+                        crate::theme::color_to_rgb(state.theme.root_bg)
+                    ) >= crate::theme::MIN_READABLE_CONTRAST
+                );
+            }
+            update(&mut state, Message::EditorRegenerateStyle);
+            assert_eq!(
+                state.editor.as_ref().unwrap().values[5].is_empty(),
+                text_only
+            );
+            close(&mut state, false);
+            state.tabs[0].log_manager = save_filter(
+                state.tabs[0].log_manager.clone(),
+                None,
+                "plain".into(),
+                FilterType::Include,
+                crate::filters::FilterOptions::default(),
+            )
+            .await
+            .unwrap();
+            let id = state.tabs[0].log_manager.get_filters()[0].id;
+            open(&mut state, Action::Filter, Some(id), None);
+            let e = state.editor.as_ref().unwrap();
+            assert!(e.values[4].is_empty() && e.values[5].is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_field_filter_saves_reopens_and_keeps_highlight_matching() {
+        let mut state = state().await;
+        open(&mut state, Action::Filter, None, None);
+        let e = state.editor.as_mut().unwrap();
+        assert!(!e.field_exact);
+        e.conditions = vec![("target".into(), "Measurement".into())];
+        e.kind = FilterType::Highlight;
+        e.values[4] = "#123456".into();
+        update(&mut state, Message::EditorFieldExact(true));
+        let Effect::SaveGuiFilter {
+            pattern,
+            kind,
+            options,
+            ..
+        } = apply(&mut state)
+        else {
+            panic!("expected save");
+        };
+        let manager = save_filter(
+            state.tabs[0].log_manager.clone(),
+            None,
+            pattern,
+            kind,
+            options,
+        )
+        .await
+        .unwrap();
+        let def = manager.get_filters()[0].clone();
+        let (_, _, _, styles) = manager.build_filter_manager();
+        assert!(styles[0].field_filter.exact);
+        state.tabs[0].log_manager = manager;
+        gui_outcome(
+            &mut state,
+            "Save filter".into(),
+            ExecutionState::Success,
+            "Saved".into(),
+        );
+        open(&mut state, Action::Filter, Some(def.id), None);
+        let e = state.editor.as_ref().unwrap();
+        assert!(e.field_exact);
+        assert_eq!(e.conditions, vec![("target".into(), "Measurement".into())]);
+        assert_eq!(e.kind, FilterType::Highlight);
+    }
+
     #[tokio::test]
     async fn about_opens_from_palette_without_files() {
         let mut state = state().await;

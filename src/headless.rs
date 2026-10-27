@@ -244,6 +244,7 @@ async fn apply_inline_filters(
         if let Some(Commands::Filter {
             pattern,
             field,
+            exact,
             regex,
             ignore_case,
             group,
@@ -252,8 +253,10 @@ async fn apply_inline_filters(
         {
             let pattern = pattern.join(" ");
             let stored = if !field.is_empty() {
-                crate::shared::command_helpers::build_field_filter_pattern(&field, &pattern)
-                    .map_err(|e| anyhow::anyhow!(e))?
+                crate::shared::command_helpers::build_field_filter_pattern_with_match(
+                    &field, &pattern, exact,
+                )
+                .map_err(|e| anyhow::anyhow!(e))?
             } else {
                 pattern
             };
@@ -280,6 +283,7 @@ async fn apply_inline_filters(
         if let Some(Commands::Exclude {
             pattern,
             field,
+            exact,
             regex,
             ignore_case,
             group,
@@ -287,8 +291,10 @@ async fn apply_inline_filters(
         {
             let pattern = pattern.join(" ");
             let stored = if !field.is_empty() {
-                crate::shared::command_helpers::build_field_filter_pattern(&field, &pattern)
-                    .map_err(|e| anyhow::anyhow!(e))?
+                crate::shared::command_helpers::build_field_filter_pattern_with_match(
+                    &field, &pattern, exact,
+                )
+                .map_err(|e| anyhow::anyhow!(e))?
             } else {
                 pattern
             };

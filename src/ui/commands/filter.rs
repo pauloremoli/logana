@@ -8,6 +8,7 @@ pub(super) struct FilterArgs {
     pub bg: Option<String>,
     pub line_mode: bool,
     pub field: Vec<String>,
+    pub exact: bool,
     pub regex: bool,
     pub ignore_case: bool,
     pub group: Option<String>,
@@ -19,7 +20,7 @@ pub(super) struct FilterArgs {
     pub fga: bool,
 }
 
-use crate::shared::command_helpers::{build_field_filter_pattern, resolve_colors};
+use crate::shared::command_helpers::{build_field_filter_pattern_with_match, resolve_colors};
 
 impl App {
     pub(super) async fn cmd_filter(&mut self, args: FilterArgs) -> Result<bool, String> {
@@ -29,6 +30,7 @@ impl App {
             bg,
             line_mode,
             field,
+            exact,
             regex,
             ignore_case,
             group,
@@ -39,7 +41,7 @@ impl App {
         let (fg, bg) = resolve_colors(auto, fga, fg, bg, theme_bg)?;
         let is_field = !field.is_empty();
         let stored_pattern = if is_field {
-            build_field_filter_pattern(&field, &pattern)?
+            build_field_filter_pattern_with_match(&field, &pattern, exact)?
         } else {
             pattern.clone()
         };
@@ -108,13 +110,14 @@ impl App {
         &mut self,
         pattern: String,
         field: Vec<String>,
+        exact: bool,
         regex: bool,
         ignore_case: bool,
         group: Option<String>,
     ) -> Result<bool, String> {
         let is_field = !field.is_empty();
         let stored_pattern = if is_field {
-            build_field_filter_pattern(&field, &pattern)?
+            build_field_filter_pattern_with_match(&field, &pattern, exact)?
         } else {
             pattern.clone()
         };
@@ -165,6 +168,7 @@ impl App {
             bg,
             line_mode,
             field,
+            exact,
             regex,
             ignore_case,
             group,
@@ -174,7 +178,7 @@ impl App {
         let theme_bg = crate::theme::color_to_rgb(self.theme.root_bg);
         let (fg, bg) = resolve_colors(auto, fga, fg, bg, theme_bg)?;
         let stored_pattern = if !field.is_empty() {
-            build_field_filter_pattern(&field, &pattern)?
+            build_field_filter_pattern_with_match(&field, &pattern, exact)?
         } else {
             pattern.clone()
         };

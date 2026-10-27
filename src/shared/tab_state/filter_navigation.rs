@@ -34,6 +34,7 @@ impl Matcher {
         if let Some(expr) = def.pattern.strip_prefix(filters::FIELD_PREFIX) {
             let (conditions, text) = filters::parse_field_filter_expr(expr).ok()?;
             return Some(Self::Field(filters::FieldFilter {
+                exact: filters::field_filter_is_exact(expr),
                 conditions,
                 text,
                 decision: FilterDecision::Include,
@@ -211,6 +212,30 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn navigation_skips_partial_values_for_exact_field_filters() {
+        let pattern = filters::encode_field_filter_with_match(
+            &[("target".into(), "Measurement".into())],
+            None,
+            true,
+        );
+        let mut tab = tab(
+            concat!(
+                "{\"target\":\"PowerMeasurement\",\"message\":\"power\"}\n",
+                "{\"target\":\"Measurement\",\"message\":\"plain\"}\n",
+                "{\"target\":\"WaterMeasurement\",\"message\":\"water\"}\n"
+            ),
+            &[(&pattern, FilterOptions::default())],
+        )
+        .await;
+        tab.filter.enabled = false;
+        tab.refresh_visible();
+        assert!(navigate(&mut tab, 0, true, 1).await);
+        assert_eq!(tab.scroll.scroll_offset, 1);
+        assert!(navigate(&mut tab, 0, true, 1).await);
+        assert_eq!(tab.scroll.scroll_offset, 1);
     }
 
     #[tokio::test]

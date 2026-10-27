@@ -98,6 +98,9 @@ fn build_field_filter_command(
         append_color_flags(&mut c, cc, true);
     }
     append_group_flag(&mut c, group);
+    if crate::filters::field_filter_is_exact(expr) {
+        c.push_str(" --exact");
+    }
     match crate::filters::parse_field_filter_expr(expr) {
         Ok((conditions, text)) => {
             for (key, value) in &conditions {
@@ -1622,6 +1625,33 @@ mod tests {
             }
             other => panic!("expected Command, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn exact_field_filter_edit_preserves_matching_mode() {
+        use clap::Parser;
+        let mut tab = make_tab(&["error"]).await;
+        let pattern = crate::filters::encode_field_filter_with_match(
+            &[("target".into(), "Measurement".into())],
+            None,
+            true,
+        );
+        tab.log_manager
+            .add_filter_with_color(pattern, FilterType::Include, FilterOptions::default())
+            .await;
+        let (mode, _) = press(filter_mode(0), &mut tab, KeyCode::Char('e')).await;
+        let ModeRenderState::Command { input, .. } = mode.render_state() else {
+            panic!("expected command");
+        };
+        let parsed = crate::commands::CommandLine::try_parse_from(
+            crate::commands::auto_complete::shell_split(&input),
+        )
+        .unwrap();
+        let Some(crate::commands::Commands::Filter { field, exact, .. }) = parsed.command else {
+            panic!("expected field filter");
+        };
+        assert!(exact);
+        assert_eq!(field, vec!["target=Measurement"]);
     }
 
     #[tokio::test]

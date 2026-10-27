@@ -50,6 +50,7 @@ impl App {
                 bg,
                 line_mode,
                 field,
+                exact,
                 regex,
                 ignore_case,
                 group,
@@ -63,6 +64,7 @@ impl App {
                         bg,
                         line_mode,
                         field,
+                        exact,
                         regex,
                         ignore_case,
                         group,
@@ -74,12 +76,13 @@ impl App {
             Some(Commands::Exclude {
                 pattern,
                 field,
+                exact,
                 regex,
                 ignore_case,
                 group,
             }) => {
                 return self
-                    .cmd_exclude(pattern.join(" "), field, regex, ignore_case, group)
+                    .cmd_exclude(pattern.join(" "), field, exact, regex, ignore_case, group)
                     .await;
             }
             Some(Commands::Highlight {
@@ -88,6 +91,7 @@ impl App {
                 bg,
                 line_mode,
                 field,
+                exact,
                 regex,
                 ignore_case,
                 group,
@@ -101,6 +105,7 @@ impl App {
                         bg,
                         line_mode,
                         field,
+                        exact,
                         regex,
                         ignore_case,
                         group,

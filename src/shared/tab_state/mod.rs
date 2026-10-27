@@ -7347,6 +7347,7 @@ mod tests {
         use crate::filters::FieldFilter;
         use crate::parser::DisplayParts;
         let exc = FieldFilter {
+            exact: false,
             conditions: vec![("level".to_string(), "debug".to_string())],
             text: None,
             decision: FilterDecision::Exclude,
@@ -7368,6 +7369,7 @@ mod tests {
         use crate::filters::FieldFilter;
         use crate::parser::DisplayParts;
         let inc = FieldFilter {
+            exact: false,
             conditions: vec![("level".to_string(), "error".to_string())],
             text: None,
             decision: FilterDecision::Include,
@@ -7389,6 +7391,7 @@ mod tests {
         use crate::filters::FieldFilter;
         use crate::parser::DisplayParts;
         let inc = FieldFilter {
+            exact: false,
             conditions: vec![("level".to_string(), "error".to_string())],
             text: None,
             decision: FilterDecision::Include,
@@ -7411,6 +7414,7 @@ mod tests {
         use crate::parser::DisplayParts;
         // Text include matched; field include miss doesn't override.
         let inc = FieldFilter {
+            exact: false,
             conditions: vec![("level".to_string(), "error".to_string())],
             text: None,
             decision: FilterDecision::Include,
@@ -7432,6 +7436,7 @@ mod tests {
         use crate::filters::FieldFilter;
         fn make_inc() -> FieldFilter {
             FieldFilter {
+                exact: false,
                 conditions: vec![("level".to_string(), "error".to_string())],
                 text: None,
                 decision: FilterDecision::Include,

@@ -13,11 +13,15 @@ All notable changes to logana will be documented in this file.
 - [core] Import the full Notepad++ named palette with exact RGB values, accept gray/grey aliases and replace unknown import colors with generated colors and a warning instead of aborting.
 
 ### Added
+- [gui] Configure new filters with no style or automatic text-only/text-and-background colors in Settings.
+- [core][gui][tui] Choose exact field-value matches in the filter editor or with `--field key=value --exact`; contains remains the default.
 - [gui] Add expand/collapse multiline actions and subtle +/− gutter controls with hidden-line counts in tooltips.
 - [gui] Add File → Open Recent with the five most recently opened files, remembered across restarts.
 - [gui] Right-click a filter to edit, enable or disable, delete, or move it up, down, to the top, or to the bottom.
 
 ### Changed
+- [gui] Show a no-color icon for unset filter colors so they are distinct from black.
+- [gui] Promote filter styling to a dedicated section with always-visible color controls and a single Generate style action that fills both colors, and show a persistent scrollbar when editor content overflows.
 - [gui] Keep disabled filters styled the same as enabled filters.
 - [gui] Expand the active file tab to fit its full filename.
 - [gui] Describe multiline message actions and options without exposing internal continuation terminology.

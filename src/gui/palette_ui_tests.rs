@@ -961,7 +961,6 @@ fn filter_editor_prefills_native_inputs_and_color_pickers_without_command_output
             app.dispatch(Message::EditFilter(id), window, cx);
         });
         window.render_frame(cx);
-        window.click("filter-custom-style", cx);
         window.render_frame(cx);
         for (index, expected) in [(0usize, "hello"), (2, "INFO")] {
             assert_eq!(window.find(("editor-input", index)).value(), Some(expected));
@@ -1250,17 +1249,176 @@ fn filter_editor_sections_support_auto_style(cx: &mut TestAppContext) {
         assert!(window.try_find("filter-fields-section").is_some());
         assert!(window.try_find("filter-field-select").is_some());
         assert!(window.try_find("filter-group-select").is_none());
-        assert!(window.try_find(("color-reset", 0usize)).is_none());
+        assert!(window.try_find(("color-reset", 0usize)).is_some());
         assert!(window.try_find(("filter-option", 0usize)).is_some());
         assert!(!app.read(cx).state.editor.as_ref().unwrap().auto_style);
-        window.click("filter-auto-style", cx);
-        assert!(app.read(cx).state.editor.as_ref().unwrap().auto_style);
+        window.click("filter-regenerate-style", cx);
+        assert!(!app.read(cx).state.editor.as_ref().unwrap().auto_style);
         assert_eq!(app.read(cx).state.editor.as_ref().unwrap().style_seed, 1);
         window.click("filter-advanced", cx);
         window.render_frame(cx);
         assert!(window.try_find("filter-group-select").is_some());
         window.click(("filter-option", 0usize), cx);
         assert!(app.read(cx).state.editor.as_ref().unwrap().regex);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn filter_style_is_prominent_and_long_forms_scroll(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (800., 600.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx);
+            app.state.editor.as_mut().unwrap().conditions = (0..20)
+                .map(|i| (format!("field{i}"), "value".into()))
+                .collect();
+        });
+        window.render_frame(cx);
+        let style = window.find("filter-style-section").bounds();
+        let fields = window.find("filter-fields-section").bounds();
+        assert!(style.top() < fields.top());
+        assert!(window.try_find(("color-reset", 0usize)).is_some());
+        window.click("filter-regenerate-style", cx);
+        window.render_frame(cx);
+        assert!(!app.read(cx).state.editor.as_ref().unwrap().auto_style);
+        assert!(window.try_find(("color-reset", 0usize)).is_some());
+        assert!(window.try_find(("color-reset", 1usize)).is_some());
+        let colors = app.read(cx).state.editor.as_ref().unwrap().values[4..6].to_vec();
+        for (picker, color) in app.read(cx).editor_colors.iter().zip(&colors) {
+            let expected = crate::theme::parse_color(color)
+                .and_then(crate::gui::color::color_to_gpui)
+                .map(Into::into);
+            assert!(expected.is_some());
+            assert_eq!(picker.read(cx).value(), expected);
+        }
+        window.click("filter-regenerate-style", cx);
+        window.render_frame(cx);
+        assert_ne!(
+            app.read(cx).state.editor.as_ref().unwrap().values[4..6],
+            colors
+        );
+        window.scroll(
+            "editor-content",
+            gpui::ScrollDelta::Pixels(point(px(0.), px(-2000.))),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(app.read(cx).command_scroll.offset().y < px(0.));
+        let footer = window.find("editor-apply").bounds();
+        assert!(footer.bottom() <= px(600.));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn field_filter_matching_defaults_to_contains_and_can_be_exact(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (1000., 1200.), "github-light");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx)
+        });
+        window.render_frame(cx);
+        assert!(!app.read(cx).state.editor.as_ref().unwrap().field_exact);
+        window.click(("field-match-mode", 1usize), cx);
+        window.render_frame(cx);
+        assert!(app.read(cx).state.editor.as_ref().unwrap().field_exact);
+        window.click(("field-match-mode", 0usize), cx);
+        assert!(!app.read(cx).state.editor.as_ref().unwrap().field_exact);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn settings_choose_auto_filter_colors_and_keep_manual_colors_editable(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (1000., 1000.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Settings), window, cx)
+        });
+        window.render_frame(cx);
+        window.click(("setting-filter-style", 1usize), cx);
+        window.render_frame(cx);
+        window.click(("setting-filter-colors", 1usize), cx);
+        window.click("editor-apply", cx);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx)
+        });
+        window.render_frame(cx);
+        let e = app.read(cx).state.editor.as_ref().unwrap();
+        assert!(!e.values[4].is_empty());
+        assert!(e.values[5].is_empty());
+        assert!(window.try_find(("color-reset", 0usize)).is_some());
+        assert!(window.try_find(("color-reset", 1usize)).is_some());
+        window.click("filter-regenerate-style", cx);
+        window.render_frame(cx);
+        assert!(app.read(cx).state.editor.as_ref().unwrap().values[5].is_empty());
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::EditorCancel, window, cx);
+            app.dispatch(Message::GuiAction(Action::Settings), window, cx);
+        });
+        window.render_frame(cx);
+        window.click(("setting-filter-style", 0usize), cx);
+        window.click("editor-cancel", cx);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Settings), window, cx)
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().values[4],
+            "true"
+        );
+        window.click(("setting-filter-style", 0usize), cx);
+        window.click("editor-apply", cx);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx)
+        });
+        window.render_frame(cx);
+        let e = app.read(cx).state.editor.as_ref().unwrap();
+        assert!(e.values[4].is_empty() && e.values[5].is_empty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn unset_filter_colors_are_distinct_from_explicit_black(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (1000., 1000.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx)
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("editor-color", 0usize)).label(),
+            Some("Text color: No color")
+        );
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::EditorText(4, "#000000".into()), window, cx)
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("editor-color", 0usize)).label(),
+            Some("Text color")
+        );
+        assert!(app.read(cx).editor_colors[0].read(cx).value().is_some());
+        window.click(("color-reset", 0usize), cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("editor-color", 0usize)).label(),
+            Some("Text color: No color")
+        );
+        assert_eq!(
+            window.find(("editor-color", 1usize)).label(),
+            Some("Background color: No color")
+        );
     })
     .unwrap();
 }

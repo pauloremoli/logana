@@ -62,6 +62,14 @@ pub fn resolve_colors(
 /// trailing pattern becomes an additional AND'd free-text condition
 /// (matched against the full line, like a plain non-field filter).
 pub fn build_field_filter_pattern(field: &[String], pattern: &str) -> Result<String, String> {
+    build_field_filter_pattern_with_match(field, pattern, false)
+}
+
+pub fn build_field_filter_pattern_with_match(
+    field: &[String],
+    pattern: &str,
+    exact: bool,
+) -> Result<String, String> {
     let conditions = field
         .iter()
         .map(|kv| {
@@ -74,5 +82,9 @@ pub fn build_field_filter_pattern(field: &[String], pattern: &str) -> Result<Str
     } else {
         Some(pattern)
     };
-    Ok(crate::filters::encode_field_filter(&conditions, text))
+    Ok(crate::filters::encode_field_filter_with_match(
+        &conditions,
+        text,
+        exact,
+    ))
 }

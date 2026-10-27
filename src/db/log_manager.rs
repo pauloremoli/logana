@@ -693,6 +693,9 @@ impl LogManager {
                     };
                     field_filter_styles.push(crate::filters::FieldFilterStyle {
                         field_filter: crate::filters::FieldFilter {
+                            exact: crate::filters::field_filter_is_exact(
+                                &def.pattern[crate::filters::FIELD_PREFIX.len()..],
+                            ),
                             conditions,
                             text,
                             decision,

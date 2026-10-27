@@ -49,6 +49,7 @@ pub enum Message {
     EditorMove(usize, isize),
     EditorAll(bool),
     EditorReset,
+    EditorFieldExact(bool),
     EditorConditionAdd,
     EditorConditionEdit(usize),
     EditorConditionRemove(usize),

@@ -9,9 +9,10 @@ pub use date_filter::{
 pub(crate) use date_filter::{bsd_month_from_timestamp, system_time_to_date};
 pub use field_filter::{
     FIELD_PREFIX, FieldFilter, FieldFilterStyle, FieldVote, any_field_exclude_matches,
-    count_field_filter_matches, encode_field_filter, extract_field_filters,
-    extract_field_filters_ordered, field_filter_matches, field_include_vote, parse_field_filter,
-    parse_field_filter_expr, resolve_field,
+    count_field_filter_matches, encode_field_filter, encode_field_filter_with_match,
+    extract_field_filters, extract_field_filters_ordered, field_filter_is_exact,
+    field_filter_matches, field_include_vote, parse_field_filter, parse_field_filter_expr,
+    resolve_field,
 };
 pub use manager::{
     CURRENT_SEARCH_STYLE_ID, ColorConfig, Filter, FilterDecision, FilterDef, FilterInsertOptions,

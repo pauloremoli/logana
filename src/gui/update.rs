@@ -499,7 +499,7 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
         }
         Message::EditorRegenerateStyle => {
             if let Some(e) = &mut state.editor {
-                e.regenerate_auto_style();
+                e.generate_style(&state.theme, state.preferences.filter_text_only);
             }
             Effect::None
         }
@@ -589,6 +589,13 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
         Message::EditorReset => {
             if let Some(e) = &mut state.editor {
                 e.fields = e.defaults.clone();
+            }
+            Effect::None
+        }
+        Message::EditorFieldExact(exact) => {
+            if let Some(e) = &mut state.editor {
+                e.field_exact = exact;
+                e.error = None;
             }
             Effect::None
         }
@@ -1109,6 +1116,7 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
                     Commands::Filter {
                         pattern: vec![],
                         field: vec![format!("{field}={value}")],
+                        exact: false,
                         fg: None,
                         bg: None,
                         line_mode: false,
@@ -1282,10 +1290,24 @@ pub fn gui_outcome(
         validation: false,
     });
 }
-pub fn perform_gui(state: &mut GuiState, command: Commands, label: String) -> Effect {
+pub fn perform_gui(state: &mut GuiState, mut command: Commands, label: String) -> Effect {
     use crate::gui::palette::ExecutionState;
     if state.palette.pending() {
         return Effect::None;
+    }
+    if state.preferences.filter_auto_style {
+        match &mut command {
+            Commands::Filter {
+                fg, bg, auto, fga, ..
+            }
+            | Commands::Highlight {
+                fg, bg, auto, fga, ..
+            } if fg.is_none() && bg.is_none() && !*auto && !*fga => {
+                *fga = state.preferences.filter_text_only;
+                *auto = !state.preferences.filter_text_only;
+            }
+            _ => {}
+        }
     }
     gui_outcome(state, label, ExecutionState::Running, "Running…".into());
     let request_id = state.palette.next_request;
@@ -1962,6 +1984,7 @@ pub async fn execute_command(
             bg,
             line_mode,
             field,
+            exact,
             regex,
             ignore_case,
             group,
@@ -1971,7 +1994,7 @@ pub async fn execute_command(
             let (fg, bg) =
                 crate::shared::command_helpers::resolve_colors(auto, fga, fg, bg, theme_bg)?;
             let options = filter_options(fg, bg, line_mode, regex, ignore_case, group);
-            let stored_pattern = stored_filter_pattern(&field, &pattern.join(" "))?;
+            let stored_pattern = stored_filter_pattern(&field, &pattern.join(" "), exact)?;
             log_manager
                 .add_filter_with_color(stored_pattern, FilterType::Include, options)
                 .await;
@@ -1979,12 +2002,13 @@ pub async fn execute_command(
         Commands::Exclude {
             pattern,
             field,
+            exact,
             regex,
             ignore_case,
             group,
         } => {
             let options = filter_options(None, None, false, regex, ignore_case, group);
-            let stored_pattern = stored_filter_pattern(&field, &pattern.join(" "))?;
+            let stored_pattern = stored_filter_pattern(&field, &pattern.join(" "), exact)?;
             log_manager
                 .add_filter_with_color(stored_pattern, FilterType::Exclude, options)
                 .await;
@@ -1995,6 +2019,7 @@ pub async fn execute_command(
             bg,
             line_mode,
             field,
+            exact,
             regex,
             ignore_case,
             group,
@@ -2004,7 +2029,7 @@ pub async fn execute_command(
             let (fg, bg) =
                 crate::shared::command_helpers::resolve_colors(auto, fga, fg, bg, theme_bg)?;
             let options = filter_options(fg, bg, line_mode, regex, ignore_case, group);
-            let stored_pattern = stored_filter_pattern(&field, &pattern.join(" "))?;
+            let stored_pattern = stored_filter_pattern(&field, &pattern.join(" "), exact)?;
             log_manager
                 .add_filter_with_color(stored_pattern, FilterType::Highlight, options)
                 .await;
@@ -2058,11 +2083,11 @@ pub async fn execute_command(
 /// `cmd_filter` uses — so a field filter added from the GUI (the facet
 /// checkboxes) round-trips through `filter_id_for_field_equality` exactly
 /// like one added from the TUI's command bar.
-fn stored_filter_pattern(field: &[String], pattern: &str) -> Result<String, String> {
+fn stored_filter_pattern(field: &[String], pattern: &str, exact: bool) -> Result<String, String> {
     if field.is_empty() {
         Ok(pattern.to_string())
     } else {
-        crate::shared::command_helpers::build_field_filter_pattern(field, pattern)
+        crate::shared::command_helpers::build_field_filter_pattern_with_match(field, pattern, exact)
     }
 }
 
@@ -3610,6 +3635,28 @@ mod tests {
         assert_eq!(state.column_resize_last_x, Some(50.0));
         update(&mut state, Message::ColumnResizeEnded);
         assert_eq!(state.column_resize_last_x, None);
+    }
+
+    #[tokio::test]
+    async fn field_filters_follow_default_style_preferences() {
+        for automatic in [false, true] {
+            for text_only in [false, true] {
+                let (mut state, _file) = state_with_one_tab().await;
+                state.preferences.filter_auto_style = automatic;
+                state.preferences.filter_text_only = text_only;
+                let Effect::ExecutePalette { command, .. } = update(
+                    &mut state,
+                    Message::FacetValueToggled(0, "level".into(), "error".into()),
+                ) else {
+                    panic!("expected filter command");
+                };
+                let Commands::Filter { auto, fga, .. } = command else {
+                    panic!("expected filter");
+                };
+                assert_eq!(auto, automatic && !text_only);
+                assert_eq!(fga, automatic && text_only);
+            }
+        }
     }
 
     #[tokio::test]

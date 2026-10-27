@@ -13,6 +13,8 @@ pub type FieldFilterExpr = (Vec<(String, String)>, Option<String>);
 const CONDITION_SEP: char = '\u{1F}';
 /// Marks a segment as the free-text condition rather than a `key:value` pair.
 const TEXT_MARKER: char = '\u{02}';
+/// Metadata segment; legacy expressions default to contains.
+const EXACT_MARKER: &str = "\u{03}exact\u{1F}";
 
 /// A compiled, ready-to-evaluate field-scoped filter. May combine several
 /// `(field, value)` conditions (all must match — AND) with an optional
@@ -20,6 +22,8 @@ const TEXT_MARKER: char = '\u{02}';
 /// `:filter --field level=INFO --field component=LumaCore some text`.
 #[derive(Debug, Clone)]
 pub struct FieldFilter {
+    /// Match each entire field value instead of a substring.
+    pub exact: bool,
     /// `(field, pattern)` pairs — every one must match for this filter to match.
     pub conditions: Vec<(String, String)>,
     /// Optional free-text substring, ANDed with `conditions` when present —
@@ -68,6 +72,7 @@ pub fn parse_field_filter(expr: &str) -> Result<(String, String), String> {
 /// unchanged, so filters saved before compound support was added keep
 /// loading correctly.
 pub fn parse_field_filter_expr(expr: &str) -> Result<FieldFilterExpr, String> {
+    let expr = expr.strip_prefix(EXACT_MARKER).unwrap_or(expr);
     let mut conditions = Vec::new();
     let mut text = None;
     for segment in expr.split(CONDITION_SEP) {
@@ -93,6 +98,24 @@ pub fn encode_field_filter(conditions: &[(String, String)], text: Option<&str>) 
         "{FIELD_PREFIX}{}",
         segments.join(&CONDITION_SEP.to_string())
     )
+}
+
+/// Whether a stored field expression (without `FIELD_PREFIX`) uses exact values.
+pub fn field_filter_is_exact(expr: &str) -> bool {
+    expr.starts_with(EXACT_MARKER)
+}
+
+/// Encode an exact or contains field filter, retaining the legacy contains format.
+pub fn encode_field_filter_with_match(
+    conditions: &[(String, String)],
+    text: Option<&str>,
+    exact: bool,
+) -> String {
+    let mut pattern = encode_field_filter(conditions, text);
+    if exact {
+        pattern.insert_str(FIELD_PREFIX.len(), EXACT_MARKER);
+    }
+    pattern
 }
 
 /// Splits a dotted field path into `(group, key)` iff its first dot-segment
@@ -127,6 +150,7 @@ fn group_field_condition_matches(
     group: &str,
     key: &str,
     pattern: &str,
+    exact: bool,
 ) -> bool {
     parts
         .field_groups
@@ -134,9 +158,14 @@ fn group_field_condition_matches(
         .filter(|(name, _)| *name == group)
         .flat_map(|(_, items)| items)
         .any(|item| {
-            item.fields
-                .iter()
-                .any(|(_, k, v)| *k == key && v.contains(pattern))
+            item.fields.iter().any(|(_, k, v)| {
+                *k == key
+                    && if exact {
+                        *v == pattern
+                    } else {
+                        v.contains(pattern)
+                    }
+            })
         })
 }
 
@@ -149,9 +178,15 @@ fn group_field_condition_matches(
 pub fn field_filter_matches(ff: &FieldFilter, parts: &DisplayParts<'_>, line: &[u8]) -> bool {
     ff.conditions.iter().all(|(field, pattern)| {
         if let Some((group, key)) = split_group_field_path(parts, field) {
-            group_field_condition_matches(parts, group, key, pattern)
+            group_field_condition_matches(parts, group, key, pattern, ff.exact)
         } else {
-            resolve_field(field, parts).is_some_and(|v| v.contains(pattern.as_str()))
+            resolve_field(field, parts).is_some_and(|v| {
+                if ff.exact {
+                    v == pattern
+                } else {
+                    v.contains(pattern.as_str())
+                }
+            })
         }
     }) && ff
         .text
@@ -176,6 +211,7 @@ pub fn extract_field_filters_ordered(filter_defs: &[FilterDef]) -> Vec<FieldFilt
                 FilterType::Highlight => FilterDecision::Highlight,
             };
             Some(FieldFilter {
+                exact: field_filter_is_exact(expr),
                 conditions,
                 text,
                 decision,
@@ -226,6 +262,7 @@ pub fn extract_field_filters(filter_defs: &[FilterDef]) -> (Vec<FieldFilter>, Ve
             FilterType::Highlight => continue,
         };
         let ff = FieldFilter {
+            exact: field_filter_is_exact(expr),
             conditions,
             text,
             decision,
@@ -349,6 +386,87 @@ mod tests {
     use crate::parser::DisplayParts;
 
     #[test]
+    fn exact_field_filters_round_trip_compounds_and_group_values() {
+        let conditions = vec![("operations.object_name".into(), "Measurement".into())];
+        let pattern = encode_field_filter_with_match(&conditions, Some("reading"), true);
+        let expr = pattern.strip_prefix(FIELD_PREFIX).unwrap();
+        assert!(field_filter_is_exact(expr));
+        assert_eq!(
+            parse_field_filter_expr(expr).unwrap(),
+            (conditions.clone(), Some("reading".into()))
+        );
+        assert_eq!(
+            encode_field_filter_with_match(&conditions, None, false),
+            encode_field_filter(&conditions, None)
+        );
+        let filters =
+            extract_field_filters_ordered(&[make_def(1, &pattern, FilterType::Highlight, true)]);
+        let partial = make_parts_with_group(
+            "operations",
+            vec![vec![("object_name", "PowerMeasurement")]],
+        );
+        assert!(!field_filter_matches(&filters[0], &partial, b"reading"));
+        let exact = make_parts_with_group(
+            "operations",
+            vec![
+                vec![("object_name", "PowerMeasurement")],
+                vec![("object_name", "Measurement")],
+            ],
+        );
+        assert!(field_filter_matches(&filters[0], &exact, b"reading"));
+        assert!(!field_filter_matches(&filters[0], &exact, b"other"));
+        let mut counts = vec![0];
+        count_field_filter_matches(&filters, Some(&partial), b"reading", &mut counts);
+        assert_eq!(counts, vec![0]);
+        count_field_filter_matches(&filters, Some(&exact), b"reading", &mut counts);
+        assert_eq!(counts, vec![1]);
+    }
+
+    #[test]
+    fn exact_field_filters_reject_partial_values_and_survive_extraction() {
+        for kind in [
+            FilterType::Include,
+            FilterType::Exclude,
+            FilterType::Highlight,
+        ] {
+            let defs = vec![make_def(
+                1,
+                "@field:\u{03}exact\u{1F}target:Measurement",
+                kind.clone(),
+                true,
+            )];
+            let ordered = extract_field_filters_ordered(&defs);
+            assert_eq!(ordered.len(), 1);
+            for value in [
+                "Measurement",
+                "PowerMeasurement",
+                "WaterMeasurement",
+                "measurement",
+            ] {
+                let parts = make_parts(None, None, None, Some(value), vec![]);
+                assert_eq!(
+                    field_filter_matches(&ordered[0], &parts, b""),
+                    value == "Measurement"
+                );
+            }
+            let (includes, excludes) = extract_field_filters(&defs);
+            assert_eq!(includes.len(), usize::from(kind == FilterType::Include));
+            assert_eq!(excludes.len(), usize::from(kind == FilterType::Exclude));
+        }
+        let defs = vec![make_def(
+            1,
+            "@field:target:Measurement",
+            FilterType::Include,
+            true,
+        )];
+        let filters = extract_field_filters_ordered(&defs);
+        for value in ["Measurement", "PowerMeasurement", "WaterMeasurement"] {
+            let parts = make_parts(None, None, None, Some(value), vec![]);
+            assert!(field_filter_matches(&filters[0], &parts, b""));
+        }
+    }
+
+    #[test]
     fn test_parse_field_filter_valid() {
         let (k, v) = parse_field_filter("level:error").unwrap();
         assert_eq!(k, "level");
@@ -443,6 +561,7 @@ mod tests {
 
     fn compound(conditions: &[(&str, &str)], text: Option<&str>) -> FieldFilter {
         FieldFilter {
+            exact: false,
             conditions: conditions
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -610,6 +729,7 @@ mod tests {
 
     fn inc(field: &str, pattern: &str) -> FieldFilter {
         FieldFilter {
+            exact: false,
             conditions: vec![(field.to_string(), pattern.to_string())],
             text: None,
             decision: FilterDecision::Include,
@@ -618,6 +738,7 @@ mod tests {
 
     fn exc(field: &str, pattern: &str) -> FieldFilter {
         FieldFilter {
+            exact: false,
             conditions: vec![(field.to_string(), pattern.to_string())],
             text: None,
             decision: FilterDecision::Exclude,

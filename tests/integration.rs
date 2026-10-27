@@ -1575,3 +1575,63 @@ fn test_builtin_transactions_preserves_record_boundaries_and_end_timestamp() {
     assert!(logana::parser::find_builtin_parser("service").is_some());
     assert!(logana::parser::find_builtin_parser("transactions").is_some());
 }
+
+#[test]
+fn headless_field_filters_support_exact_values_and_default_to_contains() {
+    let tmp = tempfile::tempdir().unwrap();
+    let schema_dir = tmp.path().join("logana").join("schema");
+    std::fs::create_dir_all(&schema_dir).unwrap();
+    std::fs::write(
+        schema_dir.join("measurements.json"),
+        r#"{"name":"measurements","template":"{target} {message}"}"#,
+    )
+    .unwrap();
+    let log = tmp.path().join("measurements.log");
+    std::fs::write(
+        &log,
+        "PowerMeasurement power\nWaterMeasurement water\nMeasurement plain\nOther other\n",
+    )
+    .unwrap();
+    for exact in [false, true] {
+        for exclude in [false, true] {
+            let spec = if exact {
+                "--field target=Measurement --exact"
+            } else {
+                "--field target=Measurement"
+            };
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_logana"))
+                .arg("--headless")
+                .arg(&log)
+                .arg(if exclude { "--exclude" } else { "--include" })
+                .arg(spec)
+                .env("XDG_CONFIG_HOME", tmp.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            for value in [
+                "PowerMeasurement",
+                "WaterMeasurement",
+                "Measurement",
+                "Other",
+            ] {
+                let matches = if exact {
+                    value == "Measurement"
+                } else {
+                    value.contains("Measurement")
+                };
+                assert_eq!(
+                    stdout
+                        .lines()
+                        .any(|line| line.starts_with(&format!("{value} "))),
+                    matches != exclude,
+                    "exact={exact}, exclude={exclude}, value={value}, output={stdout}"
+                );
+            }
+        }
+    }
+}

@@ -44,7 +44,14 @@ pub(crate) fn filter_row_parts(
             }
             Err(_) => expr.to_string(),
         };
-        (value, " [field]")
+        (
+            value,
+            if crate::filters::field_filter_is_exact(expr) {
+                " [field exact]"
+            } else {
+                " [field]"
+            },
+        )
     } else {
         (filter.pattern.clone(), "")
     };
