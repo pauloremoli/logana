@@ -9,6 +9,7 @@ use crate::theme::Theme as TuiTheme;
 use gpui_kit::base::TestSupportExt;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::Sizable;
+use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::tag::Tag;
@@ -151,20 +152,20 @@ pub fn log_pane(
     let table = div()
         .flex()
         .flex_col()
-        .w(px(table_width + 2.))
+        .w(px(table_width + 22.))
         .min_w(gpui_kit::gpui::relative(1.))
         .h_full()
         .font_family("monospace")
         .text_size(rems(12. / 13.))
         .overflow_hidden()
-        .child(header_row(
+        .child(div().pl(px(20.)).child(header_row(
             tab.id,
             widths,
             &columns,
             tab.display.show_line_numbers,
             message_width,
             cx,
-        ))
+        )))
         .child(
             div().relative().flex_1().min_h(px(0.)).child(
                 crate::gui::text_selection::TableSelection {
@@ -189,10 +190,16 @@ pub fn log_pane(
                                     let output = raw_log_message(&tab.file_reader, line_idx);
                                     let displayed =
                                         displayed_values(tab, line_idx, &row_fields).join("\t");
+                                    let hidden_lines = tab.active_continuation_map()
+                                        .map_or(0, |map| continuation_count(map, line_idx));
+                                    let collapsed = tab.display.collapse_continuations
+                                        ^ tab.filter.overridden_groups.contains(&line_idx);
                                     let entity = cx.entity();
                                 let source = tab.id;
                                     div()
                                         .id(("log-row", pos))
+                                        .relative()
+                                        .pl(px(20.))
                                         .test_support()
                                         .children(tab.comment_manager.get().iter().enumerate()
                                             .filter(|(_, note)| annotation_start(tab, &note.line_indices) == Some(pos))
@@ -224,6 +231,28 @@ pub fn log_pane(
                                             (&row_document, pos),
                                             font_scale,
                                         ))
+                                        .when(hidden_lines > 0, |row| {
+                                            row.child(gpui_kit::component::button::Button::new(("toggle-multiline", line_idx))
+                                                .label(if collapsed { "+" } else { "−" })
+                                                .ghost()
+                                                .small()
+                                                .absolute()
+                                                .left_0()
+                                                .top_0()
+                                                .w(px(20.))
+                                                .h(rems(ROW_HEIGHT_PX / 13.))
+                                                .p_0()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .tooltip(if collapsed {
+                                                    format!("Expand message ({hidden_lines} hidden lines)")
+                                                } else {
+                                                    "Collapse message".to_string()
+                                                })
+                                                .on_click(cx.listener(move |app, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    app.dispatch(Message::ToggleMultiline(source, line_idx), window, cx);
+                                                })))
+                                        })
                                         .when(tab.comment_manager.get().iter().any(|note| note.line_indices.contains(&line_idx)), |row| {
                                             row.border_l_1().border_color(color_to_gpui(app.state.theme.comment_fg).unwrap_or(gpui_kit::gpui::rgb(0xaaaaaa))).pl_2()
                                         })
@@ -1145,18 +1174,11 @@ fn process_color(
     value: &str,
     target: Option<&str>,
 ) -> Option<crate::style::Color> {
-    if !matches!(field, "pid" | "target")
-        || value.is_empty()
-        || theme.value_colors.is_disabled("process_colors")
-        || theme.process_colors.is_empty()
-    {
+    if !matches!(field, "pid" | "target") || value.is_empty() {
         return None;
     }
     let key = target.filter(|target| !target.is_empty()).unwrap_or(value);
-    let hash = key.bytes().fold(5381usize, |acc, byte| {
-        acc.wrapping_mul(33).wrapping_add(byte as usize)
-    });
-    Some(theme.process_colors[hash % theme.process_colors.len()])
+    theme.process_color(key)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1417,6 +1439,15 @@ mod tests {
         t.display.format = Some(std::sync::Arc::new(GroupFieldParser));
         let values = displayed_values(&t, 0, &["mygroup.0.key1".to_string()]);
         assert_eq!(values, vec!["value1".to_string()]);
+    }
+
+    #[test]
+    fn process_colors_do_not_cycle_through_the_theme_palette() {
+        let theme = TuiTheme::default();
+        let colors: std::collections::HashSet<_> = (0..128)
+            .map(|i| process_color(&theme, "target", &format!("process-{i}"), None).unwrap())
+            .collect();
+        assert_eq!(colors.len(), 128);
     }
 
     #[test]
@@ -1856,4 +1887,25 @@ mod tests {
             vec!["source", "message"]
         );
     }
+}
+
+#[cfg(test)]
+mod multiline_tests {
+    #[test]
+    fn only_multiline_parents_have_controls() {
+        let map = [0, 0, 0, 3, 4, 4];
+        assert_eq!(super::continuation_count(&map, 0), 2);
+        assert_eq!(super::continuation_count(&map, 1), 0);
+        assert_eq!(super::continuation_count(&map, 3), 0);
+        assert_eq!(super::continuation_count(&map, 4), 1);
+        assert_eq!(super::continuation_count(&map, 6), 0);
+    }
+}
+
+fn continuation_count(map: &[usize], line: usize) -> usize {
+    if map.get(line) != Some(&line) {
+        return 0;
+    }
+    map.partition_point(|parent| *parent <= line)
+        .saturating_sub(line + 1)
 }

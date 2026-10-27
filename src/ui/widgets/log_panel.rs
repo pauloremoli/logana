@@ -182,9 +182,8 @@ fn build_style_table(tab: &TabState, theme: &Theme) -> (u8, [Style; 256]) {
         Vec::new()
     };
     let process_style_start = styles.len() as u8;
-    for &color in &theme.process_colors {
-        styles.push(Style::default().fg(color));
-    }
+    // Each row has one process identity, so a single slot can hold its generated color.
+    styles.push(Style::default());
     styles.resize(256, Style::default());
 
     let search_style = Style::default()
@@ -571,12 +570,6 @@ fn populate_parse_cache(
 
 pub(crate) use crate::parser::classify_level;
 
-fn stable_hash(s: &str) -> usize {
-    s.bytes().fold(5381usize, |acc, b| {
-        acc.wrapping_mul(33).wrapping_add(b as usize)
-    })
-}
-
 /// Push a highlight span for every occurrence of `needle` in `rendered`,
 /// matching the GUI's per-cell highlighting (which highlights every repeat
 /// of a matched value, not just the first).
@@ -785,8 +778,7 @@ pub fn prepare_log_panel(
         tab.display.format.clone()
     };
 
-    let (process_style_start, styles) = build_style_table(tab, theme);
-    let process_colors_len = theme.process_colors.len();
+    let (process_style_start, mut styles) = build_style_table(tab, theme);
 
     let search_results = tab.search.query.get_results();
     let current_search_info: Option<(usize, usize)> = if search_results.is_empty() {
@@ -985,21 +977,19 @@ pub fn prepare_log_panel(
                         collector.push(s, e, sid);
                     }
                     collector.with_priority(10);
-                    if process_colors_len > 0
-                        && !theme.value_colors.is_disabled("process_colors")
-                        && let Some(target) = c.target.as_deref()
-                    {
-                        let idx = stable_hash(target) % process_colors_len;
-                        let sid = process_style_start.saturating_add(idx as u8);
-                        if let Some(pos) = c.target_offset {
+                    let process = c
+                        .target
+                        .as_deref()
+                        .filter(|value| !value.is_empty())
+                        .or(c.pid.as_deref());
+                    if let Some(color) = process.and_then(|value| theme.process_color(value)) {
+                        let sid = process_style_start;
+                        styles[sid as usize] = Style::default().fg(color);
+                        if let (Some(target), Some(pos)) = (c.target.as_deref(), c.target_offset) {
                             collector.push(pos, pos + target.len(), sid);
                         }
-                        if let Some(pid_val) = c.pid.as_deref() {
-                            let pid_sid = process_style_start
-                                .saturating_add((stable_hash(target) % process_colors_len) as u8);
-                            if let Some(pos) = c.pid_offset {
-                                collector.push(pos, pos + pid_val.len(), pid_sid);
-                            }
+                        if let (Some(pid_val), Some(pos)) = (c.pid.as_deref(), c.pid_offset) {
+                            collector.push(pos, pos + pid_val.len(), sid);
                         }
                     }
                     collector.with_priority(500);
@@ -1853,6 +1843,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn process_colors_do_not_cycle_through_the_theme_palette() {
+        let rows: Vec<_> = (0..32)
+            .map(|i| format!("Jan  1 00:00:01 host process-{i}[123]: hello"))
+            .collect();
+        let mut app = make_app(&rows.iter().map(String::as_str).collect::<Vec<_>>()).await;
+        app.tabs[0].display.format = Some(Arc::new(crate::parser::SyslogParser::default()));
+        let lines = prepare_log_panel(
+            &mut app.tabs[0],
+            Rect::new(0, 0, 120, 40),
+            None,
+            None,
+            None,
+            false,
+            false,
+            &app.theme,
+        )
+        .log_lines;
+        let colors: HashSet<_> = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .filter(|span| span.content.contains("process-"))
+            .map(|span| span.style.fg)
+            .collect();
+        assert_eq!(colors.len(), 32);
+    }
+
+    #[tokio::test]
     async fn test_log_panel_with_mark() {
         let mut app = make_app(&["line one", "line two", "line three"]).await;
         app.tabs[0].mark_manager.toggle(0);
@@ -2012,12 +2029,6 @@ mod tests {
             Style::default(),
         );
         assert_eq!(lines.len(), 2);
-    }
-
-    #[test]
-    fn test_stable_hash_deterministic() {
-        assert_eq!(stable_hash("hello"), stable_hash("hello"));
-        assert_ne!(stable_hash("hello"), stable_hash("world"));
     }
 
     #[test]

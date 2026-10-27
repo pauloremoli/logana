@@ -132,10 +132,10 @@ fn tab_label(
         })
         .flex_shrink_0()
         .h(px(TAB_HEIGHT))
-        .w(px(180.))
+        .when(!active, |tab| tab.w(px(180.)))
         .child(
             Tab::new()
-                .max_w(px(180.))
+                .when(!active, |tab| tab.max_w(px(180.)))
                 .aria_label(accessible_path)
                 .underline()
                 .selected(active)

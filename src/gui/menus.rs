@@ -14,6 +14,12 @@ pub struct InvokeAction {
     pub action: Action,
 }
 
+#[derive(Clone, PartialEq, gpui_kit::gpui::Action)]
+#[action(namespace = logana_gui, no_json)]
+pub struct OpenRecent {
+    pub path: std::path::PathBuf,
+}
+
 const MENU_ACTIONS: &[(&str, &[Action])] = &[
     (
         "File",
@@ -57,6 +63,8 @@ const MENU_ACTIONS: &[(&str, &[Action])] = &[
             Action::Annotation,
             Action::View,
             Action::Columns,
+            Action::CollapseMessages,
+            Action::ExpandMessages,
             Action::Schema,
             Action::LevelColors,
             Action::ValueColors,
@@ -80,12 +88,12 @@ const MENU_ACTIONS: &[(&str, &[Action])] = &[
     ("Help", &[Action::Help, Action::FileInfo, Action::About]),
 ];
 
-pub fn install(cx: &mut App) {
-    cx.set_menus(menus());
-    GlobalState::global_mut(cx).set_app_menus(menus().into_iter().map(Menu::owned).collect());
+pub fn install(cx: &mut App, recent: &[std::path::PathBuf]) {
+    cx.set_menus(menus(recent));
+    GlobalState::global_mut(cx).set_app_menus(menus(recent).into_iter().map(Menu::owned).collect());
 }
 
-fn menus() -> Vec<Menu> {
+fn menus(recent: &[std::path::PathBuf]) -> Vec<Menu> {
     let mut menus = Vec::new();
     let kb = crate::config::Config::load()
         .unwrap_or_default()
@@ -122,6 +130,16 @@ fn menus() -> Vec<Menu> {
                 format!("{}    {}", descriptor.label, shortcut)
             };
             items.push(MenuItem::action(label, InvokeAction { action: *action }));
+            if *action == Action::Open {
+                items.push(MenuItem::submenu(Menu::new("Open Recent").items(
+                    recent.iter().take(5).map(|path| {
+                        MenuItem::action(
+                            path.display().to_string(),
+                            OpenRecent { path: path.clone() },
+                        )
+                    }),
+                )));
+            }
         }
         if name == "File" {
             items.extend([MenuItem::separator(), MenuItem::action("Quit", Quit)]);
@@ -135,6 +153,13 @@ fn menus() -> Vec<Menu> {
         menus.push(Menu::new(name).items(items));
     }
     menus
+}
+
+impl super::app::App {
+    pub(super) fn refresh_menus(&mut self, cx: &mut gpui_kit::gpui::Context<Self>) {
+        install(cx, &self.state.preferences.recent_files);
+        self.menu_bar.update(cx, |menu, cx| menu.reload(cx));
+    }
 }
 
 #[cfg(test)]

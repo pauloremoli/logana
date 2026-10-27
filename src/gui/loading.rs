@@ -305,6 +305,15 @@ pub(super) async fn install_loaded(
                 app.save_session_state();
                 cx.notify();
             } else {
+                if let Some(path) = id
+                    .and_then(|id| app.loading.operations.iter().find(|op| op.id == id))
+                    .map(|op| op.path.clone())
+                    .filter(|path| path.is_file())
+                {
+                    app.state.preferences.record_recent_file(path);
+                    app.save_preferences(app.state.preferences.clone());
+                    app.refresh_menus(cx);
+                }
                 if is_preview
                     && let Some(op) =
                         id.and_then(|id| app.loading.operations.iter_mut().find(|op| op.id == id))

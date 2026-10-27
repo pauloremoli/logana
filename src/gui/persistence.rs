@@ -34,6 +34,7 @@ pub struct Preferences {
     pub column_widths: std::collections::BTreeMap<String, std::collections::BTreeMap<String, f32>>,
     pub archive_patterns: Vec<String>,
     pub archive_merge_rotations: bool,
+    pub recent_files: Vec<PathBuf>,
     pub last_open_directory: Option<PathBuf>,
     pub locked: Vec<SettingsKey>,
 }
@@ -50,12 +51,19 @@ impl Default for Preferences {
             column_widths: Default::default(),
             archive_patterns: Vec::new(),
             archive_merge_rotations: true,
+            recent_files: Vec::new(),
             last_open_directory: None,
             locked: Vec::new(),
         }
     }
 }
 impl Preferences {
+    pub(super) fn record_recent_file(&mut self, path: PathBuf) {
+        self.recent_files.retain(|recent| recent != &path);
+        self.recent_files.insert(0, path);
+        self.recent_files.truncate(5);
+    }
+
     pub async fn load(db: &Database, config: &Config) -> anyhow::Result<Self> {
         let mut prefs = Self::default();
         let overrides = [
@@ -168,6 +176,14 @@ impl Preferences {
             .load_app_setting(SettingsKey::GuiLastOpenDirectory)
             .await?
             .and_then(|value| serde_json::from_str(&value).ok());
+        let recent: Vec<PathBuf> = db
+            .load_app_setting(SettingsKey::GuiRecentFiles)
+            .await?
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default();
+        for path in recent.into_iter().rev() {
+            prefs.record_recent_file(path);
+        }
         Ok(prefs)
     }
     pub(super) fn settings(&self) -> Vec<(SettingsKey, String)> {
@@ -177,6 +193,10 @@ impl Preferences {
             .map(|(k, v)| (k, v.to_string()))
             .collect();
         settings.extend([
+            (
+                SettingsKey::GuiRecentFiles,
+                serde_json::to_string(&self.recent_files).expect("recent file paths"),
+            ),
             (
                 SettingsKey::GuiLastOpenDirectory,
                 serde_json::to_string(&self.last_open_directory).expect("directory path"),
@@ -487,6 +507,7 @@ impl App {
     ) {
         preferences.apply_font_size(window, cx);
         self.state.preferences = preferences;
+        self.refresh_menus(cx);
         cx.notify();
         if files.is_empty() || self.state.preferences.restore_session == RestoreSessionPolicy::Never
         {
@@ -584,6 +605,30 @@ pub(super) async fn prepare_loaded(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn recent_files_are_unique_newest_first_bounded_and_persisted() {
+        let db = Database::in_memory().await.unwrap();
+        let mut prefs = Preferences::default();
+        for index in 0..7 {
+            prefs.record_recent_file(PathBuf::from(format!("/logs/{index}.log")));
+        }
+        prefs.record_recent_file(PathBuf::from("/logs/4.log"));
+        let expected: Vec<PathBuf> = [4, 6, 5, 3, 2]
+            .into_iter()
+            .map(|index| PathBuf::from(format!("/logs/{index}.log")))
+            .collect();
+        assert_eq!(prefs.recent_files, expected);
+        Save {
+            settings: prefs.settings(),
+            ..Default::default()
+        }
+        .persist(&db)
+        .await
+        .unwrap();
+        let loaded = Preferences::load(&db, &Config::default()).await.unwrap();
+        assert_eq!(loaded.recent_files, expected);
+    }
+
     #[tokio::test]
     async fn picker_defaults_and_directory_survive_reload() {
         let db = Database::in_memory().await.unwrap();

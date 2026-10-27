@@ -112,7 +112,7 @@ pub struct FacetCache {
 
 impl App {
     pub fn new(db: Arc<Database>, theme: TuiTheme, cx: &mut Context<Self>) -> Self {
-        crate::gui::menus::install(cx);
+        crate::gui::menus::install(cx, &[]);
         let persistence = crate::gui::persistence::Persistence::new(db.clone());
         cx.on_app_quit(|app, _| {
             let flushed = app.flush_persistence();
@@ -979,7 +979,7 @@ impl App {
                                 app.state.notify(crate::gui::state::StatusMessage::Info(
                                     "Keyboard shortcuts saved.".into(),
                                 ));
-                                crate::gui::menus::install(cx);
+                                app.refresh_menus(cx);
                             }
                             Err(error) => app
                                 .state
@@ -1330,7 +1330,9 @@ impl Render for App {
             {
                 self.pending_source_jump = None;
                 self.state.notify(crate::gui::state::StatusMessage::Info(
-                    "This source row is still hidden. Check continuation collapsing in View options.".into()));
+                    "This source row is still hidden. Expand multiline messages in View options."
+                        .into(),
+                ));
             }
         }
 
@@ -1928,6 +1930,16 @@ impl Render for App {
                     app.dispatch(Message::GuiAction(action.action), window, cx);
                 },
             ))
+            .on_action(
+                cx.listener(|app, action: &crate::gui::menus::OpenRecent, window, cx| {
+                    app.root_focus.focus(window, cx);
+                    app.dispatch(
+                        Message::FileDialogResult(Some(action.path.clone())),
+                        window,
+                        cx,
+                    );
+                }),
+            )
             .on_action(cx.listener(Self::on_quit_action))
             .capture_key_down(cx.listener(move |app, event: &KeyDownEvent, window, cx| {
                 let stroke = &event.keystroke;

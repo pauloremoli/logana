@@ -21,6 +21,8 @@ pub enum Action {
     ToggleRelativeLineNumbers,
     ToggleFieldKeys,
     ToggleContinuations,
+    CollapseMessages,
+    ExpandMessages,
     ToggleSidebar,
     ToggleSidebarSide,
 
@@ -133,6 +135,20 @@ impl Descriptor {
     }
 }
 pub const CATALOG: &[Descriptor] = &[
+    Descriptor {
+        action: Action::CollapseMessages,
+        label: "Collapse multiline messages",
+        description: "Show only the first line of each multiline message",
+        aliases: "collapse multiline",
+        tab: true,
+    },
+    Descriptor {
+        action: Action::ExpandMessages,
+        label: "Expand multiline messages",
+        description: "Show all lines of each multiline message",
+        aliases: "expand multiline",
+        tab: true,
+    },
     Descriptor {
         action: Action::About,
         label: "About logana",
@@ -485,9 +501,9 @@ pub const CATALOG: &[Descriptor] = &[
     },
     Descriptor {
         action: Action::ToggleContinuations,
-        label: "Toggle continuation lines",
+        label: "Toggle multiline message expansion",
         description: "Collapse or expand multiline records",
-        aliases: "collapse expand continuations",
+        aliases: "toggle multiline message expansion",
         tab: true,
     },
     Descriptor {
@@ -859,6 +875,8 @@ pub fn open(
         };
     }
     let cmd = match action {
+        Action::CollapseMessages => Some(Commands::Collapse),
+        Action::ExpandMessages => Some(Commands::Expand),
         Action::ClearFilters => Some(Commands::ClearFilters),
         Action::EnableFilters => Some(Commands::EnableFilters),
         Action::DisableFilters => Some(Commands::DisableFilters),
@@ -1067,7 +1085,7 @@ pub fn open(
             "Relative line numbers",
             "Show sidebar",
             "Sidebar on left",
-            "Collapse continuations",
+            "Collapse multiline messages",
         ]
         .into_iter()
         .zip(prefs.display)
@@ -1957,6 +1975,30 @@ mod tests {
         assert!(state.palette.open);
     }
 
+    #[test]
+    fn action_copy_keeps_multiline_implementation_details_internal() {
+        for descriptor in CATALOG {
+            for text in [descriptor.label, descriptor.description, descriptor.aliases] {
+                assert!(!text.to_lowercase().contains("continuation"), "{text}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_multiline_actions_are_discoverable_and_idempotent() {
+        let mut state = state().await;
+        for (query, action, collapsed) in [
+            ("collapse multiline", Action::CollapseMessages, true),
+            ("expand multiline", Action::ExpandMessages, false),
+        ] {
+            assert_eq!(matching(query)[0].action, action);
+            for _ in 0..2 {
+                open(&mut state, action, None, None);
+                assert_eq!(state.tabs[0].display.collapse_continuations, collapsed);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn toggle_wrap_action_runs_from_the_palette_and_requires_a_tab() {
         let mut state = state().await;
@@ -2004,7 +2046,7 @@ mod tests {
                 Action::ToggleRelativeLineNumbers,
             ),
             (3, "field-keys", Action::ToggleFieldKeys),
-            (4, "continuations", Action::ToggleContinuations),
+            (4, "toggle multiline", Action::ToggleContinuations),
             (5, "sidebar", Action::ToggleSidebar),
             (6, "sidebar-position", Action::ToggleSidebarSide),
         ] {

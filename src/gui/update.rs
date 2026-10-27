@@ -367,6 +367,21 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             }
             Effect::None
         }
+        Message::ToggleMultiline(source, line) => {
+            if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == source)
+                && tab.filter.visible_indices.position_of(line).is_some()
+                && tab.active_continuation_map().is_some_and(|map| {
+                    map.get(line) == Some(&line) && map.get(line + 1) == Some(&line)
+                })
+            {
+                let collapsed = tab.display.collapse_continuations
+                    ^ tab.filter.overridden_groups.contains(&line);
+                tab.set_continuation_collapsed(line, !collapsed);
+                tab.cache.render_gen = tab.cache.render_gen.wrapping_add(1);
+                state.log_selection = None;
+            }
+            Effect::None
+        }
         Message::LogRowAction(source, line, action) => {
             if state.editor.is_some() || state.palette.pending() {
                 return Effect::None;
@@ -1393,8 +1408,8 @@ fn command_summary(command: &Commands, tab: &TabState) -> String {
                 "disabled"
             }
         ),
-        Commands::Collapse => "Continuation lines collapsed.".into(),
-        Commands::Expand => "Continuation lines expanded.".into(),
+        Commands::Collapse => "Multiline messages collapsed.".into(),
+        Commands::Expand => "Multiline messages expanded.".into(),
         Commands::SidebarPosition { side } => format!("Sidebar moved to {side:?}."),
         Commands::Pause => "Live stream paused.".into(),
         Commands::Resume => "Live stream resumed.".into(),

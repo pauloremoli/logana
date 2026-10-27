@@ -21,6 +21,7 @@ pub enum Message {
     DefaultMappingPicked(u64, String, Result<Option<PathBuf>, String>),
     DockerListed(u64, Result<Vec<(String, String)>, String>),
     SourceLoaded(Result<Box<crate::shared::TabState>, String>),
+    ToggleMultiline(crate::shared::TabId, usize),
     LogRowAction(crate::shared::TabId, usize, crate::gui::actions::Action),
     DismissNotification(u64),
     GuiFinished(u64, Result<String, String>),

@@ -13,11 +13,16 @@ All notable changes to logana will be documented in this file.
 - [core] Import the full Notepad++ named palette with exact RGB values, accept gray/grey aliases and replace unknown import colors with generated colors and a warning instead of aborting.
 
 ### Added
+- [gui] Add expand/collapse multiline actions and subtle +/− gutter controls with hidden-line counts in tooltips.
+- [gui] Add File → Open Recent with the five most recently opened files, remembered across restarts.
 - [gui] Right-click a filter to edit, enable or disable, delete, or move it up, down, to the top, or to the bottom.
 
 ### Changed
+- [gui] Expand the active file tab to fit its full filename.
+- [gui] Describe multiline message actions and options without exposing internal continuation terminology.
 - [gui] Keep one Show bookmarks entry in the View menu and display its Ctrl+Shift+B shortcut.
 - [gui] Remove the column order preview from Select Columns.
+- [gui][tui] Generate stable, readable colors per process/logger instead of cycling through a fixed palette.
 
 ## [0.8.2] - 2026-10-26
 

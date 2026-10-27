@@ -577,6 +577,24 @@ fn default_fatal_bg() -> Color {
 }
 
 impl Theme {
+    /// Stable, readable process colors without cycling through a fixed palette.
+    pub fn process_color(&self, process: &str) -> Option<Color> {
+        if process.is_empty()
+            || self.process_colors.is_empty()
+            || self.value_colors.is_disabled("process_colors")
+        {
+            return None;
+        }
+        let seed = process.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+        });
+        let (r, g, b) = random_readable_foreground_from(
+            &mut SmallRng::from_seed(seed),
+            color_to_rgb(self.root_bg),
+        );
+        Some(Color::Rgb(r, g, b))
+    }
+
     /// Returns the names of all available themes: bundled, local `themes/`, and
     /// `~/.config/logana/themes/`. User-config and local names shadow bundled ones.
     pub fn list_available_themes() -> Vec<String> {
@@ -949,6 +967,31 @@ pub fn random_readable_color_pair() -> ((u8, u8, u8), (u8, u8, u8)) {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn generated_process_colors_are_stable_distinct_and_readable() {
+        for &(name, json) in BUNDLED_THEMES {
+            let theme: Theme = serde_json::from_str(json).unwrap();
+            let mut colors = HashSet::new();
+            for i in 0..128 {
+                let process = format!("process-{i}");
+                let color = theme.process_color(&process).unwrap();
+                assert_eq!(Some(color), theme.process_color(&process));
+                assert!(colors.insert(color), "duplicate process color in {name}");
+                assert!(
+                    contrast_ratio(color_to_rgb(color), color_to_rgb(theme.root_bg))
+                        >= MIN_READABLE_CONTRAST
+                );
+            }
+        }
+        let mut theme = Theme::default();
+        assert!(theme.process_color("").is_none());
+        theme.value_colors.disabled.insert("process_colors".into());
+        assert!(theme.process_color("myapp").is_none());
+        theme.value_colors.disabled.clear();
+        theme.process_colors.clear();
+        assert!(theme.process_color("myapp").is_none());
+    }
 
     #[test]
     fn test_value_colors_default() {

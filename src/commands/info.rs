@@ -161,13 +161,13 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "collapse",
         usage: "collapse",
-        description: "Collapse continuation lines to their entry's first line.",
+        description: "Show only the first line of each multiline message.",
         examples: &[],
     },
     CommandInfo {
         name: "expand",
         usage: "expand",
-        description: "Expand continuation lines previously hidden by collapse.",
+        description: "Show all lines of each multiline message.",
         examples: &[],
     },
     CommandInfo {

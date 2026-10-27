@@ -1775,7 +1775,10 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                     ("Relative line numbers", tab.display.relative_line_numbers),
                     ("Show field keys", tab.display.show_keys),
                     ("Raw display", tab.display.raw_mode),
-                    ("Collapse continuations", tab.display.collapse_continuations),
+                    (
+                        "Collapse multiline messages",
+                        tab.display.collapse_continuations,
+                    ),
                     ("Sidebar on left", tab.display.sidebar_side.is_left()),
                     ("Show sidebar", tab.display.show_sidebar),
                 ]

@@ -163,6 +163,55 @@ fn filter_context_menu_targets_clicked_filter(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+async fn recent_file_menu_opens_the_selected_file(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestAppContextExt;
+    cx.background_executor.allow_parking();
+    let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "recent log line\n").unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        app.update(cx, |app, cx| {
+            app.state
+                .preferences
+                .record_recent_file(file.path().to_path_buf());
+            app.refresh_menus(cx);
+        });
+        window.render_frame(cx);
+        window
+            .within("app-menu-bar")
+            .within(0usize)
+            .click("menu", cx);
+        window.within("popup-menu").hover(1usize, cx);
+        window.render_frame(cx);
+        window
+            .within("submenu")
+            .within("popup-menu")
+            .click(0usize, cx);
+    })
+    .unwrap();
+    cx.update(|cx| {
+        assert_eq!(app.read(cx).loading.operations.len(), 1);
+        assert_eq!(app.read(cx).loading.operations[0].path, file.path());
+    });
+    cx.wait_for(
+        handle.into(),
+        std::time::Duration::from_secs(30),
+        |_, cx| !app.read(cx).state.tabs.is_empty(),
+    )
+    .await;
+    app.read_with(cx, |app, _| {
+        assert_eq!(
+            app.state.preferences.recent_files,
+            vec![file.path().to_path_buf()]
+        );
+        assert_eq!(
+            app.state.tabs[0].file_reader.get_line(0),
+            b"recent log line"
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn application_menus_dispatch_filter_view_export_and_close_actions(cx: &mut TestAppContext) {
     let (handle, app) = palette_window(cx, (1000., 900.), "dracula");
     cx.update(|cx| add_log_tab(&app, cx, false));
@@ -170,8 +219,8 @@ fn application_menus_dispatch_filter_view_export_and_close_actions(cx: &mut Test
         (0, 2usize, 0usize),
         (1, 2, 0),
         (2, 3, 2),
-        (3, 0, 7),
-        (4, 0, 12),
+        (3, 0, 8),
+        (4, 0, 13),
     ] {
         if step == 4 {
             cx.update_window(handle.into(), |_, window, cx| {
@@ -3352,4 +3401,62 @@ async fn reopening_file_selects_existing_tab_without_loading(cx: &mut TestAppCon
         window.render_frame(cx);
         assert!(window.find("notification-popup").bounds().size.width > px(0.));
     }).unwrap();
+}
+
+#[gpui_kit::test]
+fn multiline_control_collapses_and_expands_message(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1100., 900.), "dracula");
+    cx.update(|cx| {
+        add_log_tab(&app, cx, true);
+        app.update(cx, |app, cx| {
+            let tab = &mut app.state.tabs[0];
+            tab.file_reader = crate::ingestion::FileReader::from_bytes(
+                b"{\"level\":\"INFO\",\"message\":\"hello\"}\n  detail\n".to_vec(),
+            );
+            tab.continuation_map = Some(Arc::new(vec![0, 0]));
+            tab.filter.visible_indices = crate::shared::tab_state::VisibleLines::All(2);
+            tab.display.collapse_continuations = false;
+            tab.filter.overridden_groups.clear();
+            cx.notify();
+        });
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("toggle-multiline", 0usize), cx);
+        assert_eq!(app.read(cx).state.tabs[0].filter.visible_indices.len(), 1);
+        window.render_frame(cx);
+        window.click(("toggle-multiline", 0usize), cx);
+        assert_eq!(app.read(cx).state.tabs[0].filter.visible_indices.len(), 2);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn active_file_tab_expands_to_fit_its_filename(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1600., 900.), "dracula");
+    cx.update(|cx| {
+        add_log_tab(&app, cx, false);
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            for tab in &mut app.state.tabs {
+                tab.title = "production-payments-service-2026-10-27.log".into();
+            }
+            cx.notify();
+        });
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        for index in [0usize, 1] {
+            app.update(cx, |app, cx| {
+                app.dispatch(super::message::Message::TabSelected(index), window, cx);
+            });
+            window.render_frame(cx);
+            assert!(window.find(("file-tab", index)).bounds().size.width > px(300.));
+            assert_eq!(
+                window.find(("file-tab", 1 - index)).bounds().size.width,
+                px(180.)
+            );
+            assert!(window.try_find(("tab-close", index)).is_some());
+        }
+    })
+    .unwrap();
 }
