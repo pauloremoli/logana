@@ -6,6 +6,7 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- [gui] Use the configured annotation creation shortcut (c by default) consistently in menus and help, removing the duplicate Ctrl+Shift+A shortcut.
 - [gui] Render only visible wrapped text lines and cache wrapping boundaries so messages taller than the screen scroll smoothly without rebuilding every offscreen line.
 - [gui] Cache displayed rows and measured message widths so unchanged renders and horizontal scrolling avoid repeated parsing and text measurement.
 - [gui] Allow horizontal scrolling to the end of long unwrapped messages, sizing visible message cells from their full text.
@@ -16,6 +17,7 @@ All notable changes to logana will be documented in this file.
 - [core] Import the full Notepad++ named palette with exact RGB values, accept gray/grey aliases and replace unknown import colors with generated colors and a warning instead of aborting.
 
 ### Added
+- [gui] Edit annotations from their right-click menu.
 - [gui] Remove annotations from their right-click menu or annotation editor, with Undo support.
 - [gui] Configure new filters with no style or automatic text-only/text-and-background colors in Settings.
 - [core][gui][tui] Choose exact field-value matches in the filter editor or with `--field key=value --exact`; contains remains the default.

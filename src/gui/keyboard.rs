@@ -490,7 +490,7 @@ pub fn shortcuts(state: &GuiState) -> Vec<(&'static str, String, String)> {
         (
             "Investigate",
             "Add annotation".into(),
-            "Ctrl+Shift+A".into(),
+            shortcut_for_action(&kb, Action::Annotation),
         ),
         (
             "Investigate",

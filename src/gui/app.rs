@@ -2196,7 +2196,6 @@ impl Render for App {
                     let action = match (stroke.key.as_str(), stroke.modifiers.shift) {
                         ("b", false) => Some(crate::gui::actions::Action::Bookmark),
                         ("b", true) => Some(crate::gui::actions::Action::ToggleBookmarks),
-                        ("a", true) => Some(crate::gui::actions::Action::Annotation),
                         _ => None,
                     };
                     if let Some(action) = action {

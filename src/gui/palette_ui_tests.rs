@@ -1829,6 +1829,8 @@ fn bookmark_annotation_shortcuts_and_enter_are_scoped_to_their_interfaces(cx: &m
         window.press("ctrl-shift-b", cx);
         assert_eq!(app.read(cx).state.nav_page, NavPage::Logs);
         window.press("ctrl-shift-a", cx);
+        assert!(app.read(cx).state.editor.is_none());
+        window.press("c", cx);
         assert_eq!(
             app.read(cx).state.editor.as_ref().unwrap().action,
             Action::Annotation
@@ -3953,7 +3955,7 @@ fn annotations_can_be_removed_from_context_menu_and_editor(cx: &mut TestAppConte
     })
     .unwrap();
     cx.update_window(handle.into(), |_, window, cx| {
-        window.within("popup-menu").click(0usize, cx);
+        window.within("popup-menu").click(1usize, cx);
         assert_eq!(app.read(cx).state.tabs[0].comment_manager.get().len(), 1);
         assert_eq!(
             app.read(cx).state.tabs[0].comment_manager.get()[0].text,
@@ -3963,7 +3965,16 @@ fn annotations_can_be_removed_from_context_menu_and_editor(cx: &mut TestAppConte
             app.dispatch(Message::GuiAction(Action::Undo), window, cx)
         });
         window.render_frame(cx);
-        window.click(("log-annotation", 1usize), cx);
+        window.right_click(("log-annotation", 1usize), cx);
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("popup-menu").click(0usize, cx);
+        assert_eq!(app.read(cx).state.editor.as_ref().unwrap().edit_id, Some(1));
+        assert_eq!(
+            app.read(cx).state.editor.as_ref().unwrap().values[0],
+            "Remove"
+        );
         window.render_frame(cx);
         window.click("annotation-remove", cx);
         assert!(app.read(cx).state.editor.is_none());

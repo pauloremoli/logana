@@ -383,7 +383,7 @@ pub const CATALOG: &[Descriptor] = &[
     Descriptor {
         action: Action::Annotation,
         label: "Add annotation",
-        description: "Attach a note to selected log rows · Ctrl+Shift+A",
+        description: "Attach a note to selected log rows",
         aliases: "annotation annotate comment note",
         tab: true,
     },

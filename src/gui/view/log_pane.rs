@@ -312,8 +312,13 @@ pub fn log_pane(
                                                     .context_menu({
                                                         let entity = entity.clone();
                                                         move |menu, _, _| {
+                                                            let edit = entity.clone();
                                                             let entity = entity.clone();
-                                                            menu.item(gpui_kit::component::menu::PopupMenuItem::new("Remove annotation")
+                                                            menu.item(gpui_kit::component::menu::PopupMenuItem::new("Edit annotation")
+                                                                .on_click(move |_, window, cx| edit.update(cx, |app, cx| {
+                                                                    app.dispatch(Message::EditAnnotation(index), window, cx);
+                                                                })))
+                                                            .item(gpui_kit::component::menu::PopupMenuItem::new("Remove annotation")
                                                                 .on_click(move |_, window, cx| entity.update(cx, |app, cx| {
                                                                     app.dispatch(Message::AnnotationRemoved(index), window, cx);
                                                                 })))
@@ -400,6 +405,15 @@ pub fn log_pane(
                                                     .map(|tab| app.text_document.borrow().copy(tab))
                                                     .unwrap_or_default()
                                             };
+                                            let annotation_shortcut = crate::gui::keyboard::shortcut_for_action(
+                                                &crate::gui::keyboard::bindings(&entity.read(cx).state),
+                                                crate::gui::actions::Action::Annotation,
+                                            );
+                                            let annotation_label = if annotation_shortcut.is_empty() {
+                                                "Add annotation".to_string()
+                                            } else {
+                                                format!("Add annotation ({annotation_shortcut})")
+                                            };
                                             let displayed = displayed.clone();
                                             let output = output.clone();
                                             let entity = entity.clone();
@@ -447,7 +461,7 @@ pub fn log_pane(
                                             )
                                             .item(gpui_kit::component::menu::PopupMenuItem::new("Toggle bookmark (Ctrl+B)")
                                                 .on_click(move |_, window, cx| bookmark.update(cx, |app, cx| app.dispatch(Message::LogRowAction(source, line_idx, crate::gui::actions::Action::Bookmark), window, cx))))
-                                            .item(gpui_kit::component::menu::PopupMenuItem::new("Add annotation (Ctrl+Shift+A)")
+                                            .item(gpui_kit::component::menu::PopupMenuItem::new(annotation_label)
                                                 .on_click(move |_, window, cx| annotation.update(cx, |app, cx| app.dispatch(Message::LogRowAction(source, line_idx, crate::gui::actions::Action::Annotation), window, cx))))
                                             .item(
                                                 gpui_kit::component::menu::PopupMenuItem::new(
