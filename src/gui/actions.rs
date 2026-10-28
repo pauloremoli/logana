@@ -789,13 +789,9 @@ pub fn open(
                 crate::gui::message::Message::TabClosed(state.active_tab),
             );
         }
-        Action::ToggleFiltering | Action::MarksOnly => {
+        Action::ToggleFiltering => {
             let tab = state.active_tab_mut().unwrap();
-            if action == Action::ToggleFiltering {
-                tab.filter.enabled = !tab.filter.enabled;
-            } else {
-                tab.filter.show_marks_only = !tab.filter.show_marks_only;
-            }
+            tab.filter.enabled = !tab.filter.enabled;
             crate::gui::update::refresh_filters(state, state.active_tab);
             return Effect::None;
         }
@@ -807,7 +803,7 @@ pub fn open(
             crate::gui::view::bookmarks::set_view(state, crate::gui::state::NavPage::Bookmarks);
             return Effect::None;
         }
-        Action::ToggleBookmarks => {
+        Action::MarksOnly | Action::ToggleBookmarks => {
             let page = if state.nav_page == crate::gui::state::NavPage::Bookmarks {
                 crate::gui::state::NavPage::Logs
             } else {

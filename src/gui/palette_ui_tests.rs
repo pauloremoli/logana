@@ -1811,6 +1811,27 @@ fn log_bookmark_background_covers_wrapped_rows_and_selection_takes_precedence(
 }
 
 #[gpui_kit::test]
+fn marks_only_action_switches_view_and_restores_logs(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message, state::NavPage};
+    let (handle, app) = palette_window(cx, (1100., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        for expected in [NavPage::Bookmarks, NavPage::Logs] {
+            app.update(cx, |app, cx| {
+                app.dispatch(Message::GuiAction(Action::MarksOnly), window, cx);
+            });
+            window.render_frame(cx);
+            assert_eq!(app.read(cx).state.nav_page, expected);
+            assert_eq!(
+                app.read(cx).state.tabs[0].filter.show_marks_only,
+                expected == NavPage::Bookmarks,
+            );
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn bookmark_annotation_shortcuts_and_enter_are_scoped_to_their_interfaces(cx: &mut TestAppContext) {
     use crate::gui::{actions::Action, state::NavPage};
     let (handle, app) = palette_window(cx, (1100., 900.), "dracula");

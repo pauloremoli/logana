@@ -6,6 +6,7 @@ All notable changes to logana will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- [gui] Keep the view selector synchronized when toggling bookmarks-only mode and returning to logs.
 - [gui] Use the configured annotation creation shortcut (c by default) consistently in menus and help, removing the duplicate Ctrl+Shift+A shortcut.
 - [gui] Render only visible wrapped text lines and cache wrapping boundaries so messages taller than the screen scroll smoothly without rebuilding every offscreen line.
 - [gui] Cache displayed rows and measured message widths so unchanged renders and horizontal scrolling avoid repeated parsing and text measurement.
