@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-28
+
 ### Fixed
 - [gui] Keep the view selector synchronized when toggling bookmarks-only mode and returning to logs.
 - [gui] Use the configured annotation creation shortcut (c by default) consistently in menus and help, removing the duplicate Ctrl+Shift+A shortcut.
