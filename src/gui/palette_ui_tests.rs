@@ -3932,3 +3932,54 @@ fn oversized_wrapped_message_prepares_only_visible_chunks(cx: &mut TestAppContex
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn annotations_can_be_removed_from_context_menu_and_editor(cx: &mut TestAppContext) {
+    cx.background_executor.allow_parking();
+    use crate::gui::{actions::Action, message::Message};
+    let (handle, app) = palette_window(cx, (1000., 800.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            app.state.tabs[0].filter.visible_indices = crate::shared::VisibleLines::All(1);
+            for note in ["Keep", "Remove"] {
+                app.dispatch(Message::GuiAction(Action::Annotation), window, cx);
+                app.state.editor.as_mut().unwrap().values[0] = note.into();
+                app.dispatch(Message::EditorApply, window, cx);
+            }
+        });
+        window.render_frame(cx);
+        window.right_click(("log-annotation", 1usize), cx);
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("popup-menu").click(0usize, cx);
+        assert_eq!(app.read(cx).state.tabs[0].comment_manager.get().len(), 1);
+        assert_eq!(
+            app.read(cx).state.tabs[0].comment_manager.get()[0].text,
+            "Keep"
+        );
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Undo), window, cx)
+        });
+        window.render_frame(cx);
+        window.click(("log-annotation", 1usize), cx);
+        window.render_frame(cx);
+        window.click("annotation-remove", cx);
+        assert!(app.read(cx).state.editor.is_none());
+        assert_eq!(app.read(cx).state.tabs[0].comment_manager.get().len(), 1);
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Undo), window, cx)
+        });
+        assert_eq!(
+            app.read(cx).state.tabs[0].comment_manager.get()[1].text,
+            "Remove"
+        );
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Annotation), window, cx)
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("annotation-remove").is_none());
+    })
+    .unwrap();
+}

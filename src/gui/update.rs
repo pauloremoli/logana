@@ -291,6 +291,13 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
                 && index < tab.comment_manager.get().len()
             {
                 tab.comment_manager.remove(index);
+                if state
+                    .editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.action == crate::gui::actions::Action::Annotation)
+                {
+                    crate::gui::actions::close(state, true);
+                }
                 state.notify(StatusMessage::Info(
                     "Note deleted. Use Undo to restore it.".into(),
                 ));

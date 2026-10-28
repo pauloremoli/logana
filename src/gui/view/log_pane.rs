@@ -305,13 +305,23 @@ pub fn log_pane(
                                                     .text_color(color_to_gpui(app.state.theme.comment_fg).unwrap_or(gpui_kit::gpui::rgb(0xaaaaaa))).font_weight(FontWeight::BOLD).cursor_pointer()
                                                     .child(div().flex_1().min_w(px(0.)).truncate().child(note.text.replace('\n', " ")))
                                                     .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(full_note.clone()).build(window, cx))
-                                        .on_click(cx.listener(move |app, _, window, cx| {
+                                                    .on_click(cx.listener(move |app, _, window, cx| {
                                                         cx.stop_propagation();
                                                         app.dispatch(Message::EditAnnotation(index), window, cx);
                                                     }))
+                                                    .context_menu({
+                                                        let entity = entity.clone();
+                                                        move |menu, _, _| {
+                                                            let entity = entity.clone();
+                                                            menu.item(gpui_kit::component::menu::PopupMenuItem::new("Remove annotation")
+                                                                .on_click(move |_, window, cx| entity.update(cx, |app, cx| {
+                                                                    app.dispatch(Message::AnnotationRemoved(index), window, cx);
+                                                                })))
+                                                        }
+                                                    })
 
                                             }))
-                                                    .child(line_row_with_selection(
+                                                    .child(div().id(("log-row-actions", pos)).relative().child(line_row_with_selection(
                                             tab,
                                             line_idx,
                                             selection
@@ -473,7 +483,7 @@ pub fn log_pane(
                                                     app.inspector_raw = false;
                                                     cx.notify();
                                                 })))
-                                        })
+                                        }))
                                         .into_any_element()
                         }),
                     )

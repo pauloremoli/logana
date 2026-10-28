@@ -1951,6 +1951,17 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 d.pt_3().border_t_1().border_color(cx.theme().border)
             })
             .gap_2()
+            .when(e.action == Action::Annotation && e.edit_id.is_some(), |d| {
+                let index = e.edit_id.unwrap();
+                d.child(
+                    Button::new("annotation-remove")
+                        .danger()
+                        .label("Remove annotation")
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.dispatch(Message::AnnotationRemoved(index), window, cx);
+                        })),
+                )
+            })
             .when(
                 !matches!(
                     e.action,
