@@ -7,7 +7,7 @@ use super::{DisplayParts, FieldSemantic, LogFormatParser, push_extra_field, push
 
 static LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"^([0-9A-Fa-f]+)\s+(\S+)\s+<([^>]+)>\s+([0-9A-Fa-f]+)\s+",
+        r"^([0-9A-Fa-f]+)\s+(\S+)\s+<([^>]+)>\s+([0-9A-Fa-f]+(?:-\S+)?)\s+",
         r"([^/\s]+)/([^/\s]+)/([^,\s]+),[ \t]?(.*)$"
     ))
     .unwrap()
@@ -62,6 +62,24 @@ impl LogFormatParser for ServiceParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_and_detects_service_with_process_name_suffix() {
+        let line = b"0a sample-source <2024-01-01T12:00:00.123456Z> 1234-example-worker INF/Module/WorkerTask, Synthetic worker started";
+        let parts = ServiceParser.parse_line(line).unwrap();
+        assert!(
+            parts
+                .extra_fields
+                .contains(&(FieldSemantic::Pid, "pid", "1234-example-worker"))
+        );
+        assert_eq!(parts.level, Some("INF"));
+        assert_eq!(parts.target, Some("sample-source"));
+        assert_eq!(parts.message, Some("Synthetic worker started"));
+        assert_eq!(
+            super::super::detect_format(&[line]).unwrap().name(),
+            "service"
+        );
+    }
 
     #[test]
     fn parses_service_and_rejects_unrelated_or_incomplete_lines() {

@@ -5,6 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- [core] Detect and parse service logs whose PID includes a process-name suffix.
+
 ## [0.8.3] - 2026-10-28
 
 ### Fixed
