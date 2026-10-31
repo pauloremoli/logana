@@ -39,6 +39,27 @@ logana app.log --tail
 logana app.log --filters my-filters.json --tail
 ```
 
+## Desktop GUI shortcuts
+
+Click **Actions** to find an action, or open it with `Ctrl+Shift+p` by default.
+Search for `keybindings` there to configure shortcuts. All keys below are defaults;
+[GUI shortcuts](configuration/keybindings.md#gui-shortcuts) explains how to
+replace or disable them.
+
+| Key | Action in the log view |
+|---|---|
+| `m` | Bookmark or unbookmark selected rows |
+| `M` | Switch between Logs and Bookmarks |
+| `c` | Add an annotation |
+| `/` | Open search |
+| `Ctrl+c` | Copy selected log text |
+| `Ctrl+z` / `Ctrl+Shift+z` | Undo / redo |
+| `Ctrl+t` | Open the file selection window |
+
+You can also switch between Logs and Bookmarks with the view selector or View
+menu. The shortcut for that switch is the shared `normal.toggle_marks_only`
+binding; there is no separate fixed shortcut.
+
 ## Opening Compressed and Archive Files
 
 ### GUI file and folder selection

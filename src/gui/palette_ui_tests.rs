@@ -1,11 +1,11 @@
 //! Native event tests: exercise the real Input, focus, hit testing and clipboard.
-use super::app::{App, OpenCommands};
+use super::app::App;
 use super::{runtime, theme};
 use crate::db::Database;
 use crate::theme::Theme;
 use gpui::{
-    AppContext, Bounds, Entity, KeyBinding, TestAppContext, WindowBounds, WindowHandle,
-    WindowOptions, point, px, size,
+    AppContext, Bounds, Entity, TestAppContext, WindowBounds, WindowHandle, WindowOptions, point,
+    px, size,
 };
 use gpui_kit::base::Root;
 use gpui_kit::gpui;
@@ -41,11 +41,7 @@ fn palette_window(
     cx.update(|cx| {
         gpui_kit::init(cx);
         theme::install(&theme, cx);
-        cx.bind_keys([KeyBinding::new(
-            "ctrl-shift-p",
-            OpenCommands,
-            Some("LoganaLogs"),
-        )]);
+
         let (window, app) = gpui_kit::open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -1832,6 +1828,170 @@ fn marks_only_action_switches_view_and_restores_logs(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn gui_shortcuts_can_be_rebound_and_unbound(cx: &mut TestAppContext) {
+    cx.background_executor.allow_parking();
+    let (handle, app) = palette_window(cx, (1100., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            let tab = &mut app.state.tabs[0];
+            let mut value = serde_json::to_value(&*tab.interaction.keybindings).unwrap();
+            value["normal"]["mark_line"] = serde_json::json!("F3");
+            value["gui"] = serde_json::json!({
+                "open_commands": "F4",
+                "increase_font_size": "F5",
+                "decrease_font_size": [],
+                "undo": "F6",
+                "redo": "F7",
+            });
+            tab.interaction.keybindings = Arc::new(serde_json::from_value(value).unwrap());
+            app.root_focus.focus(window, cx);
+        });
+        window.render_frame(cx);
+        window.press("ctrl-b", cx);
+        assert!(
+            app.read(cx).state.tabs[0]
+                .mark_manager
+                .get_indices()
+                .is_empty()
+        );
+        window.press("f3", cx);
+        assert!(app.read(cx).state.tabs[0].mark_manager.is_marked(0));
+        window.press("ctrl-z", cx);
+        assert!(app.read(cx).state.tabs[0].mark_manager.is_marked(0));
+        window.press("f6", cx);
+        assert!(!app.read(cx).state.tabs[0].mark_manager.is_marked(0));
+        window.press("f7", cx);
+        assert!(app.read(cx).state.tabs[0].mark_manager.is_marked(0));
+        let font_size = app.read(cx).state.preferences.font_size;
+        window.press("ctrl-=", cx);
+        assert_eq!(app.read(cx).state.preferences.font_size, font_size);
+        window.press("f5", cx);
+        assert_eq!(app.read(cx).state.preferences.font_size, font_size + 1.);
+        window.press("ctrl--", cx);
+        assert_eq!(app.read(cx).state.preferences.font_size, font_size + 1.);
+        window.press("ctrl-shift-p", cx);
+        assert!(!app.read(cx).state.palette.visible());
+        window.press("f4", cx);
+        assert!(app.read(cx).state.palette.visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn gui_copy_and_dialog_controls_use_configured_keys(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, message::Message};
+    use gpui::Focusable;
+    let (handle, app) = palette_window(cx, (1100., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            let kb = Arc::make_mut(&mut app.state.tabs[0].interaction.keybindings);
+            kb.gui.copy = serde_json::from_str("\"F6\"").unwrap();
+            kb.filter_edit.confirm = serde_json::from_str("\"F7\"").unwrap();
+            kb.filter_edit.cancel = serde_json::from_str("\"F8\"").unwrap();
+            kb.command.cancel = serde_json::from_str("\"F9\"").unwrap();
+            kb.command.confirm = serde_json::from_str("\"F10\"").unwrap();
+            kb.search.confirm = serde_json::from_str("\"F11\"").unwrap();
+            kb.normal.search_forward = serde_json::from_str("\"F12\"").unwrap();
+            app.root_focus.focus(window, cx);
+        });
+        window.render_frame(cx);
+        let from = app.read(cx).text_document.borrow().test_point(0, 0, 0);
+        let to = app.read(cx).text_document.borrow().test_point(0, 0, 5);
+        window.drag(from, to, cx);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("unchanged".into()));
+        window.press("ctrl-c", cx);
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().unwrap(),
+            "unchanged"
+        );
+        window.press("f6", cx);
+        assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "plain");
+        app.update(cx, |app, cx| {
+            app.dispatch(Message::GuiAction(Action::Filter), window, cx)
+        });
+        window.press("enter", cx);
+        assert!(app.read(cx).state.editor.is_some());
+        window.press("escape", cx);
+        assert!(app.read(cx).state.editor.is_some());
+        window.press("f8", cx);
+        assert!(app.read(cx).state.editor.is_none());
+        window.press("ctrl-shift-p", cx);
+        window.press("escape", cx);
+        assert!(app.read(cx).state.palette.visible());
+        window.press("f9", cx);
+        assert!(!app.read(cx).state.palette.visible());
+        window.press("f12", cx);
+        window.render_frame(cx);
+        assert!(app.read(cx).state.search_open);
+        assert!(
+            app.read(cx)
+                .log_search
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        );
+        window.input("plain", cx);
+        window.render_frame(cx);
+        assert!(app.read(cx).state.editor.is_none());
+        assert_eq!(window.find("log-search-input").value(), Some("plain"));
+        window.press("enter", cx);
+        assert!(app.read(cx).state.search_open);
+        window.press("f11", cx);
+        assert!(!app.read(cx).state.search_open);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn bookmarks_toggle_uses_only_the_configured_binding(cx: &mut TestAppContext) {
+    use crate::gui::{actions::Action, keyboard, state::NavPage};
+    let (handle, app) = palette_window(cx, (1100., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            let tab = &mut app.state.tabs[0];
+            tab.mark_manager.mark(0);
+            Arc::make_mut(&mut tab.interaction.keybindings)
+                .normal
+                .toggle_marks_only = serde_json::from_str("\"Ctrl+F2\"").unwrap();
+            app.root_focus.focus(window, cx);
+        });
+        window.render_frame(cx);
+        for action in [
+            Action::MarksOnly,
+            Action::ShowBookmarks,
+            Action::ToggleBookmarks,
+        ] {
+            assert_eq!(
+                keyboard::shortcut_for_action(
+                    &app.read(cx).state.tabs[0].interaction.keybindings,
+                    action,
+                ),
+                "Ctrl+F2"
+            );
+        }
+        window.press("ctrl-shift-b", cx);
+        assert_eq!(app.read(cx).state.nav_page, NavPage::Logs);
+        assert!(app.read(cx).state.tabs[0].mark_manager.is_marked(0));
+        window.press("shift-m", cx);
+        assert_eq!(app.read(cx).state.nav_page, NavPage::Logs);
+        for expected in [NavPage::Bookmarks, NavPage::Logs] {
+            window.press("ctrl-f2", cx);
+            assert_eq!(app.read(cx).state.nav_page, expected);
+            assert_eq!(
+                app.read(cx).state.tabs[0].filter.show_marks_only,
+                expected == NavPage::Bookmarks,
+            );
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn bookmark_annotation_shortcuts_and_enter_are_scoped_to_their_interfaces(cx: &mut TestAppContext) {
     use crate::gui::{actions::Action, state::NavPage};
     let (handle, app) = palette_window(cx, (1100., 900.), "dracula");
@@ -1842,12 +2002,12 @@ fn bookmark_annotation_shortcuts_and_enter_are_scoped_to_their_interfaces(cx: &m
         });
         window.render_frame(cx);
         window.click(("log-row", 0usize), cx);
-        window.press("ctrl-b", cx);
+        window.press("m", cx);
         let line = app.read(cx).state.tabs[0].filter.visible_indices.get(0);
         assert!(app.read(cx).state.tabs[0].mark_manager.is_marked(line));
-        window.press("ctrl-shift-b", cx);
+        window.press("shift-m", cx);
         assert_eq!(app.read(cx).state.nav_page, NavPage::Bookmarks);
-        window.press("ctrl-shift-b", cx);
+        window.press("shift-m", cx);
         assert_eq!(app.read(cx).state.nav_page, NavPage::Logs);
         window.press("ctrl-shift-a", cx);
         assert!(app.read(cx).state.editor.is_none());
@@ -1860,7 +2020,7 @@ fn bookmark_annotation_shortcuts_and_enter_are_scoped_to_their_interfaces(cx: &m
             app.read(cx).state.editor.as_ref().unwrap().members[0].0,
             line
         );
-        window.press("ctrl-b", cx);
+        window.press("m", cx);
         assert!(app.read(cx).state.tabs[0].mark_manager.is_marked(line));
         window.press("escape", cx);
         if !app.read(cx).state.search_open {
@@ -1868,7 +2028,7 @@ fn bookmark_annotation_shortcuts_and_enter_are_scoped_to_their_interfaces(cx: &m
             window.render_frame(cx);
         }
         window.click("log-search-input", cx);
-        window.press("ctrl-b", cx);
+        window.press("m", cx);
         assert!(app.read(cx).state.tabs[0].mark_manager.is_marked(line));
         app.update(cx, |app, cx| app.root_focus.focus(window, cx));
         window.press("ctrl-shift-p", cx);
@@ -1881,7 +2041,7 @@ fn bookmark_annotation_shortcuts_and_enter_are_scoped_to_their_interfaces(cx: &m
         window.press("enter", cx);
         assert_eq!(app.read(cx).state.nav_page, NavPage::Bookmarks);
         assert!(!app.read(cx).state.palette.open);
-        window.press("ctrl-shift-b", cx);
+        window.press("shift-m", cx);
         window.right_click(("log-row", 0usize), cx);
     })
     .unwrap();

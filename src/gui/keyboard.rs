@@ -1,5 +1,56 @@
 use crate::gui::{actions::Action, effect::Effect, message::Message, state::GuiState};
 use crate::input::{KeyCode, KeyModifiers};
+/// Match GUI chords exactly, retaining the shared uppercase-character convention.
+pub(super) fn matches_binding(
+    binding: &crate::config::keybindings::KeyBindings,
+    key: KeyCode,
+    modifiers: KeyModifiers,
+) -> bool {
+    binding.0.iter().any(|binding| {
+        binding.matches(key, modifiers)
+            && (if binding.1.contains(KeyModifiers::CONTROL)
+                || binding.1.contains(KeyModifiers::ALT)
+            {
+                binding.1 == modifiers
+            } else {
+                true
+            })
+    })
+}
+
+/// Translate the native input's submit event, then apply the configured binding.
+pub(super) fn input_enter_matches(
+    binding: &crate::config::keybindings::KeyBindings,
+    secondary: bool,
+    shift: bool,
+) -> bool {
+    let mut modifiers = KeyModifiers::NONE;
+    if secondary {
+        modifiers |= KeyModifiers::CONTROL;
+    }
+    if shift {
+        modifiers |= KeyModifiers::SHIFT;
+    }
+    matches_binding(binding, KeyCode::Enter, modifiers)
+}
+
+pub(super) fn editor_bindings(
+    kb: &crate::config::Keybindings,
+    action: Action,
+) -> (
+    &crate::config::keybindings::KeyBindings,
+    &crate::config::keybindings::KeyBindings,
+) {
+    match action {
+        Action::Annotation => (&kb.comment.save, &kb.comment.cancel),
+        Action::Docker => (&kb.docker_select.confirm, &kb.docker_select.cancel),
+        Action::Dlt => (&kb.dlt_select.confirm, &kb.dlt_select.cancel),
+        Action::ValueColors => (&kb.value_colors.apply, &kb.value_colors.cancel),
+        Action::Columns | Action::Merge => (&kb.select_fields.apply, &kb.select_fields.cancel),
+        _ => (&kb.filter_edit.confirm, &kb.filter_edit.cancel),
+    }
+}
+
 pub(super) fn bindings(state: &GuiState) -> std::sync::Arc<crate::config::Keybindings> {
     state
         .active_tab()
@@ -31,23 +82,15 @@ fn action_bindings(
 }
 pub fn handled(state: &GuiState, key: KeyCode, modifiers: KeyModifiers) -> bool {
     let kb = bindings(state);
-    let nav_mods = if matches!(
-        key,
-        KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End
-    ) && modifiers == KeyModifiers::SHIFT
-    {
-        KeyModifiers::NONE
-    } else {
-        modifiers
-    };
+    let nav_mods = modifiers;
     sidebar_handled(state, key, modifiers)
         || action_bindings(&kb)
             .iter()
-            .any(|(binding, _)| binding.matches(key, modifiers))
+            .any(|(binding, _)| matches_binding(binding, key, modifiers))
         || kb
             .custom
             .iter()
-            .any(|binding| binding.key.matches(key, modifiers))
+            .any(|binding| matches_binding(&binding.key, key, modifiers))
         || [
             &kb.global.quit,
             &kb.normal.search_forward,
@@ -73,11 +116,17 @@ pub fn handled(state: &GuiState, key: KeyCode, modifiers: KeyModifiers) -> bool 
             &kb.normal.yank_marked,
         ]
         .iter()
-        .any(|binding| binding.matches(key, modifiers))
-        || matches!(
-            key,
-            KeyCode::Home | KeyCode::End | KeyCode::F(1) | KeyCode::Char('?')
-        )
+        .any(|binding| matches_binding(binding, key, modifiers))
+        || [
+            &kb.gui.extend_up,
+            &kb.gui.extend_down,
+            &kb.gui.extend_first,
+            &kb.gui.extend_last,
+        ]
+        .iter()
+        .any(|binding| matches_binding(binding, key, modifiers))
+        || matches_binding(&kb.gui.first_row, key, nav_mods)
+        || matches_binding(&kb.gui.last_row, key, nav_mods)
         || [
             &kb.navigation.scroll_down,
             &kb.navigation.scroll_up,
@@ -99,10 +148,7 @@ pub fn handled(state: &GuiState, key: KeyCode, modifiers: KeyModifiers) -> bool 
             &kb.global.file_switcher,
         ]
         .iter()
-        .any(|binding| binding.matches(key, nav_mods))
-        || (modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key, KeyCode::Char('o') | KeyCode::Char('b')))
-        || (modifiers.contains(KeyModifiers::CONTROL) && key == KeyCode::Tab)
+        .any(|binding| matches_binding(binding, key, nav_mods))
 }
 pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Effect {
     if state.editor.is_some() || state.palette.visible() {
@@ -112,12 +158,13 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
     if state.keyboard_sidebar.is_some() && sidebar_handled(state, key, modifiers) {
         return apply_sidebar(state, key, modifiers);
     }
-    if kb.normal.filter_mode.matches(key, modifiers) || kb.normal.group_mode.matches(key, modifiers)
+    if matches_binding(&kb.normal.filter_mode, key, modifiers)
+        || matches_binding(&kb.normal.group_mode, key, modifiers)
     {
         if state.active_tab().is_none() {
             return Effect::None;
         }
-        let group = kb.normal.group_mode.matches(key, modifiers);
+        let group = matches_binding(&kb.normal.group_mode, key, modifiers);
         state.sidebar_tab = if group {
             crate::gui::state::SidebarTab::Groups
         } else {
@@ -133,7 +180,7 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
     if let Some(custom) = kb
         .custom
         .iter()
-        .find(|binding| binding.key.matches(key, modifiers))
+        .find(|binding| matches_binding(&binding.key, key, modifiers))
     {
         use clap::Parser;
         if let Ok(parsed) = crate::commands::CommandLine::try_parse_from(
@@ -146,11 +193,11 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
     }
     if state.keyboard_sidebar.is_none()
         && state.active_tab().is_some()
-        && kb.global.quit.matches(key, modifiers)
+        && matches_binding(&kb.global.quit, key, modifiers)
     {
         return Effect::Quit;
     }
-    if kb.normal.visual_mode.matches(key, modifiers) {
+    if matches_binding(&kb.normal.visual_mode, key, modifiers) {
         state.visual_lines = !state.visual_lines;
         if let Some(tab) = state.active_tab() {
             state.log_selection =
@@ -158,20 +205,20 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
         }
         return Effect::None;
     }
-    if kb.normal.command_mode.matches(key, modifiers) {
+    if matches_binding(&kb.normal.command_mode, key, modifiers) {
         return crate::gui::update::update(state, Message::OpenCommands);
     }
-    if kb.normal.search_forward.matches(key, modifiers)
-        || kb.normal.search_backward.matches(key, modifiers)
+    if matches_binding(&kb.normal.search_forward, key, modifiers)
+        || matches_binding(&kb.normal.search_backward, key, modifiers)
     {
-        let forward = kb.normal.search_forward.matches(key, modifiers);
+        let forward = matches_binding(&kb.normal.search_forward, key, modifiers);
         if let Some(tab) = state.active_tab_mut() {
             tab.search.query.set_forward(forward);
         }
         return crate::gui::update::update(state, Message::SearchPopup(true));
     }
-    if kb.normal.edit_comment.matches(key, modifiers)
-        || kb.normal.delete_comment.matches(key, modifiers)
+    if matches_binding(&kb.normal.edit_comment, key, modifiers)
+        || matches_binding(&kb.normal.delete_comment, key, modifiers)
     {
         let note = state.active_tab().and_then(|tab| {
             tab.filter
@@ -185,7 +232,7 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
                 })
         });
         if let Some(index) = note {
-            if kb.normal.edit_comment.matches(key, modifiers) {
+            if matches_binding(&kb.normal.edit_comment, key, modifiers) {
                 return crate::gui::update::update(state, Message::EditAnnotation(index));
             }
             let tab = state.active_tab_mut().unwrap();
@@ -194,7 +241,7 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
         }
         return Effect::None;
     }
-    if kb.normal.clear_all.matches(key, modifiers) {
+    if matches_binding(&kb.normal.clear_all, key, modifiers) {
         if let Some(tab) = state.active_tab_mut() {
             tab.mark_manager.clear();
             tab.comment_manager.clear();
@@ -203,34 +250,35 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
         return Effect::None;
     }
     if let Some(tab) = state.active_tab_mut() {
-        if kb.normal.scroll_left.matches(key, modifiers)
-            || kb.normal.scroll_right.matches(key, modifiers)
-            || kb.normal.start_of_line.matches(key, modifiers)
-            || kb.normal.end_of_line.matches(key, modifiers)
+        if matches_binding(&kb.normal.scroll_left, key, modifiers)
+            || matches_binding(&kb.normal.scroll_right, key, modifiers)
+            || matches_binding(&kb.normal.start_of_line, key, modifiers)
+            || matches_binding(&kb.normal.end_of_line, key, modifiers)
         {
-            tab.scroll.horizontal_scroll = if kb.normal.start_of_line.matches(key, modifiers) {
-                0
-            } else if kb.normal.scroll_left.matches(key, modifiers) {
-                tab.scroll.horizontal_scroll.saturating_sub(1)
-            } else if kb.normal.scroll_right.matches(key, modifiers) {
-                tab.scroll.horizontal_scroll.saturating_add(1)
-            } else {
-                tab.filter
-                    .visible_indices
-                    .get_opt(tab.scroll.scroll_offset)
-                    .map(|line| tab.get_display_text(line).chars().count())
-                    .unwrap_or(0)
-            };
+            tab.scroll.horizontal_scroll =
+                if matches_binding(&kb.normal.start_of_line, key, modifiers) {
+                    0
+                } else if matches_binding(&kb.normal.scroll_left, key, modifiers) {
+                    tab.scroll.horizontal_scroll.saturating_sub(1)
+                } else if matches_binding(&kb.normal.scroll_right, key, modifiers) {
+                    tab.scroll.horizontal_scroll.saturating_add(1)
+                } else {
+                    tab.filter
+                        .visible_indices
+                        .get_opt(tab.scroll.scroll_offset)
+                        .map(|line| tab.get_display_text(line).chars().count())
+                        .unwrap_or(0)
+                };
             return Effect::ScrollHorizontal(tab.scroll.horizontal_scroll);
         }
         let position = tab.scroll.scroll_offset;
-        let target = if kb.normal.next_error.matches(key, modifiers) {
+        let target = if matches_binding(&kb.normal.next_error, key, modifiers) {
             tab.next_error_position(position)
-        } else if kb.normal.prev_error.matches(key, modifiers) {
+        } else if matches_binding(&kb.normal.prev_error, key, modifiers) {
             tab.prev_error_position(position)
-        } else if kb.normal.next_warning.matches(key, modifiers) {
+        } else if matches_binding(&kb.normal.next_warning, key, modifiers) {
             tab.next_warning_position(position)
-        } else if kb.normal.prev_warning.matches(key, modifiers) {
+        } else if matches_binding(&kb.normal.prev_warning, key, modifiers) {
             tab.prev_warning_position(position)
         } else {
             None
@@ -240,11 +288,11 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
             return Effect::None;
         }
     }
-    if kb.normal.clear_search.matches(key, modifiers) {
+    if matches_binding(&kb.normal.clear_search, key, modifiers) {
         return crate::gui::update::update(state, Message::SearchEdited(String::new()));
     }
-    if kb.normal.expand_continuation.matches(key, modifiers)
-        || kb.normal.collapse_continuation.matches(key, modifiers)
+    if matches_binding(&kb.normal.expand_continuation, key, modifiers)
+        || matches_binding(&kb.normal.collapse_continuation, key, modifiers)
     {
         if let Some(tab) = state.active_tab_mut()
             && let Some(line) = tab.filter.visible_indices.get_opt(tab.scroll.scroll_offset)
@@ -253,7 +301,7 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
                 .and_then(|map| map.get(line))
                 .copied()
         {
-            let collapsed = kb.normal.collapse_continuation.matches(key, modifiers);
+            let collapsed = matches_binding(&kb.normal.collapse_continuation, key, modifiers);
             if tab.display.collapse_continuations != collapsed {
                 tab.filter.overridden_groups.insert(parent);
             } else {
@@ -266,18 +314,18 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
         }
         return Effect::None;
     }
-    if kb.normal.toggle_highlight_mode.matches(key, modifiers) {
+    if matches_binding(&kb.normal.toggle_highlight_mode, key, modifiers) {
         if let Some(tab) = state.active_tab_mut() {
             tab.filter.highlight_mode = !tab.filter.highlight_mode;
             tab.begin_filter_refresh_background();
         }
         return Effect::None;
     }
-    if (kb.normal.yank_line.matches(key, modifiers)
-        || kb.normal.yank_marked.matches(key, modifiers))
+    if (matches_binding(&kb.normal.yank_line, key, modifiers)
+        || matches_binding(&kb.normal.yank_marked, key, modifiers))
         && let Some(tab) = state.active_tab()
     {
-        let lines = if kb.normal.yank_marked.matches(key, modifiers) {
+        let lines = if matches_binding(&kb.normal.yank_marked, key, modifiers) {
             tab.mark_manager.get_indices()
         } else {
             crate::gui::view::annotations::selected_lines(state)
@@ -291,13 +339,13 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
     }
     if let Some((_, action)) = action_bindings(&kb)
         .iter()
-        .find(|(binding, _)| binding.matches(key, modifiers))
+        .find(|(binding, _)| matches_binding(binding, key, modifiers))
     {
         let effect = crate::gui::actions::open(state, *action, None, None);
         if *action == Action::Filter
             && let Some(editor) = &mut state.editor
         {
-            editor.kind = if kb.normal.filter_exclude.matches(key, modifiers) {
+            editor.kind = if matches_binding(&kb.normal.filter_exclude, key, modifiers) {
                 crate::filters::FilterType::Exclude
             } else {
                 crate::filters::FilterType::Include
@@ -305,60 +353,33 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
             // `App::dispatch` fills `values[0]` from a manual text
             // selection (if any) once this returns; it never comes
             // from the cursor line alone.
-            if kb.normal.filter_include_auto.matches(key, modifiers) {
+            if matches_binding(&kb.normal.filter_include_auto, key, modifiers) {
                 editor.regenerate_auto_style();
             }
         }
         return effect;
     }
-    let action = if matches!(key, KeyCode::F(1) | KeyCode::Char('?')) {
-        Some(Action::Help)
-    } else if kb.global.file_switcher.matches(key, modifiers) {
-        Some(Action::SwitchFile)
-    } else if kb.global.new_tab.matches(key, modifiers)
-        || (key == KeyCode::Char('o') && modifiers.contains(KeyModifiers::CONTROL))
-    {
-        Some(Action::Open)
-    } else if kb.normal.filter_mode.matches(key, modifiers) {
-        Some(Action::Filter)
-    } else if kb.normal.group_mode.matches(key, modifiers) {
-        Some(Action::Group)
-    } else if kb.normal.mark_line.matches(key, modifiers)
-        || (key == KeyCode::Char('b') && modifiers.contains(KeyModifiers::CONTROL))
-    {
-        Some(Action::Bookmark)
-    } else {
-        None
-    };
-    if let Some(action) = action {
-        return crate::gui::actions::open(state, action, None, None);
-    }
-    let ctrl_tab = key == KeyCode::Tab && modifiers.contains(KeyModifiers::CONTROL);
     if !state.tabs.is_empty() {
-        if kb.global.next_tab.matches(key, modifiers)
-            || ctrl_tab && !modifiers.contains(KeyModifiers::SHIFT)
-        {
+        if matches_binding(&kb.global.next_tab, key, modifiers) {
             return crate::gui::update::update(
                 state,
                 Message::TabSelected((state.active_tab + 1) % state.tabs.len()),
             );
         }
-        if kb.global.prev_tab.matches(key, modifiers)
-            || ctrl_tab && modifiers.contains(KeyModifiers::SHIFT)
-        {
+        if matches_binding(&kb.global.prev_tab, key, modifiers) {
             return crate::gui::update::update(
                 state,
                 Message::TabSelected((state.active_tab + state.tabs.len() - 1) % state.tabs.len()),
             );
         }
-        if kb.global.close_tab.matches(key, modifiers) {
+        if matches_binding(&kb.global.close_tab, key, modifiers) {
             return crate::gui::update::update(state, Message::TabClosed(state.active_tab));
         }
     }
-    if kb.normal.next_match.matches(key, modifiers) {
+    if matches_binding(&kb.normal.next_match, key, modifiers) {
         return crate::gui::update::update(state, Message::SearchNext(true));
     }
-    if kb.normal.prev_match.matches(key, modifiers) {
+    if matches_binding(&kb.normal.prev_match, key, modifiers) {
         return crate::gui::update::update(state, Message::SearchNext(false));
     }
     let selection = state.log_selection;
@@ -366,39 +387,37 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
     let Some(tab) = state.active_tab_mut() else {
         return Effect::None;
     };
-    let extend = visual_lines
-        || modifiers == KeyModifiers::SHIFT
-            && matches!(
-                key,
-                KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End
-            );
-    let nav_mods = if extend && modifiers == KeyModifiers::SHIFT {
-        KeyModifiers::NONE
-    } else {
-        modifiers
-    };
+    let extend_up = matches_binding(&kb.gui.extend_up, key, modifiers);
+    let extend_down = matches_binding(&kb.gui.extend_down, key, modifiers);
+    let extend_first = matches_binding(&kb.gui.extend_first, key, modifiers);
+    let extend_last = matches_binding(&kb.gui.extend_last, key, modifiers);
+    let extend = visual_lines || extend_up || extend_down || extend_first || extend_last;
+    let nav_mods = modifiers;
     let old = selection
         .filter(|(id, _, _)| *id == tab.id)
         .map(|(_, _, row)| row)
         .unwrap_or(tab.scroll.scroll_offset);
     let page = tab.scroll.visible_height.max(1);
-    let row = if kb.navigation.scroll_down.matches(key, nav_mods) {
+    let row = if extend_down || matches_binding(&kb.navigation.scroll_down, key, nav_mods) {
         old.saturating_add(1)
-    } else if kb.navigation.scroll_up.matches(key, nav_mods) {
+    } else if extend_up || matches_binding(&kb.navigation.scroll_up, key, nav_mods) {
         old.saturating_sub(1)
-    } else if kb.navigation.page_down.matches(key, nav_mods) {
+    } else if matches_binding(&kb.navigation.page_down, key, nav_mods) {
         old.saturating_add(page)
-    } else if kb.navigation.page_up.matches(key, nav_mods) {
+    } else if matches_binding(&kb.navigation.page_up, key, nav_mods) {
         old.saturating_sub(page)
-    } else if kb.navigation.half_page_down.matches(key, nav_mods) {
+    } else if matches_binding(&kb.navigation.half_page_down, key, nav_mods) {
         old.saturating_add((page / 2).max(1))
-    } else if kb.navigation.half_page_up.matches(key, nav_mods) {
+    } else if matches_binding(&kb.navigation.half_page_up, key, nav_mods) {
         old.saturating_sub((page / 2).max(1))
-    } else if key == KeyCode::End || kb.normal.go_to_bottom.matches(key, nav_mods) {
+    } else if extend_last
+        || matches_binding(&kb.gui.last_row, key, nav_mods)
+        || matches_binding(&kb.normal.go_to_bottom, key, nav_mods)
+    {
         usize::MAX
-    } else if key == KeyCode::Home {
+    } else if extend_first || matches_binding(&kb.gui.first_row, key, nav_mods) {
         0
-    } else if kb.normal.go_to_top_chord.matches(key, nav_mods) {
+    } else if matches_binding(&kb.normal.go_to_top_chord, key, nav_mods) {
         if !tab.interaction.g_key_pressed {
             tab.interaction.g_key_pressed = true;
             return Effect::None;
@@ -456,18 +475,28 @@ pub fn shortcuts(state: &GuiState) -> Vec<(&'static str, String, String)> {
         (
             "Navigate logs",
             "First / last row".into(),
-            "Home / End, gg / G".into(),
+            format!(
+                "{} / {}, {} twice / {}",
+                kb.gui.first_row.display(),
+                kb.gui.last_row.display(),
+                kb.normal.go_to_top_chord.display(),
+                kb.normal.go_to_bottom.display()
+            ),
         ),
         (
             "Navigate logs",
             "Extend row selection".into(),
-            "Shift+Up / Shift+Down".into(),
+            format!(
+                "{} / {}",
+                kb.gui.extend_up.display(),
+                kb.gui.extend_down.display()
+            ),
         ),
         (
             "Files",
             "Next / previous tab".into(),
             format!(
-                "{} / {}, Ctrl+Tab / Ctrl+Shift+Tab",
+                "{} / {}",
                 kb.global.next_tab.display(),
                 kb.global.prev_tab.display()
             ),
@@ -480,17 +509,26 @@ pub fn shortcuts(state: &GuiState) -> Vec<(&'static str, String, String)> {
         (
             "Files",
             "Open / close file".into(),
-            format!("Ctrl+O / {}", kb.global.close_tab.display()),
+            format!(
+                "{} / {}",
+                kb.global.new_tab.display(),
+                kb.global.close_tab.display()
+            ),
         ),
         (
             "Investigate",
             "Bookmark selected rows".into(),
-            format!("Ctrl+B / {}", kb.normal.mark_line.display()),
+            kb.normal.mark_line.display(),
         ),
         (
             "Investigate",
             "Add annotation".into(),
             shortcut_for_action(&kb, Action::Annotation),
+        ),
+        (
+            "Investigate",
+            "Switch Logs / Bookmarks".into(),
+            shortcut_for_action(&kb, Action::ToggleBookmarks),
         ),
         (
             "Investigate",
@@ -513,14 +551,22 @@ pub fn shortcuts(state: &GuiState) -> Vec<(&'static str, String, String)> {
         (
             "General",
             "Available actions".into(),
-            "Ctrl+Shift+P / :".into(),
+            format!(
+                "{} / {}",
+                kb.gui.open_commands.display(),
+                kb.normal.command_mode.display()
+            ),
         ),
         (
             "General",
             "Copy selected text".into(),
-            "Ctrl+C / Cmd+C".into(),
+            kb.gui.copy.display(),
         ),
-        ("General", "Close a dialog".into(), "Escape".into()),
+        (
+            "General",
+            "Close a dialog".into(),
+            kb.filter_edit.cancel.display(),
+        ),
     ]
 }
 
@@ -651,9 +697,11 @@ mod settings_tests {
 /// The same configured shortcut labels are used throughout the GUI.
 pub fn shortcut_for_action(kb: &crate::config::Keybindings, action: Action) -> String {
     match action {
-        Action::ShowBookmarks | Action::ToggleBookmarks => "Ctrl+Shift+B".into(),
-        Action::Undo => "Ctrl+Z".into(),
-        Action::Redo => "Ctrl+Shift+Z".into(),
+        Action::MarksOnly | Action::ShowBookmarks | Action::ToggleBookmarks => {
+            kb.normal.toggle_marks_only.display()
+        }
+        Action::Undo => kb.gui.undo.display(),
+        Action::Redo => kb.gui.redo.display(),
         Action::CloseFile => kb.global.close_tab.display(),
         Action::Group => kb.normal.group_mode.display(),
         _ => action_bindings(kb)
@@ -678,11 +726,11 @@ pub fn mutates_tab(state: &GuiState, key: KeyCode, modifiers: KeyModifiers) -> b
         &kb.normal.collapse_continuation,
     ]
     .iter()
-    .any(|binding| binding.matches(key, modifiers))
+    .any(|binding| matches_binding(binding, key, modifiers))
         || kb
             .custom
             .iter()
-            .any(|binding| binding.key.matches(key, modifiers))
+            .any(|binding| matches_binding(&binding.key, key, modifiers))
 }
 
 pub fn sidebar_handled(state: &GuiState, key: KeyCode, modifiers: KeyModifiers) -> bool {
@@ -691,8 +739,8 @@ pub fn sidebar_handled(state: &GuiState, key: KeyCode, modifiers: KeyModifiers) 
     }
     let kb = bindings(state);
     if state.keyboard_sidebar == Some(crate::gui::state::SidebarTab::Filters)
-        && (kb.filter.next_match.matches(key, modifiers)
-            || kb.filter.prev_match.matches(key, modifiers))
+        && (matches_binding(&kb.filter.next_match, key, modifiers)
+            || matches_binding(&kb.filter.prev_match, key, modifiers))
     {
         return true;
     }
@@ -718,13 +766,13 @@ pub fn sidebar_handled(state: &GuiState, key: KeyCode, modifiers: KeyModifiers) 
         &kb.group.add_group,
     ]
     .iter()
-    .any(|binding| binding.matches(key, modifiers))
+    .any(|binding| matches_binding(binding, key, modifiers))
 }
 fn apply_sidebar(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Effect {
     use crate::gui::state::SidebarTab;
     let kb = bindings(state);
     let group = state.keyboard_sidebar == Some(SidebarTab::Groups);
-    if kb.filter.exit_mode.matches(key, modifiers) {
+    if matches_binding(&kb.filter.exit_mode, key, modifiers) {
         if let Some(tab) = state.active_tab_mut() {
             tab.filter.navigation = None;
         }
@@ -742,23 +790,23 @@ fn apply_sidebar(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) ->
     };
     state.sidebar_cursor = state.sidebar_cursor.min(count.saturating_sub(1));
     if !group
-        && (kb.filter.next_match.matches(key, modifiers)
-            || kb.filter.prev_match.matches(key, modifiers))
+        && (matches_binding(&kb.filter.next_match, key, modifiers)
+            || matches_binding(&kb.filter.prev_match, key, modifiers))
     {
         let selected = state.sidebar_cursor;
         state.tabs[state.active_tab].begin_selected_filter_match(
             selected,
-            kb.filter.next_match.matches(key, modifiers),
+            matches_binding(&kb.filter.next_match, key, modifiers),
             1,
         );
         return Effect::None;
     }
-    if kb.navigation.scroll_down.matches(key, modifiers)
-        || kb.navigation.page_down.matches(key, modifiers)
+    if matches_binding(&kb.navigation.scroll_down, key, modifiers)
+        || matches_binding(&kb.navigation.page_down, key, modifiers)
     {
         state.tabs[state.active_tab].filter.navigation = None;
         state.sidebar_cursor = (state.sidebar_cursor
-            + if kb.navigation.page_down.matches(key, modifiers) {
+            + if matches_binding(&kb.navigation.page_down, key, modifiers) {
                 10
             } else {
                 1
@@ -766,32 +814,31 @@ fn apply_sidebar(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) ->
         .min(count.saturating_sub(1));
         return Effect::None;
     }
-    if kb.navigation.scroll_up.matches(key, modifiers)
-        || kb.navigation.page_up.matches(key, modifiers)
+    if matches_binding(&kb.navigation.scroll_up, key, modifiers)
+        || matches_binding(&kb.navigation.page_up, key, modifiers)
     {
         state.tabs[state.active_tab].filter.navigation = None;
-        state.sidebar_cursor =
-            state
-                .sidebar_cursor
-                .saturating_sub(if kb.navigation.page_up.matches(key, modifiers) {
-                    10
-                } else {
-                    1
-                });
+        state.sidebar_cursor = state.sidebar_cursor.saturating_sub(
+            if matches_binding(&kb.navigation.page_up, key, modifiers) {
+                10
+            } else {
+                1
+            },
+        );
         return Effect::None;
     }
     let index = state.active_tab;
     if group {
-        if kb.group.add_group.matches(key, modifiers) {
+        if matches_binding(&kb.group.add_group, key, modifiers) {
             return crate::gui::actions::open(state, Action::Group, None, None);
         }
         if let Some(name) = names.get(state.sidebar_cursor) {
-            let message = if kb.filter.toggle_filter.matches(key, modifiers) {
+            let message = if matches_binding(&kb.filter.toggle_filter, key, modifiers) {
                 Some(Message::GroupToggled(index, name.clone()))
-            } else if kb.filter.delete_filter.matches(key, modifiers) {
+            } else if matches_binding(&kb.filter.delete_filter, key, modifiers) {
                 Some(Message::GroupDeleted(index, name.clone()))
-            } else if kb.filter.edit_filter.matches(key, modifiers)
-                || kb.filter.set_color.matches(key, modifiers)
+            } else if matches_binding(&kb.filter.edit_filter, key, modifiers)
+                || matches_binding(&kb.filter.set_color, key, modifiers)
             {
                 Some(Message::EditGroup(name.clone()))
             } else {
@@ -803,34 +850,34 @@ fn apply_sidebar(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) ->
         }
         return Effect::None;
     }
-    if kb.filter.add_include_filter.matches(key, modifiers)
-        || kb.filter.add_include_filter_auto.matches(key, modifiers)
-        || kb.filter.add_exclude_filter.matches(key, modifiers)
-        || kb.filter.add_highlight_filter.matches(key, modifiers)
-        || kb.filter.add_date_filter.matches(key, modifiers)
+    if matches_binding(&kb.filter.add_include_filter, key, modifiers)
+        || matches_binding(&kb.filter.add_include_filter_auto, key, modifiers)
+        || matches_binding(&kb.filter.add_exclude_filter, key, modifiers)
+        || matches_binding(&kb.filter.add_highlight_filter, key, modifiers)
+        || matches_binding(&kb.filter.add_date_filter, key, modifiers)
     {
         let effect = crate::gui::actions::open(state, Action::Filter, None, None);
         if let Some(editor) = &mut state.editor {
-            editor.kind = if kb.filter.add_exclude_filter.matches(key, modifiers) {
+            editor.kind = if matches_binding(&kb.filter.add_exclude_filter, key, modifiers) {
                 crate::filters::FilterType::Exclude
-            } else if kb.filter.add_highlight_filter.matches(key, modifiers) {
+            } else if matches_binding(&kb.filter.add_highlight_filter, key, modifiers) {
                 crate::filters::FilterType::Highlight
             } else {
                 crate::filters::FilterType::Include
             };
-            if kb.filter.add_date_filter.matches(key, modifiers) {
+            if matches_binding(&kb.filter.add_date_filter, key, modifiers) {
                 editor.values[0] = crate::filters::DATE_PREFIX.into();
             }
-            if kb.filter.add_include_filter_auto.matches(key, modifiers) {
+            if matches_binding(&kb.filter.add_include_filter_auto, key, modifiers) {
                 editor.regenerate_auto_style();
             }
         }
         return effect;
     }
-    if kb.filter.clear_all_filters.matches(key, modifiers) {
+    if matches_binding(&kb.filter.clear_all_filters, key, modifiers) {
         return crate::gui::update::update(state, Message::ClearAllFilters(index));
     }
-    if kb.filter.toggle_all_filters.matches(key, modifiers) {
+    if matches_binding(&kb.filter.toggle_all_filters, key, modifiers) {
         let action = if state.tabs[index]
             .log_manager
             .get_filters()
@@ -849,18 +896,18 @@ fn apply_sidebar(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) ->
         .get(state.sidebar_cursor)
     {
         let id = filter.id;
-        if kb.filter.edit_filter.matches(key, modifiers)
-            || kb.filter.set_color.matches(key, modifiers)
+        if matches_binding(&kb.filter.edit_filter, key, modifiers)
+            || matches_binding(&kb.filter.set_color, key, modifiers)
         {
             return crate::gui::update::update(state, Message::EditFilter(id));
         }
-        if kb.filter.toggle_filter.matches(key, modifiers) {
+        if matches_binding(&kb.filter.toggle_filter, key, modifiers) {
             return crate::gui::update::update(state, Message::FilterToggled(index, id));
         }
-        if kb.filter.delete_filter.matches(key, modifiers) {
+        if matches_binding(&kb.filter.delete_filter, key, modifiers) {
             return crate::gui::update::update(state, Message::FilterRemoved(index, id));
         }
-        let target = if kb.filter.move_filter_up.matches(key, modifiers) {
+        let target = if matches_binding(&kb.filter.move_filter_up, key, modifiers) {
             state.sidebar_cursor.saturating_sub(1)
         } else {
             (state.sidebar_cursor + 1).min(count.saturating_sub(1))

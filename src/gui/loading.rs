@@ -411,7 +411,18 @@ fn expand_preview(
     }
 }
 impl App {
-    pub(super) fn picker_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+    pub(super) fn picker_key(
+        &mut self,
+        stroke: &gpui_kit::gpui::Keystroke,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((key, modifiers)) = crate::gui::key::from_gpui_keystroke(stroke) else {
+            return false;
+        };
+        let kb = crate::gui::keyboard::bindings(&self.state);
+        let matches = |binding: &crate::config::keybindings::KeyBindings| {
+            crate::gui::keyboard::matches_binding(binding, key, modifiers)
+        };
         let Some(id) = self.loading.selected_picker else {
             return false;
         };
@@ -425,40 +436,40 @@ impl App {
             return false;
         };
         let node = picker.rows.get(picker.cursor).copied();
-        match key {
-            "up" => picker.cursor = picker.cursor.saturating_sub(1),
-            "down" => picker.cursor = (picker.cursor + 1).min(picker.rows.len().saturating_sub(1)),
-            "home" => picker.cursor = 0,
-            "end" => picker.cursor = picker.rows.len().saturating_sub(1),
-            "space" => {
-                if let Some(node) = node {
-                    self.picker_toggle(id, node, cx);
+        if matches(&kb.navigation.scroll_up) {
+            picker.cursor = picker.cursor.saturating_sub(1);
+        } else if matches(&kb.navigation.scroll_down) {
+            picker.cursor = (picker.cursor + 1).min(picker.rows.len().saturating_sub(1));
+        } else if matches(&kb.gui.first_row) {
+            picker.cursor = 0;
+        } else if matches(&kb.gui.last_row) {
+            picker.cursor = picker.rows.len().saturating_sub(1);
+        } else if matches(&kb.archive_picker.toggle) {
+            if let Some(node) = node {
+                self.picker_toggle(id, node, cx);
+            }
+            return true;
+        } else if matches(&kb.archive_picker.expand) || matches(&kb.archive_picker.collapse) {
+            if let Some(node) = node {
+                let item = &picker.tree.nodes[node];
+                let expand = matches(&kb.archive_picker.expand)
+                    && (item.collapsed || matches!(item.kind, NodeKind::LazyContainer { .. }));
+                let collapse = matches(&kb.archive_picker.collapse)
+                    && !item.collapsed
+                    && matches!(item.kind, NodeKind::Container { .. });
+                if expand || collapse {
+                    self.picker_expand(id, node, cx);
                 }
-                return true;
             }
-            "right" | "left" => {
-                if let Some(node) = node {
-                    let item = &picker.tree.nodes[node];
-                    let expand = key == "right"
-                        && (item.collapsed || matches!(item.kind, NodeKind::LazyContainer { .. }));
-                    let collapse = key == "left"
-                        && !item.collapsed
-                        && matches!(item.kind, NodeKind::Container { .. });
-                    if expand || collapse {
-                        self.picker_expand(id, node, cx);
-                    }
-                }
-                return true;
-            }
-            "enter" => {
-                self.picker_open(id, cx);
-                return true;
-            }
-            "escape" => {
-                self.cancel_loading(id, cx);
-                return true;
-            }
-            _ => return false,
+            return true;
+        } else if matches(&kb.archive_picker.apply) {
+            self.picker_open(id, cx);
+            return true;
+        } else if matches(&kb.archive_picker.cancel) {
+            self.cancel_loading(id, cx);
+            return true;
+        } else {
+            return false;
         }
         self.loading
             .scroll

@@ -385,3 +385,97 @@ A custom binding that reuses a built-in action's key wins over it (deliberately 
 ## Conflict Validation
 
 At startup, logana validates all configured keybindings for conflicts within each mode scope. Conflicts are printed to stderr with a description of the overlapping bindings, but do not prevent startup.
+
+## GUI shortcuts
+
+The GUI uses the same configured action, navigation, search, editor, and archive
+picker bindings as the terminal interface. For example, `normal.mark_line`
+bookmarks rows and `normal.toggle_marks_only` switches between Logs and Bookmarks.
+Changing a binding replaces its previous shortcut; there are no fixed fallback
+aliases. In particular, Ctrl+B, Ctrl+O, Ctrl+Tab, Ctrl+Shift+B, and F1 only perform
+an action if you configure a binding for them. Menus, buttons, and the Logs /
+Bookmarks selector remain available when a shortcut is disabled.
+
+GUI-only shortcuts live under `keybindings.gui` and also appear in the GUI
+Keybindings settings. Open **Actions**, search for `keybindings`, and choose the
+keybinding editor to capture replacement keys. You can also edit
+`~/.config/logana/config.json` directly. Set a binding to `[]` to disable it, or
+provide an array of strings for alternative shortcuts. Menus and shortcut help
+use the configured values. Native text-input editing follows the widget's controls.
+
+### Shared GUI actions
+
+The following defaults apply while interacting with the log view:
+
+| Action | Default | Configuration key |
+|---|---|---|
+| Bookmark selected rows | `m` | `normal.mark_line` |
+| Switch Logs / Bookmarks | `M` | `normal.toggle_marks_only` |
+| Add an annotation | `c` | `normal.comment_line` |
+| Open search | `/` | `normal.search_forward` |
+| Next / previous search match | `n` / `N` | `normal.next_match` / `normal.prev_match` |
+| Open files | `Ctrl+t` | `global.new_tab` |
+| Next / previous file tab | `Tab` / `Shift+Tab` | `global.next_tab` / `global.prev_tab` |
+| Close the active file | `Ctrl+w` | `global.close_tab` |
+| Switch to an open file | `Ctrl+p` | `global.file_switcher` |
+| Show shortcut help | `?` | `normal.show_keybindings` |
+
+Application shortcuts are scoped to their interface so typing in a search field
+or editor does not bookmark rows or trigger log navigation.
+
+### GUI-only defaults
+
+These settings belong inside the `keybindings` object:
+
+```json
+"gui": {
+  "open_commands": "Ctrl+Shift+p",
+  "undo": "Ctrl+z",
+  "redo": "Ctrl+Shift+z",
+  "copy": "Ctrl+c",
+  "increase_font_size": ["Ctrl+=", "Ctrl++"],
+  "decrease_font_size": "Ctrl+-",
+  "first_row": "Home",
+  "last_row": "End",
+  "extend_up": "Shift+Up",
+  "extend_down": "Shift+Down",
+  "extend_first": "Shift+Home",
+  "extend_last": "Shift+End",
+  "palette_up": "Up",
+  "palette_down": "Down",
+  "search_previous": "Shift+Enter",
+  "path_confirm": "Ctrl+Enter",
+  "path_parent": ["Left", "Backspace"]
+}
+```
+
+Palette confirmation and cancellation use `command.confirm` and `command.cancel`.
+Search confirmation and cancellation use `search.confirm` and `search.cancel`.
+The file picker uses `archive_picker` controls, with `gui.path_confirm` opening
+selected paths and `gui.path_parent` navigating to the parent folder.
+
+### Rebinding and disabling shortcuts
+
+This partial configuration uses Ctrl+B for bookmarks, Ctrl+F2 for the Logs /
+Bookmarks toggle, F4 for Actions, and F6 for copying selected log text. It also
+disables the font-size decrease shortcut. Omitted bindings retain their defaults.
+
+```json
+{
+  "keybindings": {
+    "normal": {
+      "mark_line": "Ctrl+b",
+      "toggle_marks_only": "Ctrl+F2"
+    },
+    "gui": {
+      "open_commands": "F4",
+      "copy": "F6",
+      "decrease_font_size": []
+    }
+  }
+}
+```
+
+With this configuration, `m`, `M`, Ctrl+Shift+P, and Ctrl+C no longer invoke
+those actions in the log view. Standard copy and editing commands inside native
+text inputs continue to work.

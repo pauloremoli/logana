@@ -2,6 +2,29 @@ use crate::input::{KeyCode, KeyModifiers};
 use serde::{Deserialize, Serialize, de};
 use std::fmt;
 
+/// GUI-only shortcuts. Empty arrays disable an action.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct GuiKeybindings {
+    pub open_commands: KeyBindings,
+    pub undo: KeyBindings,
+    pub redo: KeyBindings,
+    pub copy: KeyBindings,
+    pub increase_font_size: KeyBindings,
+    pub decrease_font_size: KeyBindings,
+    pub first_row: KeyBindings,
+    pub last_row: KeyBindings,
+    pub extend_up: KeyBindings,
+    pub extend_down: KeyBindings,
+    pub extend_first: KeyBindings,
+    pub extend_last: KeyBindings,
+    pub palette_up: KeyBindings,
+    pub palette_down: KeyBindings,
+    pub search_previous: KeyBindings,
+    pub path_confirm: KeyBindings,
+    pub path_parent: KeyBindings,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeyBinding(pub KeyCode, pub KeyModifiers);
 
@@ -1687,8 +1710,42 @@ pub struct CustomCommandBinding {
     pub command: String,
 }
 
+impl Default for GuiKeybindings {
+    fn default() -> Self {
+        let keys = |values: &[&str]| {
+            KeyBindings(
+                values
+                    .iter()
+                    .map(|value| KeyBinding::parse(value).expect("valid GUI default shortcut"))
+                    .collect(),
+            )
+        };
+        Self {
+            open_commands: keys(&["Ctrl+Shift+p"]),
+            undo: keys(&["Ctrl+z"]),
+            redo: keys(&["Ctrl+Shift+z"]),
+            copy: keys(&["Ctrl+c"]),
+            increase_font_size: keys(&["Ctrl+=", "Ctrl++"]),
+            decrease_font_size: keys(&["Ctrl+-"]),
+            first_row: keys(&["Home"]),
+            last_row: keys(&["End"]),
+            extend_up: keys(&["Shift+Up"]),
+            extend_down: keys(&["Shift+Down"]),
+            extend_first: keys(&["Shift+Home"]),
+            extend_last: keys(&["Shift+End"]),
+            palette_up: keys(&["Up"]),
+            palette_down: keys(&["Down"]),
+            search_previous: keys(&["Shift+Enter"]),
+            path_confirm: keys(&["Ctrl+Enter"]),
+            path_parent: keys(&["Left", "Backspace"]),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Keybindings {
+    #[serde(default)]
+    pub gui: GuiKeybindings,
     #[serde(default)]
     pub navigation: NavigationKeybindings,
     #[serde(default)]

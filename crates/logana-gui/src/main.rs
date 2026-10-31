@@ -2,11 +2,10 @@
 
 use clap::Parser;
 use gpui_kit::component::TitleBar;
-use gpui_kit::gpui::KeyBinding;
 use gpui_kit::gpui::prelude::*;
 use logana::cli::{Args, expand_cli_files, run_headless_mode, validate_startup_args};
 use logana::db::{Database, SessionStore, default_db_path};
-use logana::gui::app::{App, OpenCommands};
+use logana::gui::app::App;
 use logana::gui::persistence::Preferences;
 use logana::gui::runtime;
 use logana::gui::theme as gui_theme;
@@ -64,11 +63,7 @@ fn main() {
             cx.set_app_identity("logana", "Logana");
             gpui_kit::init(cx);
             gui_theme::install(&theme, cx);
-            cx.bind_keys([KeyBinding::new(
-                "ctrl-shift-p",
-                OpenCommands,
-                Some("LoganaLogs"),
-            )]);
+
             // `TitleBar::window_options()` requests client-side decorations
             // (a custom titlebar the app draws and drags itself) so
             // `component::TitleBar` below can render real minimize/

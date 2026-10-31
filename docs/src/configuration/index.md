@@ -74,6 +74,12 @@ The path depends on the operating system:
     },
     "global": {
       "quit": "q"
+    },
+    "gui": {
+      "open_commands": "Ctrl+Shift+p",
+      "copy": "Ctrl+c",
+      "undo": "Ctrl+z",
+      "redo": "Ctrl+Shift+z"
     }
   }
 }
@@ -99,5 +105,5 @@ The path depends on the operating system:
 
 ## Sections
 
-- [Keybindings](keybindings.md) — remapping all keyboard shortcuts
+- [Keybindings](keybindings.md) — remapping all keyboard shortcuts, including [GUI actions](keybindings.md#gui-shortcuts)
 - [Themes](themes.md) — built-in themes and creating custom themes

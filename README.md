@@ -114,7 +114,7 @@ Full documentation is at **[pauloremoli.github.io/logana](https://pauloremoli.gi
 - [Commands](https://pauloremoli.github.io/logana/commands.html)
 - [Filtering](https://pauloremoli.github.io/logana/filtering/)
 - [Configuration](https://pauloremoli.github.io/logana/configuration/)
-- [Keybindings](https://pauloremoli.github.io/logana/configuration/keybindings.html)
+- [Keybindings](https://pauloremoli.github.io/logana/configuration/keybindings.html), including [GUI shortcuts](https://pauloremoli.github.io/logana/configuration/keybindings.html#gui-shortcuts)
 - [Annotations](https://pauloremoli.github.io/logana/annotations.html)
 - [OTel Collector](https://pauloremoli.github.io/logana/otel.html)
 - [MCP Server](https://pauloremoli.github.io/logana/mcp.html)

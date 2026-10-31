@@ -100,7 +100,7 @@ pub fn search_popup(app: &App, cx: &mut Context<App>) -> Option<gpui_kit::gpui::
                             .ghost()
                             .icon(IconName::X)
                             .accessibility_label("Close search")
-                            .tooltip("Close search (Escape)")
+                            .tooltip("Close search")
                             .on_click(cx.listener(|app, _, window, cx| {
                                 app.dispatch(Message::SearchPopup(false), window, cx)
                             })),
@@ -143,7 +143,7 @@ pub fn search_button(cx: &mut Context<App>) -> impl IntoElement {
         .ghost()
         .icon(IconName::Search)
         .accessibility_label("Search")
-        .tooltip("Search (/)")
+        .tooltip("Search")
         .on_click(
             cx.listener(|app, _, window, cx| app.dispatch(Message::SearchPopup(true), window, cx)),
         )

@@ -10,7 +10,7 @@ Search operates on visible lines only — it respects active filters and only sc
 | `n` | Jump to next match |
 | `N` | Jump to previous match |
 
-There's no default key for a dedicated backward search — `?` opens the [keybindings help overlay](../configuration/keybindings.md#keybindings-help) instead. Search backward by pressing `/`, then `N` to step backward from the match; `search_backward` remains available to rebind in config if you want a dedicated key.
+There's no default key for a dedicated backward search — `?` opens the [keybindings help overlay](configuration/keybindings.md#keybindings-help) instead. Search backward by pressing `/`, then `N` to step backward from the match; `search_backward` remains available to rebind in config if you want a dedicated key.
 
 ## Usage
 
@@ -20,6 +20,18 @@ Press `/` to open the search bar at the bottom of the screen. Type your query an
 - `N` wraps around to the last match before the first line.
 
 While typing, the hint line shows a live match count; the mode bar already shows `<Enter> search` for as long as the search box is open, so the hint line doesn't repeat it. Once the search is committed, the hint line shows `match <current> / <total>` alongside the configured `next_match`/`prev_match` keys (`n`/`N` by default), styled the same way as a mode bar's key hints, as a reminder of how to step through the results.
+
+## GUI search controls
+
+In the GUI, `/` opens and focuses the search popup by default. `Enter` advances
+to the next match and closes the popup; `Shift+Enter` moves to the previous match
+and closes it. `Esc` cancels and clears the search. Closing with the popup's close
+button retains the query and highlights.
+
+These keys are configurable: `normal.search_forward` opens the popup,
+`search.confirm` confirms forward, `gui.search_previous` confirms backward, and
+`search.cancel` cancels. `normal.next_match` / `normal.prev_match` navigate results
+from the log view. See [GUI shortcuts](configuration/keybindings.md#gui-shortcuts).
 
 ## Pattern Syntax
 

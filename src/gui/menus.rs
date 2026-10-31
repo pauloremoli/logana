@@ -179,7 +179,7 @@ mod tests {
                 &crate::config::Keybindings::default(),
                 Action::ShowBookmarks,
             ),
-            "Ctrl+Shift+B",
+            "M",
         );
     }
 }

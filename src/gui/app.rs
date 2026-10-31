@@ -112,6 +112,16 @@ pub struct FacetCache {
 }
 
 impl App {
+    fn copy_log_selection(&self, cx: &mut Context<Self>) -> String {
+        self.text_document
+            .borrow_mut()
+            .sync(self.text_handle.snapshot(cx));
+        self.state
+            .active_tab()
+            .map(|tab| self.text_document.borrow().copy(tab))
+            .unwrap_or_default()
+    }
+
     pub fn new(db: Arc<Database>, theme: TuiTheme, cx: &mut Context<Self>) -> Self {
         crate::gui::menus::install(cx, &[]);
         let persistence = crate::gui::persistence::Persistence::new(db.clone());
@@ -371,9 +381,14 @@ impl App {
             let pattern =
                 cx.new(|cx| InputState::new(window, cx).placeholder("e.g. *.log* or logs/**"));
             cx.subscribe(&pattern, move |app, input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    let value = input.read(cx).value().to_string();
-                    if app.picker_add_pattern(id, value, cx) {
+                if let InputEvent::PressEnter { secondary, shift } = event {
+                    let kb = crate::gui::keyboard::bindings(&app.state);
+                    if crate::gui::keyboard::input_enter_matches(
+                        &kb.archive_picker.apply,
+                        *secondary,
+                        *shift,
+                    ) && app.picker_add_pattern(id, input.read(cx).value().to_string(), cx)
+                    {
                         app.archive_pattern_clear = true;
                     }
                 }
@@ -477,7 +492,7 @@ impl App {
                 | Message::EditorCancel
                 | Message::EditorApply
                 | Message::PaletteClose
-                | Message::PaletteKey(crate::input::KeyCode::Esc | crate::input::KeyCode::Enter, _)
+                | Message::PaletteKey(..)
         );
         let previous_theme = self.state.theme.clone();
         let runtime_handle = runtime::handle();
@@ -496,7 +511,7 @@ impl App {
                 update::update(&mut self.state, Message::SearchEdited(query));
             }
         }
-        let search_popup = match &message {
+        let requested_search_popup = match &message {
             Message::SearchPopup(open) => Some(*open),
             _ => None,
         };
@@ -511,6 +526,9 @@ impl App {
             .log_selection
             .map(|(id, _, row)| (id, row, self.log_scroll.logical_scroll_top()));
         let effect = update::update(&mut self.state, message);
+        let search_popup = requested_search_popup.or_else(|| {
+            (had_search_popup != self.state.search_open).then_some(self.state.search_open)
+        });
         if self.selection_viewport.is_none()
             && (self.state.pending_selection_anchor.is_some()
                 || selection_viewport.as_ref().is_some_and(|(id, old_row, _)| {
@@ -1409,9 +1427,23 @@ impl Render for App {
                             cx,
                         );
                     }
-                    InputEvent::PressEnter { .. } => {
-                        app.dispatch(Message::SearchNext(true), window, cx);
-                        app.dispatch(Message::SearchPopup(false), window, cx);
+                    InputEvent::PressEnter { secondary, shift } => {
+                        let kb = crate::gui::keyboard::bindings(&app.state);
+                        let forward = crate::gui::keyboard::input_enter_matches(
+                            &kb.search.confirm,
+                            *secondary,
+                            *shift,
+                        );
+                        if forward
+                            || crate::gui::keyboard::input_enter_matches(
+                                &kb.gui.search_previous,
+                                *secondary,
+                                *shift,
+                            )
+                        {
+                            app.dispatch(Message::SearchNext(forward), window, cx);
+                            app.dispatch(Message::SearchPopup(false), window, cx);
+                        }
                     }
                     _ => {}
                 },
@@ -1664,11 +1696,19 @@ impl Render for App {
                         &input,
                         window,
                         move |app, input, event: &InputEvent, window, cx| {
-                            if matches!(event, InputEvent::PressEnter { .. })
-                                && app.state.editor.as_ref().is_some_and(|e| e.epoch == epoch)
+                            if let InputEvent::PressEnter { secondary, shift } = event
+                                && let Some(editor) = &app.state.editor
+                                && editor.epoch == epoch
                             {
-                                app.dispatch(Message::EditorApply, window, cx);
-                                return;
+                                let kb = crate::gui::keyboard::bindings(&app.state);
+                                let (confirm, _) =
+                                    crate::gui::keyboard::editor_bindings(&kb, editor.action);
+                                if crate::gui::keyboard::input_enter_matches(
+                                    confirm, *secondary, *shift,
+                                ) {
+                                    app.dispatch(Message::EditorApply, window, cx);
+                                    return;
+                                }
                             }
                             if matches!(event, InputEvent::Change)
                                 && app.state.editor.as_ref().is_some_and(|e| e.epoch == epoch)
@@ -1944,12 +1984,43 @@ impl Render for App {
                 }),
             )
             .on_action(cx.listener(Self::on_quit_action))
+            // Native Copy actions resolve before key events. Honor them only when
+            // their registered shortcut is also enabled in our configuration.
+            .on_action(
+                cx.listener(|app, action: &gpui_kit::base::input::Copy, window, cx| {
+                    let kb = crate::gui::keyboard::bindings(&app.state);
+                    let enabled = window.bindings_for_action(action).iter().any(|binding| {
+                        let [stroke] = binding.keystrokes() else {
+                            return false;
+                        };
+                        crate::gui::key::from_gpui_keystroke(
+                            gpui_kit::gpui::AsKeystroke::as_keystroke(stroke),
+                        )
+                        .is_some_and(|(key, modifiers)| {
+                            crate::gui::keyboard::matches_binding(&kb.gui.copy, key, modifiers)
+                        })
+                    });
+                    if enabled {
+                        let text = app.copy_log_selection(cx);
+                        if !text.is_empty() {
+                            cx.write_to_clipboard(gpui_kit::gpui::ClipboardItem::new_string(text));
+                        }
+                    }
+                }),
+            )
             .capture_key_down(cx.listener(move |app, event: &KeyDownEvent, window, cx| {
                 let stroke = &event.keystroke;
+                let key_event = crate::gui::key::from_gpui_keystroke(stroke);
+                let kb = crate::gui::keyboard::bindings(&app.state);
+                let matches = |binding: &crate::config::keybindings::KeyBindings| {
+                    key_event.is_some_and(|(key, modifiers)| {
+                        crate::gui::keyboard::matches_binding(binding, key, modifiers)
+                    })
+                };
                 if let Some(index) = app.state.binding_capture {
                     cx.stop_propagation();
                     app.state.binding_capture = None;
-                    if stroke.key != "escape"
+                    if !matches(&kb.command.cancel)
                         && let Some((key, modifiers)) = crate::gui::key::from_gpui_keystroke(stroke)
                     {
                         let value =
@@ -1960,11 +2031,13 @@ impl Render for App {
                     return;
                 }
 
-                if stroke.modifiers.control && !stroke.modifiers.alt && !stroke.modifiers.platform {
-                    let delta = match stroke.key.as_str() {
-                        "+" | "=" | "plus" => Some(1.),
-                        "-" | "minus" => Some(-1.),
-                        _ => None,
+                {
+                    let delta = if matches(&kb.gui.increase_font_size) {
+                        Some(1.)
+                    } else if matches(&kb.gui.decrease_font_size) {
+                        Some(-1.)
+                    } else {
+                        None
                     };
                     if let Some(delta) = delta {
                         let size = (f32::from(window.rem_size()) + delta).clamp(10., 32.);
@@ -1986,22 +2059,8 @@ impl Render for App {
                     && let Some((key, modifiers)) = crate::gui::key::from_gpui_keystroke(stroke)
                 {
                     let kb = crate::gui::keyboard::bindings(&app.state);
-                    let (confirm, cancel) = match editor.action {
-                        crate::gui::actions::Action::Docker => {
-                            (&kb.docker_select.confirm, &kb.docker_select.cancel)
-                        }
-                        crate::gui::actions::Action::Dlt => {
-                            (&kb.dlt_select.confirm, &kb.dlt_select.cancel)
-                        }
-                        crate::gui::actions::Action::ValueColors => {
-                            (&kb.value_colors.apply, &kb.value_colors.cancel)
-                        }
-                        crate::gui::actions::Action::Columns
-                        | crate::gui::actions::Action::Merge => {
-                            (&kb.select_fields.apply, &kb.select_fields.cancel)
-                        }
-                        _ => (&kb.filter_edit.confirm, &kb.filter_edit.cancel),
-                    };
+                    let (confirm, cancel) =
+                        crate::gui::keyboard::editor_bindings(&kb, editor.action);
                     let typing = matches!(key, crate::input::KeyCode::Char(_))
                         && !modifiers.contains(crate::input::KeyModifiers::CONTROL)
                         && !modifiers.contains(crate::input::KeyModifiers::ALT)
@@ -2016,38 +2075,22 @@ impl Render for App {
                     // Let native pickers and inputs handle Enter before it bubbles to Apply.
                     if !typing
                         && key != crate::input::KeyCode::Enter
-                        && confirm.matches(key, modifiers)
+                        && crate::gui::keyboard::matches_binding(confirm, key, modifiers)
                     {
                         cx.stop_propagation();
                         app.dispatch(Message::EditorApply, window, cx);
                         return;
                     }
-                    if !typing && cancel.matches(key, modifiers) {
+                    if !typing && crate::gui::keyboard::matches_binding(cancel, key, modifiers) {
                         cx.stop_propagation();
                         app.dispatch(Message::EditorCancel, window, cx);
                         return;
                     }
                 }
-                if app
-                    .state
-                    .editor
-                    .as_ref()
-                    .is_some_and(|e| e.action == crate::gui::actions::Action::Annotation)
-                    && let Some((key, modifiers)) = crate::gui::key::from_gpui_keystroke(stroke)
+                if matches(&kb.visual_line.exit)
+                    && app.state.visual_lines
+                    && context == "LoganaLogs"
                 {
-                    let kb = crate::gui::keyboard::bindings(&app.state);
-                    if kb.comment.save.matches(key, modifiers) {
-                        cx.stop_propagation();
-                        app.dispatch(Message::EditorApply, window, cx);
-                        return;
-                    }
-                    if kb.comment.cancel.matches(key, modifiers) {
-                        cx.stop_propagation();
-                        app.dispatch(Message::EditorCancel, window, cx);
-                        return;
-                    }
-                }
-                if stroke.key == "escape" && app.state.visual_lines && context == "LoganaLogs" {
                     app.state.visual_lines = false;
                     app.state.log_selection = None;
                     app.dispatch(Message::SearchEdited(String::new()), window, cx);
@@ -2055,43 +2098,39 @@ impl Render for App {
                     cx.notify();
                     return;
                 }
-                if stroke.key == "escape" {
-                    if app.state.editor.is_none()
-                        && !app.state.palette.visible()
-                        && !app.state.time_range_open
-                        && !app.state.search_open
-                        && app.state.keyboard_sidebar.take().is_some()
-                    {
-                        app.dispatch(Message::SearchEdited(String::new()), window, cx);
-                        cx.stop_propagation();
-                        cx.notify();
-                        return;
-                    }
-                    if app.state.editor.is_some() {
-                        cx.stop_propagation();
-                        app.dispatch(Message::EditorCancel, window, cx);
-                        return;
-                    }
-                    if app.state.palette.visible() {
-                        cx.stop_propagation();
-                        app.dispatch(Message::PaletteClose, window, cx);
-                        return;
-                    }
-                    if app.state.time_range_open {
-                        cx.stop_propagation();
-                        app.state.time_range_open = false;
-                        app.root_focus.focus(window, cx);
-                        cx.notify();
-                        return;
-                    }
-                }
-                if app.state.search_open && stroke.key == "enter" {
+                if app.state.editor.is_none()
+                    && !app.state.palette.visible()
+                    && !app.state.time_range_open
+                    && !app.state.search_open
+                    && app.state.keyboard_sidebar.is_some()
+                    && matches(&kb.filter.exit_mode)
+                {
+                    app.state.keyboard_sidebar = None;
+                    app.dispatch(Message::SearchEdited(String::new()), window, cx);
                     cx.stop_propagation();
-                    app.dispatch(Message::SearchNext(!stroke.modifiers.shift), window, cx);
+                    return;
+                }
+                if app.state.palette.visible() && matches(&kb.command.cancel) {
+                    cx.stop_propagation();
+                    app.dispatch(Message::PaletteClose, window, cx);
+                    return;
+                }
+                if app.state.time_range_open && matches(&kb.filter_edit.cancel) {
+                    app.state.time_range_open = false;
+                    app.root_focus.focus(window, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                if app.state.search_open
+                    && (matches(&kb.search.confirm) || matches(&kb.gui.search_previous))
+                {
+                    cx.stop_propagation();
+                    app.dispatch(Message::SearchNext(matches(&kb.search.confirm)), window, cx);
                     app.dispatch(Message::SearchPopup(false), window, cx);
                     return;
                 }
-                if app.state.search_open && stroke.key == "escape" {
+                if app.state.search_open && matches(&kb.search.cancel) {
                     cx.stop_propagation();
                     // Clearing the input first makes `dispatch`'s own
                     // close-time sync (below) see a changed, empty query and
@@ -2104,105 +2143,74 @@ impl Render for App {
                     app.dispatch(Message::SearchPopup(false), window, cx);
                     return;
                 }
-                if !editing
-                    && context == "LoganaLogs"
-                    && stroke.key == "/"
-                    && !stroke.modifiers.control
-                    && !stroke.modifiers.platform
-                    && !stroke.modifiers.alt
+                if matches(&kb.archive_picker.apply)
+                    && let Some(input) = &app.archive_pattern
+                    && input.read(cx).focus_handle(cx).is_focused(window)
+                    && let Some(id) = app.loading.selected_picker
                 {
+                    let value = input.read(cx).value().to_string();
+                    if app.picker_add_pattern(id, value, cx) {
+                        app.archive_pattern_clear = true;
+                    }
                     cx.stop_propagation();
-                    app.dispatch(Message::SearchPopup(true), window, cx);
+                    cx.notify();
                     return;
                 }
-                if app.loading.focus.is_focused(window) && app.picker_key(&stroke.key, cx) {
+                if app.loading.focus.is_focused(window) && app.picker_key(stroke, cx) {
                     cx.stop_propagation();
                     return;
                 }
-                if !editing
-                    && context == "LoganaLogs"
-                    && stroke.key == "c"
-                    && (stroke.modifiers.control || stroke.modifiers.platform)
+                if app.state.editor.is_none()
+                    && !app.state.palette.visible()
+                    && matches(&kb.gui.copy)
                 {
-                    app.text_document
-                        .borrow_mut()
-                        .sync(app.text_handle.snapshot(cx));
-                    let text = app
-                        .state
-                        .active_tab()
-                        .map(|tab| app.text_document.borrow().copy(tab))
-                        .unwrap_or_default();
+                    let text = app.copy_log_selection(cx);
                     if !text.is_empty() {
                         cx.write_to_clipboard(gpui_kit::gpui::ClipboardItem::new_string(text));
                         cx.stop_propagation();
                         return;
                     }
                 }
-                if stroke.key == "escape" {
-                    if app.state.editor.is_some() {
-                        // Let a Select or date picker dismiss its popup first.
-                        return;
-                    } else if app.state.palette.visible() {
-                        cx.stop_propagation();
-                        app.dispatch(Message::PaletteClose, window, cx);
-                    } else if app.state.time_range_open {
-                        app.state.time_range_open = false;
-                        cx.notify();
-                    } else if !editing && context == "LoganaLogs" {
-                        cx.stop_propagation();
-                        if let Some(input) = &app.log_search {
-                            input
-                                .update(cx, |input, cx| input.set_value(String::new(), window, cx));
-                        }
-                        app.dispatch(Message::SearchEdited(String::new()), window, cx);
+                if !editing && context == "LoganaLogs" && matches(&kb.normal.clear_search) {
+                    cx.stop_propagation();
+                    if let Some(input) = &app.log_search {
+                        input.update(cx, |input, cx| input.set_value(String::new(), window, cx));
                     }
+                    app.dispatch(Message::SearchEdited(String::new()), window, cx);
                     return;
                 }
                 if context == "LoganaActions" {
-                    let key = match stroke.key.as_str() {
-                        "enter" => Some(crate::input::KeyCode::Enter),
-                        "up" => Some(crate::input::KeyCode::Up),
-                        "down" => Some(crate::input::KeyCode::Down),
-                        _ => None,
-                    };
-                    if let Some(key) = key {
+                    if let Some((key, modifiers)) = key_event
+                        && (matches(&kb.command.confirm)
+                            || matches(&kb.gui.palette_up)
+                            || matches(&kb.gui.palette_down))
+                    {
                         cx.stop_propagation();
-                        app.dispatch(Message::PaletteKey(key, Default::default()), window, cx);
+                        app.dispatch(Message::PaletteKey(key, modifiers), window, cx);
                     }
                     return;
                 }
-                if !editing
-                    && context == "LoganaLogs"
-                    && (stroke.modifiers.control || stroke.modifiers.platform)
-                    && stroke.key == "z"
-                {
-                    cx.stop_propagation();
-                    app.dispatch(
-                        Message::GuiAction(if stroke.modifiers.shift {
-                            crate::gui::actions::Action::Redo
-                        } else {
-                            crate::gui::actions::Action::Undo
-                        }),
-                        window,
-                        cx,
-                    );
-                    return;
-                }
-                if !editing
-                    && context == "LoganaLogs"
-                    && stroke.modifiers.control
-                    && !stroke.modifiers.alt
-                {
-                    let action = match (stroke.key.as_str(), stroke.modifiers.shift) {
-                        ("b", false) => Some(crate::gui::actions::Action::Bookmark),
-                        ("b", true) => Some(crate::gui::actions::Action::ToggleBookmarks),
-                        _ => None,
+                if !editing && context == "LoganaLogs" {
+                    let action = if matches(&kb.gui.undo) {
+                        Some(crate::gui::actions::Action::Undo)
+                    } else if matches(&kb.gui.redo) {
+                        Some(crate::gui::actions::Action::Redo)
+                    } else {
+                        None
                     };
                     if let Some(action) = action {
                         cx.stop_propagation();
                         app.dispatch(Message::GuiAction(action), window, cx);
                         return;
                     }
+                }
+                if matches(&kb.gui.open_commands)
+                    && !app.state.palette.visible()
+                    && app.state.editor.is_none()
+                {
+                    cx.stop_propagation();
+                    app.dispatch(Message::OpenCommands, window, cx);
+                    return;
                 }
                 if !editing
                     && context == "LoganaLogs"
@@ -2226,36 +2234,30 @@ impl Render for App {
                     }
                     cx.stop_propagation();
                     app.dispatch(Message::KeyPressed(key, modifiers), window, cx);
-                    return;
-                }
-                if context == "LoganaDialog" || context == "LoganaActions" {
-                    return;
-                }
-                let colon = matches!(stroke.key.as_str(), ":" | "colon")
-                    || (stroke.key == ";" && stroke.modifiers.shift);
-                let shortcut =
-                    stroke.key == "p" && stroke.modifiers.control && stroke.modifiers.shift;
-                if shortcut || (colon && !editing) {
-                    cx.stop_propagation();
-                    app.dispatch(Message::OpenCommands, window, cx);
                 }
             }))
             .on_key_down(cx.listener(|app, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key == "enter" && app.state.editor.is_some() {
-                    let multiline = app
-                        .editor_textareas
-                        .values()
-                        .any(|input| input.read(cx).focus_handle(cx).is_focused(window));
-                    if !multiline
-                        || event.keystroke.modifiers.control
-                        || event.keystroke.modifiers.platform
-                    {
-                        cx.stop_propagation();
-                        app.dispatch(Message::EditorApply, window, cx);
-                        return;
-                    }
-                }
-                if event.keystroke.key == "escape" && app.state.editor.is_some() {
+                let Some(editor) = &app.state.editor else {
+                    return;
+                };
+                let kb = crate::gui::keyboard::bindings(&app.state);
+                let (confirm, cancel) = crate::gui::keyboard::editor_bindings(&kb, editor.action);
+                let Some((key, modifiers)) = crate::gui::key::from_gpui_keystroke(&event.keystroke)
+                else {
+                    return;
+                };
+                let multiline = app
+                    .editor_textareas
+                    .values()
+                    .any(|input| input.read(cx).focus_handle(cx).is_focused(window));
+                if crate::gui::keyboard::matches_binding(confirm, key, modifiers)
+                    && (!multiline
+                        || modifiers.contains(crate::input::KeyModifiers::CONTROL)
+                        || modifiers.contains(crate::input::KeyModifiers::ALT))
+                {
+                    cx.stop_propagation();
+                    app.dispatch(Message::EditorApply, window, cx);
+                } else if crate::gui::keyboard::matches_binding(cancel, key, modifiers) {
                     cx.stop_propagation();
                     app.dispatch(Message::EditorCancel, window, cx);
                 }

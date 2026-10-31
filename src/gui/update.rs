@@ -13,6 +13,7 @@ use crate::gui::message::{FileLoaded, Message};
 use crate::gui::runtime;
 use crate::gui::state::{GuiState, StatusMessage};
 use crate::ingestion::FileReader;
+#[cfg(test)]
 use crate::input::KeyCode;
 use crate::shared::TabState;
 #[cfg(test)]
@@ -786,32 +787,33 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
             crate::gui::actions::select_best(state);
             Effect::None
         }
-        Message::PaletteKey(code, _) => {
-            match code {
-                KeyCode::Esc => state.palette.open = false,
-                KeyCode::Enter => {
-                    return update(state, Message::PaletteInsert(state.palette.selected));
+        Message::PaletteKey(code, modifiers) => {
+            let kb = crate::gui::keyboard::bindings(state);
+            let matches = |binding: &crate::config::keybindings::KeyBindings| {
+                crate::gui::keyboard::matches_binding(binding, code, modifiers)
+            };
+            if matches(&kb.command.cancel) {
+                state.palette.open = false;
+            } else if matches(&kb.command.confirm) {
+                return update(state, Message::PaletteInsert(state.palette.selected));
+            } else if matches(&kb.gui.palette_up) || matches(&kb.gui.palette_down) {
+                let enabled: Vec<_> = crate::gui::actions::matching(&state.palette.input)
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, d)| d.unavailable(state).is_none())
+                    .map(|(i, _)| i)
+                    .collect();
+                let next = if matches(&kb.gui.palette_up) {
+                    enabled
+                        .into_iter()
+                        .rev()
+                        .find(|i| *i < state.palette.selected)
+                } else {
+                    enabled.into_iter().find(|i| *i > state.palette.selected)
+                };
+                if let Some(next) = next {
+                    state.palette.selected = next;
                 }
-                KeyCode::Up | KeyCode::Down => {
-                    let enabled: Vec<_> = crate::gui::actions::matching(&state.palette.input)
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, d)| d.unavailable(state).is_none())
-                        .map(|(i, _)| i)
-                        .collect();
-                    let next = if code == KeyCode::Up {
-                        enabled
-                            .into_iter()
-                            .rev()
-                            .find(|i| *i < state.palette.selected)
-                    } else {
-                        enabled.into_iter().find(|i| *i > state.palette.selected)
-                    };
-                    if let Some(next) = next {
-                        state.palette.selected = next;
-                    }
-                }
-                _ => {}
             }
             Effect::None
         }

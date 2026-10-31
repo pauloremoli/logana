@@ -956,7 +956,7 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 })
                 .collect::<Vec<_>>();
             body = body
-                .child("Click a shortcut, then press its replacement. Escape cancels capture.")
+                .child("Click a shortcut, then press its replacement. Use the configured command cancel key to cancel capture.")
                 .child(
                     div().h(px((height - 180.).max(120.))).child(
                         Settings::new("keybindings-settings")

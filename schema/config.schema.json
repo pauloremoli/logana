@@ -96,6 +96,31 @@
           "add_group": "a",
           "clear_group_style": "x"
         },
+        "gui": {
+          "copy": "Ctrl+c",
+          "decrease_font_size": "Ctrl+-",
+          "extend_down": "Shift+Down",
+          "extend_first": "Shift+Home",
+          "extend_last": "Shift+End",
+          "extend_up": "Shift+Up",
+          "first_row": "Home",
+          "increase_font_size": [
+            "Ctrl+=",
+            "Ctrl++"
+          ],
+          "last_row": "End",
+          "open_commands": "Ctrl+Shift+p",
+          "palette_down": "Down",
+          "palette_up": "Up",
+          "path_confirm": "Ctrl+Enter",
+          "path_parent": [
+            "Left",
+            "Backspace"
+          ],
+          "redo": "Ctrl+Shift+z",
+          "search_previous": "Shift+Enter",
+          "undo": "Ctrl+z"
+        },
         "help": {
           "close": [
             "q",
@@ -367,6 +392,38 @@
     "Keybindings": {
       "type": "object",
       "properties": {
+        "gui": {
+          "default": {
+            "copy": "Ctrl+c",
+            "decrease_font_size": "Ctrl+-",
+            "extend_down": "Shift+Down",
+            "extend_first": "Shift+Home",
+            "extend_last": "Shift+End",
+            "extend_up": "Shift+Up",
+            "first_row": "Home",
+            "increase_font_size": [
+              "Ctrl+=",
+              "Ctrl++"
+            ],
+            "last_row": "End",
+            "open_commands": "Ctrl+Shift+p",
+            "palette_down": "Down",
+            "palette_up": "Up",
+            "path_confirm": "Ctrl+Enter",
+            "path_parent": [
+              "Left",
+              "Backspace"
+            ],
+            "redo": "Ctrl+Shift+z",
+            "search_previous": "Shift+Enter",
+            "undo": "Ctrl+z"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/GuiKeybindings"
+            }
+          ]
+        },
         "navigation": {
           "default": {
             "half_page_down": "Ctrl+d",
@@ -729,6 +786,168 @@
         }
       }
     },
+    "GuiKeybindings": {
+      "description": "GUI-only shortcuts. Empty arrays disable an action.",
+      "type": "object",
+      "properties": {
+        "open_commands": {
+          "default": "Ctrl+Shift+p",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "undo": {
+          "default": "Ctrl+z",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "redo": {
+          "default": "Ctrl+Shift+z",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "copy": {
+          "default": "Ctrl+c",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "increase_font_size": {
+          "default": [
+            "Ctrl+=",
+            "Ctrl++"
+          ],
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "decrease_font_size": {
+          "default": "Ctrl+-",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "first_row": {
+          "default": "Home",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "last_row": {
+          "default": "End",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "extend_up": {
+          "default": "Shift+Up",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "extend_down": {
+          "default": "Shift+Down",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "extend_first": {
+          "default": "Shift+Home",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "extend_last": {
+          "default": "Shift+End",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "palette_up": {
+          "default": "Up",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "palette_down": {
+          "default": "Down",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "search_previous": {
+          "default": "Shift+Enter",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "path_confirm": {
+          "default": "Ctrl+Enter",
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        },
+        "path_parent": {
+          "default": [
+            "Left",
+            "Backspace"
+          ],
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeyBindings"
+            }
+          ]
+        }
+      }
+    },
+    "KeyBindings": {
+      "description": "One key binding string or an array of alternatives, e.g. \"j\" or [\"j\", \"Down\"]",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "NavigationKeybindings": {
       "type": "object",
       "properties": {
@@ -787,20 +1006,6 @@
           ]
         }
       }
-    },
-    "KeyBindings": {
-      "description": "One key binding string or an array of alternatives, e.g. \"j\" or [\"j\", \"Down\"]",
-      "oneOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      ]
     },
     "NormalKeybindings": {
       "type": "object",

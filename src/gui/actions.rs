@@ -348,7 +348,7 @@ pub const CATALOG: &[Descriptor] = &[
     Descriptor {
         action: Action::Bookmark,
         label: "Toggle bookmark",
-        description: "Bookmark or unbookmark selected log lines · Ctrl+B",
+        description: "Bookmark or unbookmark selected log lines",
         aliases: "bookmark mark",
         tab: true,
     },
@@ -369,7 +369,7 @@ pub const CATALOG: &[Descriptor] = &[
     Descriptor {
         action: Action::ToggleBookmarks,
         label: "Switch Logs / Bookmarks",
-        description: "Switch between logs and bookmarks · Ctrl+Shift+B",
+        description: "Switch between logs and bookmarks",
         aliases: "toggle-bookmarks",
         tab: false,
     },

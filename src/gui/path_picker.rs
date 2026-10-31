@@ -200,8 +200,18 @@ impl PathPicker {
             cx.new(|cx| InputState::new(window, cx).placeholder("Folder or file path"));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter this folder…"));
         cx.subscribe(&path_input, |this, input, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                this.navigate_text(input.read(cx).value().to_string(), cx);
+            if let InputEvent::PressEnter { secondary, shift } = event {
+                let kb = this
+                    .owner
+                    .update(cx, |app, _| crate::gui::keyboard::bindings(&app.state))
+                    .unwrap_or_default();
+                if crate::gui::keyboard::input_enter_matches(
+                    &kb.archive_picker.apply,
+                    *secondary,
+                    *shift,
+                ) {
+                    this.navigate_text(input.read(cx).value().to_string(), cx);
+                }
             }
         })
         .detach();
@@ -406,46 +416,60 @@ impl PathPicker {
     }
 
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if event.keystroke.key == "escape" {
+        let Some((key, modifiers)) = crate::gui::key::from_gpui_keystroke(&event.keystroke) else {
+            return;
+        };
+        let kb = self
+            .owner
+            .update(cx, |app, _| crate::gui::keyboard::bindings(&app.state))
+            .unwrap_or_default();
+        let matches = |binding: &crate::config::keybindings::KeyBindings| {
+            crate::gui::keyboard::matches_binding(binding, key, modifiers)
+        };
+        if matches(&kb.archive_picker.cancel) {
             window.remove_window();
             cx.stop_propagation();
             return;
         }
-        if event.keystroke.key == "enter"
-            && (event.keystroke.modifiers.control || event.keystroke.modifiers.platform)
-        {
+        if matches(&kb.gui.path_confirm) {
             self.confirm(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if matches(&kb.archive_picker.apply)
+            && self.path_input.read(cx).focus_handle(cx).is_focused(window)
+        {
+            self.navigate_text(self.path_input.read(cx).value().to_string(), cx);
             cx.stop_propagation();
             return;
         }
         if !self.focus.is_focused(window) {
             return;
         }
-        match event.keystroke.key.as_str() {
-            "up" => self.cursor = self.cursor.saturating_sub(1),
-            "down" => self.cursor = (self.cursor + 1).min(self.rows.len().saturating_sub(1)),
-            "space" => {
-                if let Some(&index) = self.rows.get(self.cursor) {
-                    let e = &self.entries[index];
-                    self.toggle(e.path.clone(), e.directory, cx);
+        if matches(&kb.navigation.scroll_up) {
+            self.cursor = self.cursor.saturating_sub(1);
+        } else if matches(&kb.navigation.scroll_down) {
+            self.cursor = (self.cursor + 1).min(self.rows.len().saturating_sub(1));
+        } else if matches(&kb.archive_picker.toggle) {
+            if let Some(&index) = self.rows.get(self.cursor) {
+                let e = &self.entries[index];
+                self.toggle(e.path.clone(), e.directory, cx);
+            }
+        } else if matches(&kb.archive_picker.apply) || matches(&kb.archive_picker.expand) {
+            if let Some(&index) = self.rows.get(self.cursor) {
+                let e = &self.entries[index];
+                if e.directory {
+                    self.navigate(e.path.clone(), cx);
+                } else {
+                    self.toggle(e.path.clone(), false, cx);
                 }
             }
-            "enter" | "right" => {
-                if let Some(&index) = self.rows.get(self.cursor) {
-                    let e = &self.entries[index];
-                    if e.directory {
-                        self.navigate(e.path.clone(), cx);
-                    } else {
-                        self.toggle(e.path.clone(), false, cx);
-                    }
-                }
+        } else if matches(&kb.gui.path_parent) {
+            if let Some(parent) = self.directory.parent() {
+                self.navigate(parent.to_path_buf(), cx);
             }
-            "left" | "backspace" => {
-                if let Some(parent) = self.directory.parent() {
-                    self.navigate(parent.to_path_buf(), cx);
-                }
-            }
-            _ => return,
+        } else {
+            return;
         }
         self.scroll.scroll_to_item(self.cursor);
         cx.notify();
@@ -1126,3 +1150,4 @@ mod ui_tests {
         });
     }
 }
+use gpui_kit::gpui::Focusable;

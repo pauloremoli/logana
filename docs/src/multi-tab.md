@@ -14,6 +14,11 @@ logana supports multiple tabs, each showing an independent log file, directory, 
 
 A tab can also be clicked directly in the tab bar to switch to it.
 
+The GUI uses these same `keybindings.global` settings. In the GUI, `Ctrl+t`
+opens the file selection window. There are no fixed Ctrl+O or Ctrl+Tab aliases;
+set `global.new_tab`, `global.next_tab`, or `global.prev_tab` to your preferred
+shortcuts. See [GUI shortcuts](configuration/keybindings.md#gui-shortcuts).
+
 ## Opening Files in Tabs
 
 **From the command line**, each file argument opens in its own tab; a directory argument opens every file inside it (including files inside any archives found there), each in its own tab. A file argument can also be a glob pattern, which opens every match, each in its own tab:

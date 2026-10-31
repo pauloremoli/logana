@@ -433,7 +433,7 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
             div()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child("Space selects · arrows navigate · Enter opens"),
+                .child("Keyboard controls follow your navigation and archive picker keybindings."),
         );
     let patterns = div().flex_1().min_h(px(0.)).flex().flex_col().gap_2()
         .child(div().font_semibold().child("Saved glob patterns"))

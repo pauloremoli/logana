@@ -71,7 +71,7 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
                         .ghost()
                         .icon(Icon::new(IconName::SquareTerminal))
                         .label("Actions")
-                        .tooltip("Actions (: or Ctrl+Shift+P)")
+                        .tooltip("Actions")
                         .on_click(cx.listener(|app: &mut App, _, window, cx| {
                             app.dispatch(Message::OpenCommands, window, cx)
                         })),

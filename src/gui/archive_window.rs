@@ -56,8 +56,7 @@ impl Render for ArchiveWindow {
                 let handled = this
                     .app
                     .update(cx, |app, cx| {
-                        app.loading.focus.is_focused(window)
-                            && app.picker_key(&event.keystroke.key, cx)
+                        app.loading.focus.is_focused(window) && app.picker_key(&event.keystroke, cx)
                     })
                     .unwrap_or(false);
                 if handled {

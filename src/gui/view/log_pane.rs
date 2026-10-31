@@ -459,7 +459,7 @@ pub fn log_pane(
                                                     )
                                                 }),
                                             )
-                                            .item(gpui_kit::component::menu::PopupMenuItem::new("Toggle bookmark (Ctrl+B)")
+                                            .item(gpui_kit::component::menu::PopupMenuItem::new("Toggle bookmark")
                                                 .on_click(move |_, window, cx| bookmark.update(cx, |app, cx| app.dispatch(Message::LogRowAction(source, line_idx, crate::gui::actions::Action::Bookmark), window, cx))))
                                             .item(gpui_kit::component::menu::PopupMenuItem::new(annotation_label)
                                                 .on_click(move |_, window, cx| annotation.update(cx, |app, cx| app.dispatch(Message::LogRowAction(source, line_idx, crate::gui::actions::Action::Annotation), window, cx))))
