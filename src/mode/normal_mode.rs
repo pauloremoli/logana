@@ -106,6 +106,19 @@ impl Mode for NormalMode {
             return (self, KeyResult::Ignored);
         }
 
+        let mut selection = VisualLineMode {
+            anchor: tab.scroll.scroll_offset,
+            count: self.count,
+        };
+        if selection.extend_selection(tab, key, modifiers) {
+            tab.cancel_search();
+            if tab.filter.visible_indices.is_empty() {
+                self.count = None;
+                return (self, KeyResult::Handled);
+            }
+            return (Box::new(selection), KeyResult::Handled);
+        }
+
         if kb.navigation.half_page_down.matches(key, modifiers) {
             let half = (tab.scroll.visible_height / 2).max(1);
             let count = self.count.take().unwrap_or(1);

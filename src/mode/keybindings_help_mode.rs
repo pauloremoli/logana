@@ -189,6 +189,19 @@ pub fn build_help_rows(kb: &Keybindings) -> Vec<HelpRow> {
         keys: n.show_keybindings.display(),
     });
 
+    rows.push(HelpRow::Header("Line Selection (normal / visual)".into()));
+    for (action, binding) in [
+        ("Extend selection up", &kb.gui.extend_up),
+        ("Extend selection down", &kb.gui.extend_down),
+        ("Extend selection to first row", &kb.gui.extend_first),
+        ("Extend selection to last row", &kb.gui.extend_last),
+    ] {
+        rows.push(HelpRow::Entry {
+            action: action.into(),
+            keys: binding.display(),
+        });
+    }
+
     let vl = &kb.visual_line;
     rows.push(HelpRow::Header("Visual Line Mode".to_string()));
     rows.push(HelpRow::Entry {

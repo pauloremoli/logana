@@ -787,7 +787,7 @@
       }
     },
     "GuiKeybindings": {
-      "description": "GUI-only shortcuts. Empty arrays disable an action.",
+      "description": "Desktop shortcuts; selection extension is also supported by the TUI. Empty arrays disable an action.",
       "type": "object",
       "properties": {
         "open_commands": {

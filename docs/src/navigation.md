@@ -26,14 +26,16 @@ When line wrap is off, long lines can be scrolled horizontally:
 | `0` | Jump to start of line (reset horizontal scroll) |
 | `$` | Jump to end of line |
 
-## GUI navigation and selection
+## GUI navigation and shared line selection
 
 The GUI reuses the scrolling and horizontal navigation bindings above. Its
 additional defaults are `Home` / `End` for the first / last row and
 `Shift+Up` / `Shift+Down` to extend row selection. `Shift+Home` / `Shift+End`
 extend selection to the first / last row. These shortcuts are configurable under
 `keybindings.gui` as `first_row`, `last_row`, `extend_up`, `extend_down`,
-`extend_first`, and `extend_last`.
+`extend_first`, and `extend_last`. The four `extend_*` bindings also work in the
+TUI: they enter visual line mode from the current row and keep extending the same
+selection on subsequent presses. See [Visual Line Mode](visual-line-mode.md).
 
 Use `m` to bookmark selected rows and `M` to switch between Logs and Bookmarks.
 The toggle reuses `normal.toggle_marks_only`; menus and the view selector provide

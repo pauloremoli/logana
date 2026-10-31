@@ -26,6 +26,36 @@ pub struct VisualLineMode {
     pub count: Option<usize>,
 }
 
+impl VisualLineMode {
+    pub(super) fn extend_selection(
+        &mut self,
+        tab: &mut TabState,
+        key: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> bool {
+        let kb = &tab.interaction.keybindings.gui;
+        let count = self.count.unwrap_or(1);
+        let last = tab.filter.visible_indices.len().saturating_sub(1);
+        let target = if kb.extend_down.matches(key, modifiers) {
+            tab.scroll.scroll_offset.saturating_add(count).min(last)
+        } else if kb.extend_up.matches(key, modifiers) {
+            tab.scroll.scroll_offset.saturating_sub(count).min(last)
+        } else if kb.extend_first.matches(key, modifiers) {
+            0
+        } else if kb.extend_last.matches(key, modifiers) {
+            last
+        } else {
+            return false;
+        };
+        self.count = None;
+        tab.scroll.scroll_offset = target;
+        tab.scroll.wrapped_row = 0;
+        tab.stream.tail_mode = false;
+        tab.interaction.g_key_pressed = false;
+        true
+    }
+}
+
 #[async_trait]
 impl Mode for VisualLineMode {
     async fn handle_key(
@@ -34,6 +64,9 @@ impl Mode for VisualLineMode {
         key: KeyCode,
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
+        if self.extend_selection(tab, key, modifiers) {
+            return (self, KeyResult::Handled);
+        }
         let kb = &tab.interaction.keybindings;
 
         if let KeyCode::Char(c @ '1'..='9') = key
@@ -264,6 +297,90 @@ mod tests {
         let db = Arc::new(Database::in_memory().await.unwrap());
         let log_manager = LogManager::new(db, None).await;
         TabState::new(file_reader, log_manager, "test".to_string())
+    }
+
+    #[tokio::test]
+    async fn extension_keys_start_and_extend_a_filtered_line_selection() {
+        let mut tab = make_tab(&["zero", "hidden", "two", "hidden", "four"]).await;
+        tab.filter.visible_indices = crate::shared::VisibleLines::Filtered(vec![0, 2, 4]);
+        tab.scroll.scroll_offset = 1;
+        tab.scroll.wrapped_row = 3;
+        tab.stream.tail_mode = true;
+        let mut mode: Box<dyn Mode> = Box::new(NormalMode::default());
+        for (key, expected) in [
+            (KeyCode::Down, 2),
+            (KeyCode::Down, 2),
+            (KeyCode::Home, 0),
+            (KeyCode::End, 2),
+            (KeyCode::Up, 1),
+            (KeyCode::Up, 0),
+        ] {
+            let (next, result) = mode.handle_key(&mut tab, key, KeyModifiers::SHIFT).await;
+            assert!(matches!(result, KeyResult::Handled));
+            assert!(matches!(
+                next.render_state(),
+                ModeRenderState::VisualLine { anchor: 1 }
+            ));
+            assert_eq!(tab.scroll.scroll_offset, expected);
+            mode = next;
+        }
+        assert_eq!(tab.scroll.wrapped_row, 0);
+        assert!(!tab.stream.tail_mode);
+        mode.handle_key(&mut tab, KeyCode::Char('m'), KeyModifiers::NONE)
+            .await;
+        assert_eq!(tab.mark_manager.get_indices(), vec![0, 2]);
+    }
+
+    #[tokio::test]
+    async fn extension_keys_reuse_custom_bindings_counts_and_disabled_bindings() {
+        let mut tab = make_tab(&["zero", "one", "two", "three", "four"]).await;
+        let kb = Arc::make_mut(&mut tab.interaction.keybindings);
+        kb.gui.extend_up = serde_json::from_str("\"F5\"").unwrap();
+        kb.gui.extend_down = serde_json::from_str("\"F6\"").unwrap();
+        kb.gui.extend_first = serde_json::from_str("\"F7\"").unwrap();
+        kb.gui.extend_last = serde_json::from_str("\"F8\"").unwrap();
+        let (mode, _) = Box::new(NormalMode::default())
+            .handle_key(&mut tab, KeyCode::Down, KeyModifiers::SHIFT)
+            .await;
+        assert!(matches!(mode.render_state(), ModeRenderState::Normal));
+        let (mut mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Char('2'), KeyModifiers::NONE)
+            .await;
+        for (key, expected) in [(6, 2), (5, 1), (8, 4), (7, 0)] {
+            let (next, result) = mode
+                .handle_key(&mut tab, KeyCode::F(key), KeyModifiers::NONE)
+                .await;
+            assert!(matches!(result, KeyResult::Handled));
+            assert!(matches!(
+                next.render_state(),
+                ModeRenderState::VisualLine { anchor: 0 }
+            ));
+            assert_eq!(tab.scroll.scroll_offset, expected);
+            mode = next;
+        }
+        Arc::make_mut(&mut tab.interaction.keybindings)
+            .gui
+            .extend_down
+            .0
+            .clear();
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::F(6), KeyModifiers::NONE)
+            .await;
+        assert_eq!(tab.scroll.scroll_offset, 0);
+        let (mode, _) = mode
+            .handle_key(&mut tab, KeyCode::Esc, KeyModifiers::NONE)
+            .await;
+        assert!(matches!(mode.render_state(), ModeRenderState::Normal));
+    }
+
+    #[tokio::test]
+    async fn extension_keys_leave_an_empty_log_in_normal_mode() {
+        let mut tab = make_tab(&[]).await;
+        let (mode, _) = Box::new(NormalMode::default())
+            .handle_key(&mut tab, KeyCode::End, KeyModifiers::SHIFT)
+            .await;
+        assert!(matches!(mode.render_state(), ModeRenderState::Normal));
+        assert_eq!(tab.scroll.scroll_offset, 0);
     }
 
     async fn press(

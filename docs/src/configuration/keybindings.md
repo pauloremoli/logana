@@ -396,7 +396,7 @@ aliases. In particular, Ctrl+B, Ctrl+O, Ctrl+Tab, Ctrl+Shift+B, and F1 only perf
 an action if you configure a binding for them. Menus, buttons, and the Logs /
 Bookmarks selector remain available when a shortcut is disabled.
 
-GUI-only shortcuts live under `keybindings.gui` and also appear in the GUI
+Desktop shortcuts live under `keybindings.gui` and also appear in the GUI
 Keybindings settings. Open **Actions**, search for `keybindings`, and choose the
 keybinding editor to capture replacement keys. You can also edit
 `~/.config/logana/config.json` directly. Set a binding to `[]` to disable it, or
@@ -423,7 +423,13 @@ The following defaults apply while interacting with the log view:
 Application shortcuts are scoped to their interface so typing in a search field
 or editor does not bookmark rows or trigger log navigation.
 
-### GUI-only defaults
+### Desktop defaults and shared selection extension
+
+The `extend_up`, `extend_down`, `extend_first`, and `extend_last` settings also
+apply to TUI line selection. Their existing `gui` configuration paths are shared
+between interfaces. They enter visual line mode from the current row in the TUI
+and extend the same selection on later presses. All four accept custom bindings
+or `[]` to disable them.
 
 These settings belong inside the `keybindings` object:
 

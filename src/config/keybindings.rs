@@ -2,7 +2,8 @@ use crate::input::{KeyCode, KeyModifiers};
 use serde::{Deserialize, Serialize, de};
 use std::fmt;
 
-/// GUI-only shortcuts. Empty arrays disable an action.
+/// Desktop shortcuts; selection extension is also supported by the TUI.
+/// Empty arrays disable an action.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct GuiKeybindings {
