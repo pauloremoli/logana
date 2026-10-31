@@ -611,11 +611,10 @@ impl App {
                     worker_control.phase("Reading archive", path.display().to_string(), None);
                     let control = worker_control.clone();
                     let tree = tokio::task::spawn_blocking(move || {
-                        let tree = crate::ingestion::archive_tree::list_archive_tree_controlled(
+                        crate::ingestion::archive_tree::list_archive_tree_controlled(
                             &path.to_string_lossy(),
-                            control.clone(),
-                        )?;
-                        crate::ingestion::archive_job::expand_all(&path, tree, control)
+                            control,
+                        )
                     })
                     .await
                     .map_err(|e| e.to_string())??;
@@ -1556,6 +1555,26 @@ mod ui_tests {
         .await;
         let detached = app.read_with(cx, |app, _| app.loading.picker_window.unwrap());
         assert_ne!(*detached, main);
+        app.read_with(cx, |app, _| {
+            let tree = &app.loading.operations[0].picker.as_ref().unwrap().tree;
+            assert_eq!(tree.nodes.len(), 1, "opening only lists the outer archive");
+            assert!(matches!(tree.nodes[0].kind, NodeKind::LazyContainer { .. }));
+            assert!(tree.nodes[0].cached_bytes.is_none());
+        });
+        cx.update_window(*detached, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(("archive-expand", 0usize), cx);
+        })
+        .unwrap();
+        cx.wait_for(main, Duration::from_secs(30), |_, cx| {
+            app.read(cx).loading.operations[0]
+                .picker
+                .as_ref()
+                .is_some_and(|picker| {
+                    matches!(picker.tree.nodes[0].kind, NodeKind::Container { .. })
+                })
+        })
+        .await;
         cx.update_window(main, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("loading-summary-progress").is_none());
