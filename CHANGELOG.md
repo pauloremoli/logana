@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-11-02
+
 ### Added
 - [tui] Start and extend line selections using the configurable selection-extension shortcuts shared with the GUI.
 
