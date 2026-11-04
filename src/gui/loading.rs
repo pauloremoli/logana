@@ -38,6 +38,8 @@ pub(super) struct Preview {
 }
 pub(super) struct Picker {
     pub tree: ArchiveTree,
+    pub display_tree: ArchiveTree,
+    collapsed_folders: std::collections::HashSet<(Option<NodeId>, String)>,
     pub rows: Vec<NodeId>,
     pub checks: Vec<CheckState>,
     pub cursor: usize,
@@ -73,6 +75,8 @@ impl Picker {
             rows.len()
         ]);
         let mut picker = Self {
+            display_tree: tree.clone(),
+            collapsed_folders: Default::default(),
             tree,
             rows,
             checks,
@@ -94,9 +98,10 @@ impl Picker {
     }
     fn refresh(&mut self) {
         let previous = self.rows.get(self.cursor).copied();
+        self.display_tree = folder_tree(&self.tree, &self.collapsed_folders);
         self.rows = crate::shared::archive_search::filter_rows(
-            &self.tree,
-            &self.tree.visible_rows(),
+            &self.display_tree,
+            &self.display_tree.visible_rows(),
             &self.matcher,
             true,
         );
@@ -111,7 +116,9 @@ impl Picker {
             .map(|n| n.id)
             .collect();
 
-        self.checks = self.tree.check_states();
+        self.checks = (0..self.display_tree.nodes.len())
+            .map(|id| self.display_tree.container_check_state(id))
+            .collect();
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         self.sizes = std::rc::Rc::new(vec![
             gpui_kit::gpui::size(
@@ -155,6 +162,84 @@ impl Drop for Loading {
         }
     }
 }
+// Folder nodes belong only to the view: extraction keeps its original archive ancestry.
+fn folder_tree(
+    tree: &ArchiveTree,
+    collapsed: &std::collections::HashSet<(Option<NodeId>, String)>,
+) -> ArchiveTree {
+    let mut display = tree.clone();
+    let mut folders = std::collections::HashMap::new();
+    display.roots.clear();
+    for node in &mut display.nodes {
+        if let NodeKind::Container { children, .. } = &mut node.kind {
+            children.clear();
+        }
+    }
+    for id in all_rows(tree) {
+        let original = &tree.nodes[id];
+        let mut parent = original.parent;
+        let mut prefix = String::new();
+        let components: Vec<_> = original
+            .full_path
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+        for component in components.iter().take(components.len().saturating_sub(1)) {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(component);
+            let key = (original.parent, prefix.clone());
+            let folder = *folders.entry(key.clone()).or_insert_with(|| {
+                let folder = display.nodes.len();
+                let mut node = original.clone();
+                node.id = folder;
+                node.parent = parent;
+                node.name = component.to_string();
+                node.full_path = prefix.clone();
+                node.kind = NodeKind::Container {
+                    children: Vec::new(),
+                    archive_type: None,
+                };
+                node.collapsed = collapsed.contains(&key);
+                node.selected = false;
+                node.cached_bytes = None;
+                display.nodes.push(node);
+                attach_display_node(&mut display, parent, folder);
+                folder
+            });
+            parent = Some(folder);
+        }
+        display.nodes[id].parent = parent;
+        attach_display_node(&mut display, parent, id);
+    }
+    // Parents may be appended after their children in the node storage.
+    for id in all_rows(&display) {
+        display.nodes[id].depth = display.nodes[id]
+            .parent
+            .map_or(0, |p| display.nodes[p].depth + 1);
+    }
+    display
+}
+
+fn all_rows(tree: &ArchiveTree) -> Vec<NodeId> {
+    let mut tree = tree.clone();
+    for node in &mut tree.nodes {
+        node.collapsed = false;
+    }
+    tree.visible_rows()
+}
+
+fn attach_display_node(tree: &mut ArchiveTree, parent: Option<NodeId>, id: NodeId) {
+    if let Some(parent) = parent {
+        if let NodeKind::Container { children, .. } = &mut tree.nodes[parent].kind {
+            children.push(id);
+        }
+    } else {
+        tree.roots.push(id);
+    }
+}
+
 pub(super) async fn permit(
     gate: Arc<Semaphore>,
     control: &Control,
@@ -455,7 +540,7 @@ impl App {
             return true;
         } else if matches(&kb.archive_picker.expand) || matches(&kb.archive_picker.collapse) {
             if let Some(node) = node {
-                let item = &picker.tree.nodes[node];
+                let item = &picker.display_tree.nodes[node];
                 let expand = matches(&kb.archive_picker.expand)
                     && (item.collapsed || matches!(item.kind, NodeKind::LazyContainer { .. }));
                 let collapse = matches(&kb.archive_picker.collapse)
@@ -862,7 +947,10 @@ impl App {
             .find(|op| op.id == id)
             .and_then(|op| op.picker.as_mut())
         {
-            picker.tree.toggle_subtree(node);
+            picker.display_tree.toggle_subtree(node);
+            for original in &mut picker.tree.nodes {
+                original.selected = picker.display_tree.nodes[original.id].selected;
+            }
             picker.refresh();
         }
         cx.notify();
@@ -874,8 +962,21 @@ impl App {
         let Some(picker) = op.picker.as_mut() else {
             return;
         };
-        if let NodeKind::Container { .. } = &picker.tree.nodes[node].kind {
-            picker.tree.nodes[node].collapsed = !picker.tree.nodes[node].collapsed;
+        if let NodeKind::Container { .. } = &picker.display_tree.nodes[node].kind {
+            if node < picker.tree.nodes.len() {
+                picker.tree.nodes[node].collapsed = !picker.tree.nodes[node].collapsed;
+            } else {
+                let folder = &picker.display_tree.nodes[node];
+                // Synthetic folders are scoped to their original containing archive.
+                let mut parent = folder.parent;
+                while parent.is_some_and(|p| p >= picker.tree.nodes.len()) {
+                    parent = picker.display_tree.nodes[parent.unwrap()].parent;
+                }
+                let key = (parent, folder.full_path.clone());
+                if !picker.collapsed_folders.remove(&key) {
+                    picker.collapsed_folders.insert(key);
+                }
+            }
             picker.refresh();
             cx.notify();
             return;
@@ -885,6 +986,9 @@ impl App {
         }
         let picker = op.picker.take().unwrap();
         let output_dir = picker.output_dir.clone();
+        let collapsed_folders = picker.collapsed_folders.clone();
+        let query = picker.query.clone();
+        let previous_selection: Vec<_> = picker.tree.nodes.iter().map(|n| n.selected).collect();
         let control = op.control.clone();
         control.phase(
             "Reading nested archive",
@@ -924,7 +1028,13 @@ impl App {
                                     &mut picker.tree,
                                     &app.state.preferences.archive_patterns,
                                 );
-                                picker.refresh();
+                                for (node, selected) in
+                                    picker.tree.nodes.iter_mut().zip(previous_selection)
+                                {
+                                    node.selected = selected;
+                                }
+                                picker.collapsed_folders = collapsed_folders;
+                                picker.set_search(query);
                                 op.picker = Some(picker);
                                 op.control.phase("Choose files", String::new(), None);
                             }
@@ -1138,6 +1248,57 @@ pub(super) fn path_for_archive_output(path: &std::path::Path, relative: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn archive_folders_preserve_selection_and_extraction_paths() {
+        let zip = crate::ingestion::archive::test_helpers::make_zip(&[
+            ("logs/api/app.log", b"api"),
+            ("logs/worker/app.log", b"worker"),
+            ("root.log", b"root"),
+        ]);
+        let source = tempfile::Builder::new().suffix(".zip").tempfile().unwrap();
+        std::fs::copy(zip.path(), source.path()).unwrap();
+        let (control, _) = Control::new();
+        let tree = crate::ingestion::archive_tree::list_archive_tree_controlled(
+            &source.path().to_string_lossy(),
+            control.clone(),
+        )
+        .unwrap();
+        let mut picker = Picker::new(tree, PathBuf::from("/tmp"));
+        assert_eq!(picker.rows.len(), 6, "three files and three folders");
+        let api = picker
+            .tree
+            .nodes
+            .iter()
+            .find(|n| n.full_path == "logs/api/app.log")
+            .unwrap()
+            .id;
+        picker.tree.nodes[api].selected = true;
+        picker.refresh();
+        picker.collapsed_folders.insert((None, "logs".into()));
+        picker.refresh();
+        assert_eq!(picker.rows.len(), 2);
+        assert_eq!(picker.selected_rows, vec![api]);
+        picker.collapsed_folders.clear();
+        picker.refresh();
+        assert_eq!(picker.rows.len(), 6);
+        assert_eq!(
+            crate::shared::archive_selection::entry_path(&picker.tree, api),
+            "logs/api/app.log"
+        );
+        let mut output = Vec::new();
+        crate::ingestion::archive_job::extract_selection(
+            source.path(),
+            &picker.tree,
+            &control,
+            &mut |result| {
+                output.push(result.unwrap().1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(std::fs::read(output[0].path()).unwrap(), b"api");
+    }
     #[test]
     fn archive_output_defaults_to_the_input_directory_and_respects_explicit_output() {
         assert_eq!(
@@ -1509,7 +1670,7 @@ mod tests {
 mod ui_tests {
     use super::*;
     use gpui_kit::{
-        gpui::{AppContext, TestAppContext, px, size},
+        gpui::{AppContext, ScrollDelta, TestAppContext, point, px, size},
         test::TestWindowExt,
     };
     #[gpui_kit::test]
@@ -2152,6 +2313,73 @@ mod ui_tests {
                     "pattern input must stay above extraction options"
                 );
             }
+            app.update(cx, |app, cx| {
+                let names: Vec<_> = (0..80).map(|i| format!("logs/api/{i:02}.log")).collect();
+                let entries: Vec<_> = names
+                    .iter()
+                    .map(|n| (n.as_str(), b"line\n".as_slice()))
+                    .collect();
+                let zip = crate::ingestion::archive::test_helpers::make_zip(&entries);
+                let source = tempfile::Builder::new().suffix(".zip").tempfile().unwrap();
+                std::fs::copy(zip.path(), source.path()).unwrap();
+                let (control, _) = Control::new();
+                let tree = crate::ingestion::archive_tree::list_archive_tree_controlled(
+                    &source.path().to_string_lossy(),
+                    control,
+                )
+                .unwrap();
+                app.loading.operations[0].picker = Some(Picker::new(tree, PathBuf::from("/tmp")));
+                app.picker_all(8, true, cx);
+            });
+            window.render_frame(cx);
+            window.click(("archive-expand", 80usize), cx);
+            assert_eq!(
+                app.read(cx).loading.operations[0]
+                    .picker
+                    .as_ref()
+                    .unwrap()
+                    .rows
+                    .len(),
+                1
+            );
+            assert_eq!(
+                app.read(cx).loading.operations[0]
+                    .picker
+                    .as_ref()
+                    .unwrap()
+                    .selected_rows
+                    .len(),
+                80
+            );
+            window.click(("archive-expand", 80usize), cx);
+            window.render_frame(cx);
+            assert_eq!(
+                app.read(cx).loading.operations[0]
+                    .picker
+                    .as_ref()
+                    .unwrap()
+                    .rows
+                    .len(),
+                82
+            );
+            for (width, height) in [(1000., 900.), (640., 640.)] {
+                window.resize(size(px(width), px(height)));
+                window.render_frame(cx);
+                let list = window.find(("archive-selected-files", 8u64)).bounds();
+                let patterns = window.find("archive-pattern-input").bounds();
+                assert!(
+                    list.size.height > px(80.),
+                    "selected list must have usable height: {list:?}"
+                );
+                assert!(list.bottom() <= patterns.top());
+            }
+            window.scroll(
+                ("archive-selected-files", 8u64),
+                ScrollDelta::Pixels(point(px(0.), px(-10000.))),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(window.find(("archive-selected-row", 79usize)).visible());
             window.click("archive-cancel", cx);
             assert!(app.read(cx).loading.operations.is_empty());
         })

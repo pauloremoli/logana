@@ -201,7 +201,7 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
             range
                 .filter_map(|row| picker.rows.get(row).copied().map(|node| (row, node)))
                 .map(|(row, node)| {
-                    let item = &picker.tree.nodes[node];
+                    let item = &picker.display_tree.nodes[node];
                     let container = matches!(
                         item.kind,
                         NodeKind::Container { .. } | NodeKind::LazyContainer { .. }
@@ -219,7 +219,7 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                         .flex()
                         .items_center()
                         .gap_1()
-                        .pl(px((item.depth.min(8) * 12) as f32))
+                        .pl(px((item.depth * 12) as f32))
                         .pr_2()
                         .bg(if picker.cursor == row {
                             cx.theme().secondary
@@ -252,7 +252,7 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                                 })
                                 .disabled(!container)
                                 .accessibility_label(format!("Expand or collapse {}", item.name))
-                                .tooltip("Expand or collapse archive")
+                                .tooltip("Expand or collapse folder or archive")
                                 .on_click(cx.listener(move |app, _, _, cx| {
                                     app.picker_expand(id, node, cx)
                                 })),
@@ -340,7 +340,10 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
     );
     let selected_list = div()
         .id(("archive-selected-files", id))
-        .size_full()
+        .test_support()
+        .flex_1()
+        .min_h(px(0.))
+        .w_full()
         .overflow_y_scroll()
         .flex()
         .flex_col()
@@ -438,7 +441,7 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                 .text_color(cx.theme().muted_foreground)
                 .child("Keyboard controls follow your navigation and archive picker keybindings."),
         );
-    let patterns = div().flex_1().min_h(px(0.)).flex().flex_col().gap_2()
+    let patterns = div().min_h(px(0.)).flex().flex_col().gap_2()
         .child(div().font_semibold().child("Saved glob patterns"))
         .child(div().text_xs().text_color(cx.theme().muted_foreground)
             .child("Reused for every archive. Adding or removing a pattern reselects matching files."))
@@ -454,7 +457,7 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                 }
             })))
         .when_some(picker.pattern_error.clone(), |d, error| d.child(div().text_sm().text_color(cx.theme().danger).child(error)))
-        .child(div().id("archive-patterns").flex_1().min_h(px(0.)).overflow_y_scroll()
+        .child(div().id("archive-patterns").max_h(px(96.)).min_h(px(0.)).overflow_y_scroll()
             .when(app.state.preferences.archive_patterns.is_empty(), |d| d.child(div().text_sm()
                 .text_color(cx.theme().muted_foreground).child("No saved patterns. Select files manually or add a glob.")))
             .children(app.state.preferences.archive_patterns.iter().enumerate().map(|(index, pattern)| {
@@ -467,6 +470,7 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
     let selection =
         div()
             .h_full()
+            .min_h(px(0.))
             .min_w(px(0.))
             .pl_3()
             .flex()
@@ -475,7 +479,7 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
             .child(
                 div()
                     .flex_1()
-                    .min_h(px(80.))
+                    .min_h(px(0.))
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -488,6 +492,8 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                         div()
                             .flex_1()
                             .min_h(px(0.))
+                            .flex()
+                            .flex_col()
                             .when(selected == 0, |d| {
                                 d.child(div().text_sm().text_color(cx.theme().muted_foreground)
                     .child("Choose files on the left, or add a glob pattern below."))
@@ -500,7 +506,7 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                     .border_t_1()
                     .border_color(cx.theme().border)
                     .pt_3()
-                    .flex_1()
+                    .flex_shrink_0()
                     .min_h(px(0.))
                     .flex()
                     .flex_col()
