@@ -97,9 +97,10 @@ impl App {
             .await;
             this.update_in(cx, |app, _, cx| {
                 match result {
-                    Ok(Some(path)) => app
-                        .state
-                        .notify(StatusMessage::Info(format!("Saved {}", path.display()))),
+                    Ok(Some(path)) => app.state.notify(StatusMessage::Info(format!(
+                        "Saved {}",
+                        crate::gui::paths::display_path(&path)
+                    ))),
                     Ok(None) => return,
                     Err(error) => app
                         .state

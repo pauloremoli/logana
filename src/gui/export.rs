@@ -21,10 +21,12 @@ impl App {
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect::<Vec<_>>();
+        let filename =
+            crate::gui::paths::display_path(tab.log_manager.source_file().unwrap_or("stream"));
         let output = crate::commands::render_export(
             &template,
             &crate::commands::ExportData {
-                filename: tab.log_manager.source_file().unwrap_or("stream"),
+                filename: &filename,
                 comments: tab.comment_manager.get(),
                 marked_indices: tab.mark_manager.get_indices(),
                 file_reader: &tab.file_reader,
@@ -65,9 +67,10 @@ impl App {
             .await;
             this.update_in(cx, |app, _, cx| {
                 match result {
-                    Ok(Some(path)) => app
-                        .state
-                        .notify(StatusMessage::Info(format!("Exported {}", path.display()))),
+                    Ok(Some(path)) => app.state.notify(StatusMessage::Info(format!(
+                        "Exported {}",
+                        crate::gui::paths::display_path(&path)
+                    ))),
                     Ok(None) => return,
                     Err(error) => app.state.notify(StatusMessage::Error(format!(
                         "Cannot export analysis: {error}"

@@ -253,7 +253,11 @@ pub(super) async fn install_loaded(
     let provenance = temp
         .as_ref()
         .and_then(|_| loaded.log_manager.source_file().map(str::to_owned));
-    control.phase("Preparing display", loaded.path.display().to_string(), None);
+    control.phase(
+        "Preparing display",
+        crate::gui::paths::display_path(&loaded.path),
+        None,
+    );
     let worker_control = control.clone();
     let result = runtime::handle()
         .spawn_blocking(move || {
@@ -325,7 +329,7 @@ pub(super) async fn install_loaded(
                     });
                     op.control.phase(
                         "Loading",
-                        op.path.display().to_string(),
+                        crate::gui::paths::display_path(&op.path),
                         std::fs::metadata(&op.path).ok().map(|m| m.len()),
                     );
                 }
@@ -519,7 +523,10 @@ impl App {
             } else {
                 match result {
                     Ok(()) => StatusMessage::Info("Files opened.".into()),
-                    Err(error) => StatusMessage::Error(format!("{}: {error}", op.path.display())),
+                    Err(error) => StatusMessage::Error(format!(
+                        "{}: {error}",
+                        crate::gui::paths::display_path(&op.path)
+                    )),
                 }
             });
             if self.loading.selected_picker == Some(id) {
@@ -566,7 +573,10 @@ impl App {
             })
         }) {
             let tab_id = tab.id;
-            let message = format!("File '{}' is already open.", path.display());
+            let message = format!(
+                "File '{}' is already open.",
+                crate::gui::paths::display_path(&path)
+            );
             cx.spawn(async move |this, cx| {
                 this.update_in(cx, |app, window, cx| {
                     if let Some(index) = app.state.tabs.iter().position(|tab| tab.id == tab_id) {
@@ -608,7 +618,11 @@ impl App {
                 let _permit = permit(gate, &worker_control).await?;
                 worker_control.check().map_err(|e| e.to_string())?;
                 if crate::ingestion::detect_archive_type(&path.to_string_lossy()).is_some() {
-                    worker_control.phase("Reading archive", path.display().to_string(), None);
+                    worker_control.phase(
+                        "Reading archive",
+                        crate::gui::paths::display_path(&path),
+                        None,
+                    );
                     let control = worker_control.clone();
                     let tree = tokio::task::spawn_blocking(move || {
                         crate::ingestion::archive_tree::list_archive_tree_controlled(

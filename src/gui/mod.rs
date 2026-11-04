@@ -63,3 +63,5 @@ mod archive_window;
 mod path_picker;
 
 mod row_cache;
+
+mod paths;

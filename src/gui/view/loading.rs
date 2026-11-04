@@ -80,7 +80,10 @@ pub fn operations(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
                                 .child(if progress.entry.is_empty() {
                                     amount.clone()
                                 } else {
-                                    format!("{}  {amount}", progress.entry)
+                                    format!(
+                                        "{}  {amount}",
+                                        crate::gui::paths::display_path(&progress.entry)
+                                    )
                                 }),
                         )
                         .when(op.shows_progress(), |el| {
@@ -519,7 +522,7 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
             .child(Button::new("archive-picker-hide").ghost().icon(IconName::X)
                 .accessibility_label("Hide picker").tooltip("Hide picker")
                 .on_click(cx.listener(|app, _, _, cx| { app.loading.selected_picker = None; cx.notify(); }))))
-        .child(div().truncate().text_sm().text_color(cx.theme().muted_foreground).child(op.path.display().to_string()))
+        .child(div().truncate().text_sm().text_color(cx.theme().muted_foreground).child(crate::gui::paths::display_path(&op.path)))
         .child(div().flex_1().min_h(px(0.)).child(h_resizable(("archive-panes", id))
             .child(resizable_panel().size(px(460.)).size_range(px(220.)..px(1000.)).child(files))
             .child(resizable_panel().size(px(440.)).size_range(px(220.)..px(1000.)).child(selection))))
@@ -536,7 +539,7 @@ pub fn picker(app: &App, cx: &mut Context<App>) -> Option<AnyElement> {
         .child(div().flex().items_center().gap_2()
             .child(div().flex_1().min_w(px(0.)).flex().flex_col()
                 .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Output folder"))
-                .child(div().id("archive-output-directory").test_support().truncate().text_sm().child(picker.output_dir.display().to_string())))
+                .child(div().id("archive-output-directory").test_support().truncate().text_sm().child(crate::gui::paths::display_path(&picker.output_dir))))
             .child(Button::new("archive-output-choose").small().label("Choose folder…")
                 .on_click(cx.listener(move |app, _, _, cx| app.picker_choose_output(id, cx)))))
         .child(div().flex().flex_wrap().gap_2()

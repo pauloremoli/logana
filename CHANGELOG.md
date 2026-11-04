@@ -9,6 +9,7 @@ All notable changes to logana will be documented in this file.
 - [gui] Show live match counts on enabled filters, matching the TUI.
 
 ### Fixed
+- [gui] Display clean Windows drive and UNC paths consistently in file tabs, dialogs, menus, and notifications while retaining original filesystem paths.
 - [core] Fix Notepad++ import options and XML parsing; leave omitted backgrounds unset.
 
 ## [0.8.5] - 2026-11-02

@@ -1179,11 +1179,9 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                             div()
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(
-                                    tab.display_source_path()
-                                        .unwrap_or("Temporary source")
-                                        .to_string(),
-                                ),
+                                .child(crate::gui::paths::display_path(
+                                    tab.display_source_path().unwrap_or("Temporary source"),
+                                )),
                         )
                         .child(div().text_sm().child(format!(
                             "{} source rows · {schema}",
@@ -1233,11 +1231,9 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                                     div()
                                         .text_sm()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(
-                                            tab.display_source_path()
-                                                .unwrap_or("Temporary source")
-                                                .to_string(),
-                                        ),
+                                        .child(crate::gui::paths::display_path(
+                                            tab.display_source_path().unwrap_or("Temporary source"),
+                                        )),
                                 ),
                         )
                         .on_click(cx.listener(move |app, _, window, cx| {
@@ -1814,8 +1810,8 @@ pub fn editor(app: &App, viewport: Size<Pixels>, cx: &mut Context<App>) -> Optio
                 .source
                 .and_then(|id| app.state.tabs.iter().find(|t| t.id == id))
                 .and_then(|t| t.display_source_path())
-                .unwrap_or("No source path")
-                .to_string();
+                .map(crate::gui::paths::display_path)
+                .unwrap_or_else(|| "No source path".into());
             let mut details =
                 DescriptionList::new()
                     .columns(1)

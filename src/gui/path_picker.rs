@@ -1,3 +1,4 @@
+use super::paths::display_path;
 use crate::gui::{app::App, state::StatusMessage};
 use crate::ingestion::archive_job::Control;
 use gpui_kit::{
@@ -59,27 +60,14 @@ pub(super) struct PathPicker {
     task: Option<Task<()>>,
 }
 
-fn display_path(path: &std::path::Path) -> String {
-    let value = path.to_string_lossy();
-    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{rest}")
-    } else if let Some(rest) = value.strip_prefix(r"\\?\")
-        && rest.as_bytes().get(1) == Some(&b':')
-    {
-        rest.to_owned()
-    } else {
-        value.into_owned()
-    }
-}
-
 fn read_directory(
     path: PathBuf,
     directories_only: bool,
     control: &Control,
 ) -> Result<Listing, String> {
     control.check().map_err(|e| e.to_string())?;
-    let path =
-        std::fs::canonicalize(&path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
+    let path = std::fs::canonicalize(&path)
+        .map_err(|e| format!("Cannot open {}: {e}", display_path(&path)))?;
     let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
     let file = if metadata.is_file() && !directories_only {
         Some(path.clone())
@@ -97,7 +85,7 @@ fn read_directory(
     let mut entries = Vec::new();
     let mut warning = None;
     for entry in std::fs::read_dir(&directory)
-        .map_err(|e| format!("Cannot read {}: {e}", directory.display()))?
+        .map_err(|e| format!("Cannot read {}: {e}", display_path(&directory)))?
     {
         control.check().map_err(|e| e.to_string())?;
         let entry = match entry {
@@ -112,7 +100,7 @@ fn read_directory(
             Err(error) => {
                 warning = Some(format!(
                     "Cannot inspect {}: {error}",
-                    entry.path().display()
+                    display_path(entry.path())
                 ));
                 continue;
             }
@@ -615,7 +603,10 @@ impl Render for PathPicker {
                                         .flex_shrink_0()
                                         .small()
                                         .icon(IconName::X)
-                                        .accessibility_label(format!("Remove {}", path.display()))
+                                        .accessibility_label(format!(
+                                            "Remove {}",
+                                            display_path(&path)
+                                        ))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.selected.remove(&remove);
                                             this.refresh(cx);

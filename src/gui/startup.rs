@@ -90,7 +90,7 @@ pub(super) fn save_or_temporary(
                 temp: Some(temp),
                 warning: Some(format!(
                     "Could not save {}: {error}. Opened as a temporary file.",
-                    destination.display()
+                    crate::gui::paths::display_path(&destination)
                 )),
                 source: Some(format!("{} (temporary)", destination.display())),
             })
@@ -138,7 +138,7 @@ fn save_extracted_unique(
     // Stage on the destination filesystem so publication is atomic across mounts.
     control.phase(
         "Saving extracted file",
-        destination.display().to_string(),
+        crate::gui::paths::display_path(&destination),
         Some(temp.as_file().metadata().map_err(|e| e.to_string())?.len()),
     );
     let mut staged = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
@@ -403,11 +403,18 @@ impl App {
                 .spawn(async move {
                     let _permit = permit(gate, &worker).await?;
                     tokio::task::spawn_blocking(move || {
-                        worker.phase("Reading directory", path.display().to_string(), None);
+                        worker.phase(
+                            "Reading directory",
+                            crate::gui::paths::display_path(&path),
+                            None,
+                        );
                         let mut paths = Vec::new();
                         let errors = collect_directory(&path, &worker, &mut paths)?;
                         if paths.is_empty() && errors.is_empty() {
-                            return Err(format!("'{}' contains no files.", path.display()));
+                            return Err(format!(
+                                "'{}' contains no files.",
+                                crate::gui::paths::display_path(&path)
+                            ));
                         }
                         Ok((paths, errors))
                     })
@@ -533,11 +540,16 @@ fn collect_directory(
     control.check().map_err(|e| e.to_string())?;
     let mut errors = Vec::new();
     let mut entries = Vec::new();
-    for entry in std::fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))? {
+    for entry in std::fs::read_dir(path)
+        .map_err(|e| format!("{}: {e}", crate::gui::paths::display_path(path)))?
+    {
         control.check().map_err(|e| e.to_string())?;
         match entry {
             Ok(entry) => entries.push(entry),
-            Err(error) => errors.push(format!("{}: {error}", path.display())),
+            Err(error) => errors.push(format!(
+                "{}: {error}",
+                crate::gui::paths::display_path(path)
+            )),
         }
     }
     entries.sort_by_key(|entry| entry.file_name());
@@ -546,7 +558,10 @@ fn collect_directory(
         let kind = match entry.file_type() {
             Ok(kind) => kind,
             Err(error) => {
-                errors.push(format!("{}: {error}", entry.path().display()));
+                errors.push(format!(
+                    "{}: {error}",
+                    crate::gui::paths::display_path(entry.path())
+                ));
                 continue;
             }
         };
@@ -621,7 +636,11 @@ fn prepare_rotation_selection(
             continue;
         }
         members.sort_by_key(|(rank, path)| (std::cmp::Reverse(*rank), path.clone()));
-        control.phase("Merging rotated logs", base.display().to_string(), None);
+        control.phase(
+            "Merging rotated logs",
+            crate::gui::paths::display_path(&base),
+            None,
+        );
         let mut merged = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
         let mut last = None;
         for (_, path) in members {
@@ -706,8 +725,8 @@ fn build_merge(
     let mut paths = Vec::new();
     for path in requested {
         control.check().map_err(|e| e.to_string())?;
-        let canonical =
-            std::fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let canonical = std::fs::canonicalize(&path)
+            .map_err(|e| format!("{}: {e}", crate::gui::paths::display_path(&path)))?;
         if !seen.insert(canonical) {
             continue;
         }

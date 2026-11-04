@@ -134,7 +134,7 @@ fn menus(recent: &[std::path::PathBuf]) -> Vec<Menu> {
                 items.push(MenuItem::submenu(Menu::new("Open Recent").items(
                     recent.iter().take(5).map(|path| {
                         MenuItem::action(
-                            path.display().to_string(),
+                            crate::gui::paths::display_path(path),
                             OpenRecent { path: path.clone() },
                         )
                     }),

@@ -115,7 +115,9 @@ impl App {
         };
         let snapshot = Snapshot {
             template: editor.values[0].clone(),
-            filename: preview::text(tab.log_manager.source_file().unwrap_or("stream")),
+            filename: preview::text(&crate::gui::paths::display_path(
+                tab.log_manager.source_file().unwrap_or("stream"),
+            )),
             comments: tab
                 .comment_manager
                 .get()

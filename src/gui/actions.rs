@@ -1202,8 +1202,8 @@ pub fn open(
         let output = state
             .active_tab()
             .and_then(|t| t.display_source_path())
-            .unwrap_or("This tab has no source file.")
-            .to_string();
+            .map(crate::gui::paths::display_path)
+            .unwrap_or_else(|| "This tab has no source file.".into());
         crate::gui::update::gui_outcome(
             state,
             "File information".into(),

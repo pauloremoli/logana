@@ -28,7 +28,7 @@ pub fn tab_bar(state: &GuiState, cx: &mut Context<App>) -> impl IntoElement {
             idx,
             tab.id,
             tab.title.clone(),
-            tab.display_source_path().unwrap_or(&tab.title).to_owned(),
+            crate::gui::paths::display_path(tab.display_source_path().unwrap_or(&tab.title)),
             idx == state.active_tab,
             cx,
         ));

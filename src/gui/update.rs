@@ -856,7 +856,7 @@ fn update_inner(state: &mut GuiState, message: Message) -> Effect {
                 state,
                 "Open file".into(),
                 crate::gui::palette::ExecutionState::Information,
-                format!("Loading {}…", path.display()),
+                format!("Loading {}…", crate::gui::paths::display_path(&path)),
             );
             Effect::LoadFile(path)
         }
@@ -1550,7 +1550,7 @@ fn report_source_path(state: &mut GuiState) -> Result<String, String> {
     };
     let message = tab
         .display_source_path()
-        .map(str::to_string)
+        .map(crate::gui::paths::display_path)
         .unwrap_or_else(|| "This tab has no source file (e.g. stdin).".to_string());
     Ok(message)
 }
@@ -1708,7 +1708,7 @@ pub(super) fn prepare_tab_with_merge(
         .path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| loaded.path.display().to_string());
+        .unwrap_or_else(|| crate::gui::paths::display_path(&loaded.path));
     let mut tab = TabState::new_controlled(loaded.reader, loaded.log_manager, title, cancel)
         .ok_or("Operation canceled")?;
     tab.interaction.keybindings = std::sync::Arc::new(
