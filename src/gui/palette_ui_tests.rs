@@ -4175,3 +4175,57 @@ fn annotations_can_be_removed_from_context_menu_and_editor(cx: &mut TestAppConte
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn filter_rows_show_current_match_counts_only_when_enabled(cx: &mut TestAppContext) {
+    cx.background_executor.allow_parking();
+    let (handle, app) = palette_window(cx, (1100., 900.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        let ids = app.update(cx, |app, cx| {
+            let tab = &mut app.state.tabs[0];
+            for pattern in ["plain", "absent", "disabled"] {
+                runtime::handle().block_on(tab.log_manager.add_filter_with_color(
+                    pattern.into(),
+                    crate::filters::FilterType::Highlight,
+                    crate::filters::FilterOptions::default(),
+                ));
+            }
+            let ids: Vec<_> = tab
+                .log_manager
+                .get_filters()
+                .iter()
+                .map(|def| def.id)
+                .collect();
+            runtime::handle().block_on(tab.log_manager.toggle_filter(ids[2]));
+            tab.filter.match_counts = vec![12, 0, 99];
+            tab.display.show_sidebar = true;
+            cx.notify();
+            ids
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("filter-match-count", ids[0])).label(),
+            Some("12 matches")
+        );
+        assert_eq!(
+            window.find(("filter-match-count", ids[1])).label(),
+            Some("0 matches")
+        );
+        assert!(window.try_find(("filter-match-count", ids[2])).is_none());
+        app.update(cx, |app, cx| {
+            app.state.tabs[0].filter.match_counts = vec![1];
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("filter-match-count", ids[0])).label(),
+            Some("1 match")
+        );
+        assert_eq!(
+            window.find(("filter-match-count", ids[1])).label(),
+            Some("0 matches")
+        );
+    })
+    .unwrap();
+}

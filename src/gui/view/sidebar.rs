@@ -68,6 +68,7 @@ pub fn sidebar(
                 tab_idx,
                 tab.id,
                 filter_defs,
+                &tab.filter.match_counts,
                 group_defs,
                 keyboard_selection
                     .filter(|(scope, _)| *scope == SidebarTab::Filters)

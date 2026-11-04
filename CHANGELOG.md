@@ -5,6 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- [gui] Show live match counts on enabled filters, matching the TUI.
+
 ### Fixed
 - [core] Fix Notepad++ import options and XML parsing; leave omitted backgrounds unset.
 

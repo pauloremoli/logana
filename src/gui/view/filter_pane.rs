@@ -31,10 +31,12 @@ struct FilterDrag {
 }
 
 /// Native filter controls: add, edit, enable, remove, and drag to reorder.
+#[allow(clippy::too_many_arguments)]
 pub fn filter_pane(
     tab_idx: usize,
     source: crate::shared::TabId,
     filter_defs: &[FilterDef],
+    match_counts: &[usize],
     group_defs: &[GroupDef],
     selected: Option<usize>,
     scroll: &gpui_kit::gpui::ScrollHandle,
@@ -183,6 +185,7 @@ pub fn filter_pane(
             def,
             group_defs,
             selected == Some(index),
+            match_counts.get(index).copied().unwrap_or(0),
             cx,
         ));
     }
@@ -232,6 +235,7 @@ fn filter_row(
     def: &FilterDef,
     group_defs: &[GroupDef],
     selected: bool,
+    match_count: usize,
     cx: &mut Context<App>,
 ) -> impl IntoElement {
     let id = def.id;
@@ -326,6 +330,21 @@ fn filter_row(
                         })
                         .when_some(def.group.clone(), |d, group| {
                             d.child(Tag::secondary().small().child(format!("Group: {group}")))
+                        })
+                        .when(def.enabled, |d| {
+                            let summary = format!(
+                                "{match_count} {}",
+                                if match_count == 1 { "match" } else { "matches" }
+                            );
+                            d.child(
+                                div()
+                                    .id(("filter-match-count", id))
+                                    .test_support()
+                                    .aria_label(summary.clone())
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(summary),
+                            )
                         })
                         .tooltip(move |window, cx| Tooltip::new(type_label).build(window, cx)),
                 )
