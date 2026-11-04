@@ -558,8 +558,7 @@ impl LogManager {
             Err(_) => (serde_json::from_str::<Vec<FilterDef>>(&json)?, Vec::new()),
         };
         if append {
-            self.merge_filters_and_groups(filters, groups).await;
-            Ok(())
+            self.merge_filters_and_groups(filters, groups).await
         } else {
             self.replace_filters_and_reload(filters, groups).await
         }
@@ -568,11 +567,35 @@ impl LogManager {
     /// Adds/updates each of `filters` and `groups` in place, leaving
     /// everything else untouched. Shared merge logic for `load_filters` and
     /// `import_npp_filters`'s append mode.
-    async fn merge_filters_and_groups(&mut self, filters: Vec<FilterDef>, groups: Vec<GroupDef>) {
+    async fn merge_filters_and_groups(
+        &mut self,
+        filters: Vec<FilterDef>,
+        groups: Vec<GroupDef>,
+    ) -> anyhow::Result<()> {
         for def in filters {
             let options = filter_options_from_def(&def);
-            self.add_filter_with_color(def.pattern, def.filter_type, options)
+            self.add_filter_with_color(def.pattern.clone(), def.filter_type.clone(), options)
                 .await;
+            if let Some(current) = self
+                .filter_defs
+                .iter_mut()
+                .find(|f| f.pattern == def.pattern && f.filter_type == def.filter_type)
+            {
+                let id = current.id;
+                self.db
+                    .update_filter(
+                        id as i64,
+                        &def.pattern,
+                        &def.filter_type,
+                        def.color_config.as_ref(),
+                        def.use_regex,
+                        def.ignore_case,
+                        def.group.as_deref(),
+                    )
+                    .await?;
+                self.db.set_filter_enabled(id as i64, def.enabled).await?;
+                *current = FilterDef { id, ..def };
+            }
         }
         for group in groups {
             if let Some(cc) = &group.color_config {
@@ -586,6 +609,7 @@ impl LogManager {
             }
             self.set_group_enabled(&group.name, group.enabled).await;
         }
+        Ok(())
     }
 
     /// Imports a Notepad++ Analyze-plugin XML config (AnalyseDoc or User
@@ -601,8 +625,7 @@ impl LogManager {
         self.import_warnings = imported.warnings;
         let filters = imported.filters;
         if append {
-            self.merge_filters_and_groups(filters, Vec::new()).await;
-            Ok(())
+            self.merge_filters_and_groups(filters, Vec::new()).await
         } else {
             self.replace_filters_and_reload(filters, Vec::new()).await
         }
@@ -1369,6 +1392,38 @@ mod tests {
             errs.color_config.as_ref().unwrap().fg,
             Some(crate::style::Color::Red)
         );
+    }
+
+    #[tokio::test]
+    async fn npp_append_preserves_options_in_memory_and_database() {
+        let mut mgr = make_manager().await;
+        mgr.add_filter_with_color(
+            "error".into(),
+            FilterType::Include,
+            FilterOptions::default(),
+        )
+        .await;
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        std::fs::write(path, r#"<AnalyseDoc><SearchText searchType="regex" doSearch="false">error</SearchText><SearchText doSearch="false">new</SearchText></AnalyseDoc>"#).unwrap();
+        mgr.import_npp_filters(path, true).await.unwrap();
+        for filters in [
+            mgr.get_filters().to_vec(),
+            mgr.db.get_filters().await.unwrap(),
+        ] {
+            assert_eq!(filters.len(), 2);
+            assert!(filters.iter().all(|f| !f.enabled && f.ignore_case));
+            assert!(
+                filters
+                    .iter()
+                    .find(|f| f.pattern == "error")
+                    .unwrap()
+                    .use_regex
+            );
+        }
+        std::fs::write(path, "<AnalyseDoc>").unwrap();
+        assert!(mgr.import_npp_filters(path, false).await.is_err());
+        assert_eq!(mgr.get_filters().len(), 2);
     }
 
     const NPP_ANALYSEDOC_XML: &str = r##"

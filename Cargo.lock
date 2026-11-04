@@ -4659,6 +4659,7 @@ dependencies = [
  "rayon",
  "regex",
  "rmcp",
+ "roxmltree 0.21.1",
  "schemars 0.8.22",
  "serde",
  "serde_json",

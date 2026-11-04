@@ -163,3 +163,43 @@ Command mode supports multi-tier tab completion:
 5. **Command names** — for everything else
 
 Press `Tab` / `Shift+Tab` to cycle through completions. A highlighted suggestion appears in the hint area; `Space` accepts it.
+
+### Notepad++ import compatibility
+
+The built-in importer accepts AnalysePlugin `AnalyseDoc` and Notepad++ UDL XML.
+AnalysePlugin normal, escaped and Rust-compatible regex searches preserve case,
+whole-word, `doSearch`, groups, foreground (`color`, with `fgColor` as an alias),
+background and `select="text"`/line scope. Omitted backgrounds remain unset;
+omitted foregrounds use Logana's readable-contrast policy only when a background
+is explicitly provided, and otherwise remain unset. Whole words use
+Rust regex Unicode word boundaries, which can differ from Scintilla's configured
+word characters. Escaped searches support control escapes and fixed-width
+binary, octal, decimal and hexadecimal character escapes.
+
+For example, `<SearchText color="red">ERROR</SearchText>` imports red text
+with no background color. Logana keeps the current log background instead of
+painting it white. Adding `bgColor="white"` explicitly imports a white
+background. This also applies to UDL `WordsStyle` entries: a foreground-only
+style imports its keywords without adding a background. If neither color is
+provided, both remain unset.
+
+UDL imports all eight keyword lists with their corresponding styles and
+`Global caseIgnored` setting. Multiple languages keep separate style lookups.
+Quoted phrases are kept together, but use literal whitespace. UDL keyword
+matching remains substring matching, including prefix-mode imports; it does
+not reproduce the UDL lexer, nesting, variable whitespace or multiline phrases.
+Comments, numbers, operators, folding and delimiters are not imported.
+Font decorations and inherited/transparent colors are not reproduced. Active
+unsupported options produce import warnings.
+
+Malformed XML, DTDs, unknown search modes (including `rgx_multiline`) and regexes
+unsupported by Rust's regex engine fail the import before filters are replaced.
+This includes lookarounds and backreferences. AnalysePlugin `hide` is reported
+as unsupported, rather than converted to an Exclude filter: it hides matched
+text in the plugin, while Exclude would hide the entire line. Import creates
+Include filters, so unmatched lines can be hidden by Logana.
+The standalone Python conversion script retains its legacy behavior.
+
+Format references: [AnalysePlugin serialization and defaults](https://github.com/chcg/AnalysePlugin/blob/master/FindConfigDoc.cpp),
+[AnalysePlugin schema](https://github.com/chcg/AnalysePlugin/blob/master/AnalyseDoc.xsd),
+and the [Notepad++ UDL manual](https://npp-user-manual.org/docs/user-defined-language-system/).

@@ -5,6 +5,9 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- [core] Fix Notepad++ import options and XML parsing; leave omitted backgrounds unset.
+
 ## [0.8.5] - 2026-11-02
 
 ### Added

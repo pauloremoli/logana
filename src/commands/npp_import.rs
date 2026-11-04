@@ -1,15 +1,11 @@
 //! Converts a Notepad++ "Analyze" plugin XML config (AnalyseDoc highlight
 //! export or User Defined Language export) into logana `Include` filters.
-//! Regex-based extraction is used deliberately instead of a full XML parser:
-//! these documents' structure is small and known ahead of time, and a real
-//! parser would be exposed to XXE/entity-expansion risk on untrusted input.
+//! XML parsing rejects DTDs and never resolves external entities.
 
 use crate::filters::{ColorConfig, FilterDef, FilterType};
 use crate::style::Color;
 use regex::Regex;
-use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::LazyLock;
 
 #[derive(Debug)]
 pub struct NppImport {
@@ -17,119 +13,279 @@ pub struct NppImport {
     pub warnings: Vec<String>,
 }
 
-static SEARCH_TEXT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)<SearchText([^>]*?)>(.*?)</SearchText>").unwrap());
-static KEYWORDS_LIST_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?s)<Keywords name="Keywords(\d+)">(.*?)</Keywords>"#).unwrap());
-static WORDS_STYLE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"<WordsStyle name="KEYWORDS(\d+)"([^>]*?)/>"#).unwrap());
-static ATTR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(\w+)="([^"]*)""#).unwrap());
-
-/// Converts a Notepad++ Analyze-plugin XML config into logana `Include`
-/// filters, auto-detecting AnalyseDoc vs. User Defined Language exports.
+/// Converts AnalysePlugin and UDL XML into shared filters.
+/// Fragment support is retained for existing callers and exported snippets.
 pub fn convert_npp_xml(xml_text: &str) -> Result<NppImport, String> {
+    let wrapped = format!("<Import>{xml_text}</Import>");
+    let doc = roxmltree::Document::parse(xml_text)
+        .or_else(|_| roxmltree::Document::parse(&wrapped))
+        .map_err(|e| format!("Invalid Notepad++ XML: {e}"))?;
     let mut warnings = Vec::new();
-    let filters = if is_userlang(xml_text) {
-        convert_userlang(xml_text, &mut warnings)?
+    let mut filters = Vec::new();
+    let languages: Vec<_> = doc
+        .descendants()
+        .filter(|n| n.has_tag_name("UserLang"))
+        .collect();
+    if !languages.is_empty() {
+        for lang in languages {
+            convert_userlang(lang, &mut filters, &mut warnings)?;
+        }
+    } else if doc
+        .descendants()
+        .any(|n| n.has_tag_name("AnalyseDoc") || n.has_tag_name("SearchText"))
+    {
+        convert_analysedoc(doc.root(), &mut filters, &mut warnings)?;
     } else {
-        convert_analysedoc(xml_text, &mut warnings)?
-    };
+        return Err("No AnalyseDoc or UserLang configuration found".into());
+    }
     Ok(NppImport { filters, warnings })
 }
 
-fn is_userlang(xml_text: &str) -> bool {
-    xml_text.contains("<UserLang") || xml_text.contains("<KeywordLists")
-}
-
-fn parse_attrs(attrs_str: &str) -> HashMap<String, String> {
-    ATTR_RE
-        .captures_iter(attrs_str)
-        .map(|c| (c[1].to_string(), c[2].to_string()))
+fn xml_text(node: roxmltree::Node<'_, '_>) -> String {
+    node.children()
+        .filter(|n| n.is_text())
+        .filter_map(|n| n.text())
         .collect()
 }
 
-fn convert_analysedoc(
-    xml_text: &str,
-    warnings: &mut Vec<String>,
-) -> Result<Vec<FilterDef>, String> {
-    let mut filters = Vec::new();
-    for caps in SEARCH_TEXT_RE.captures_iter(xml_text) {
-        let attrs = parse_attrs(&caps[1]);
-        let bg = attrs
-            .get("bgColor")
-            .ok_or("<SearchText> entry missing bgColor attribute")?;
-        let bg_color = import_color(bg, "bgColor", None, warnings);
-        filters.push(FilterDef {
-            id: filters.len(),
-            pattern: unescape_html(&caps[2]),
-            filter_type: FilterType::Include,
-            enabled: true,
-            color_config: Some(ColorConfig {
-                fg: Some(
-                    attrs
-                        .get("fgColor")
-                        .map(|fg| import_color(fg, "fgColor", Some(bg_color), warnings))
-                        .unwrap_or_else(|| readable_import_foreground(bg_color)),
-                ),
-                bg: Some(bg_color),
-                match_only: true,
-            }),
-            use_regex: false,
-            ignore_case: false,
-            group: attrs.get("group").cloned(),
-        });
-    }
-    Ok(filters)
+fn xml_bool(node: roxmltree::Node<'_, '_>, name: &str, default: bool) -> bool {
+    node.attribute(name)
+        .map(|s| matches!(s, "true" | "1" | "yes"))
+        .unwrap_or(default)
 }
 
-fn convert_userlang(xml_text: &str, warnings: &mut Vec<String>) -> Result<Vec<FilterDef>, String> {
-    let mut filters = Vec::new();
+fn convert_analysedoc(
+    root: roxmltree::Node<'_, '_>,
+    filters: &mut Vec<FilterDef>,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
+    for node in root.descendants().filter(|n| n.has_tag_name("SearchText")) {
+        let bg = node
+            .attribute("bgColor")
+            .map(|raw| import_color(raw, "bgColor", None, warnings));
+        let fg = node
+            .attribute("color")
+            .or_else(|| node.attribute("fgColor"));
+        let mut pattern = xml_text(node);
+        if pattern.is_empty() {
+            warnings.push("Skipped empty SearchText".into());
+            continue;
+        }
+        let mut use_regex = match node.attribute("searchType").unwrap_or("normal") {
+            "normal" => false,
+            "escaped" => {
+                pattern = decode_escaped(&pattern);
+                false
+            }
+            "regex" => true,
+            other => return Err(format!("Unsupported Notepad++ searchType '{other}'")),
+        };
+        if xml_bool(node, "wholeWord", false) {
+            if !use_regex {
+                pattern = regex::escape(&pattern);
+            }
+            pattern = format!(r"\b(?:{pattern})\b");
+            use_regex = true;
+        }
+        if use_regex {
+            Regex::new(&pattern)
+                .map_err(|e| format!("Unsupported Notepad++ regex '{pattern}': {e}"))?;
+        }
+        for name in ["hide", "bold", "italic", "underlined"] {
+            if xml_bool(node, name, false) {
+                warnings.push(format!(
+                    "Notepad++ {name} is not supported; importing search and colors only"
+                ));
+            }
+        }
+        filters.push(FilterDef {
+            id: filters.len(),
+            pattern,
+            filter_type: FilterType::Include,
+            enabled: xml_bool(node, "doSearch", true),
+            color_config: Some(ColorConfig {
+                fg: fg
+                    .map(|v| {
+                        import_color(
+                            v,
+                            if node.attribute("color").is_some() {
+                                "color"
+                            } else {
+                                "fgColor"
+                            },
+                            bg,
+                            warnings,
+                        )
+                    })
+                    .or_else(|| bg.map(readable_import_foreground)),
+                bg,
+                match_only: node.attribute("select") == Some("text"),
+            }),
+            use_regex,
+            ignore_case: !xml_bool(node, "matchCase", false),
+            group: node.attribute("group").map(str::to_owned),
+        });
+    }
+    Ok(())
+}
 
-    let mut styles: HashMap<u32, (Option<String>, String)> = HashMap::new();
-    for caps in WORDS_STYLE_RE.captures_iter(xml_text) {
-        let n: u32 = caps[1]
-            .parse()
-            .map_err(|_| "invalid WordsStyle index".to_string())?;
-        let attrs = parse_attrs(&caps[2]);
-        if let Some(bg) = attrs.get("bgColor") {
-            styles.insert(n, (attrs.get("fgColor").cloned(), bg.clone()));
+/// AnalysePlugin extended searches preserve unknown and incomplete escapes.
+fn decode_escaped(text: &str) -> String {
+    let mut chars = text.chars().peekable();
+    let mut result = String::new();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            result.push(c);
+            continue;
+        }
+        let Some(next) = chars.next() else {
+            result.push(c);
+            break;
+        };
+        match next {
+            'n' => result.push('\n'),
+            'r' => result.push('\r'),
+            't' => result.push('\t'),
+            '0' => result.push('\0'),
+            '\\' => result.push('\\'),
+            'b' | 'o' | 'd' | 'x' => {
+                let (width, base) = match next {
+                    'b' => (8, 2),
+                    'o' => (3, 8),
+                    'd' => (3, 10),
+                    _ => (2, 16),
+                };
+                let digits: String = chars.clone().take(width).collect();
+                if digits.len() == width
+                    && let Ok(value) = u8::from_str_radix(&digits, base)
+                {
+                    for _ in 0..width {
+                        chars.next();
+                    }
+                    result.push(char::from(value));
+                } else {
+                    result.push('\\');
+                    result.push(next);
+                }
+            }
+            _ => {
+                result.push('\\');
+                result.push(next);
+            }
         }
     }
+    result
+}
 
-    let mut keyword_lists: Vec<(u32, String)> = KEYWORDS_LIST_RE
-        .captures_iter(xml_text)
-        .map(|caps| (caps[1].parse().unwrap_or(0), unescape_html(&caps[2])))
+fn convert_userlang(
+    lang: roxmltree::Node<'_, '_>,
+    filters: &mut Vec<FilterDef>,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
+    let ignore_case = lang
+        .descendants()
+        .find(|n| n.has_tag_name("Global"))
+        .is_some_and(|n| xml_bool(n, "caseIgnored", false));
+    let mut lists: Vec<_> = lang
+        .descendants()
+        .filter(|n| n.has_tag_name("Keywords"))
+        .filter_map(|n| {
+            n.attribute("name")?
+                .strip_prefix("Keywords")?
+                .parse::<u8>()
+                .ok()
+                .map(|i| (i, n))
+        })
+        .filter(|(i, _)| (1..=8).contains(i))
         .collect();
-    keyword_lists.sort_by_key(|(n, _)| *n);
-
-    for (n, text) in keyword_lists {
-        let Some((fg, bg)) = styles.get(&n) else {
+    lists.sort_by_key(|(i, _)| *i);
+    for (index, list) in lists {
+        let style_name = format!("KEYWORDS{index}");
+        let Some(style) = lang.descendants().find(|n| {
+            n.has_tag_name("WordsStyle") && n.attribute("name") == Some(style_name.as_str())
+        }) else {
+            warnings.push(format!("Skipped Keywords{index}: no matching style"));
             continue;
         };
-        // UDL exports use bare RRGGBB, while Analyze exports also use names.
-        let bg_color = import_color(bg, "bgColor", None, warnings);
-        let fg_color = fg
-            .as_ref()
-            .map(|fg| import_color(fg, "fgColor", Some(bg_color), warnings))
-            .unwrap_or_else(|| readable_import_foreground(bg_color));
-        for token in text.split_whitespace() {
+        let bg = style
+            .attribute("bgColor")
+            .map(|raw| import_color(raw, "bgColor", None, warnings));
+        let fg = style
+            .attribute("fgColor")
+            .map(|v| import_color(v, "fgColor", bg, warnings))
+            .or_else(|| bg.map(readable_import_foreground));
+        if style.attribute("fontStyle").is_some_and(|v| v != "0")
+            || style.attribute("colorStyle").is_some_and(|v| v != "3")
+        {
+            warnings.push(format!(
+                "Keywords{index}: font decorations/color inheritance are not supported"
+            ));
+        }
+        if lang
+            .descendants()
+            .filter(|n| n.has_tag_name("Prefix"))
+            .any(|n| xml_bool(n, &format!("Keywords{index}"), false))
+        {
+            warnings.push(format!(
+                "Keywords{index}: prefix mode is imported as substring matching"
+            ));
+        }
+        for token in udl_tokens(&xml_text(list))? {
+            if token.chars().any(char::is_whitespace) {
+                warnings.push(format!("Keywords{index}: multi-part keyword uses literal whitespace; cross-line matching is not supported"));
+            }
             filters.push(FilterDef {
                 id: filters.len(),
-                pattern: token.to_string(),
+                pattern: token,
                 filter_type: FilterType::Include,
                 enabled: true,
                 color_config: Some(ColorConfig {
-                    fg: Some(fg_color),
-                    bg: Some(bg_color),
+                    fg,
+                    bg,
                     match_only: true,
                 }),
                 use_regex: false,
-                ignore_case: false,
-                group: Some(format!("Keywords{n}")),
+                ignore_case,
+                group: Some(format!("Keywords{index}")),
             });
         }
     }
-    Ok(filters)
+    if lang.descendants().any(|n| {
+        n.has_tag_name("Keywords")
+            && !n.attribute("name").unwrap_or("").starts_with("Keywords")
+            && !xml_text(n).trim().is_empty()
+    }) {
+        warnings.push(
+            "UDL comments, numbers, operators, folding and delimiters are not imported".into(),
+        );
+    }
+    Ok(())
+}
+
+fn udl_tokens(text: &str) -> Result<Vec<String>, String> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut quote = None;
+    for c in text.chars() {
+        if quote == Some(c) {
+            quote = None;
+        } else if quote.is_none() && matches!(c, '\'' | '"') {
+            quote = Some(c);
+        } else if quote.is_none() && c.is_whitespace() {
+            if !token.is_empty() {
+                tokens.push(std::mem::take(&mut token));
+            }
+        } else {
+            token.push(c);
+        }
+    }
+    if quote.is_some() {
+        return Err("Unclosed quoted UDL keyword".into());
+    }
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+    Ok(tokens)
 }
 
 /// Choose black or white using the shared contrast rule. Named backgrounds
@@ -224,49 +380,113 @@ fn import_color(
     })
 }
 
-/// Unescapes the handful of HTML/XML entities Notepad++ emits in
-/// `<SearchText>`/`<Keywords>` content: the five named entities plus decimal
-/// and hex numeric character references.
-fn unescape_html(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < s.len() {
-        if s.as_bytes()[i] == b'&'
-            && let Some(rel_end) = s[i..].find(';')
-        {
-            let end = i + rel_end;
-            let entity = &s[i + 1..end];
-            let replacement = match entity {
-                "lt" => Some('<'),
-                "gt" => Some('>'),
-                "amp" => Some('&'),
-                "quot" => Some('"'),
-                "apos" => Some('\''),
-                _ => entity.strip_prefix('#').and_then(|num| {
-                    let code = if let Some(hex) = num.strip_prefix('x').or(num.strip_prefix('X')) {
-                        u32::from_str_radix(hex, 16).ok()
-                    } else {
-                        num.parse::<u32>().ok()
-                    };
-                    code.and_then(char::from_u32)
-                }),
-            };
-            if let Some(c) = replacement {
-                result.push(c);
-                i = end + 1;
-                continue;
-            }
-        }
-        let ch = s[i..].chars().next().unwrap();
-        result.push(ch);
-        i += ch.len_utf8();
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn omitted_background_stays_unset_in_both_formats() {
+        for xml in [
+            r#"<SearchText color="red">x</SearchText>"#,
+            r#"<SearchText>x</SearchText>"#,
+            r#"<UserLang><Keywords name="Keywords1">x</Keywords><WordsStyle name="KEYWORDS1" fgColor="red"/></UserLang>"#,
+        ] {
+            let imported = convert_npp_xml(xml).unwrap();
+            assert_eq!(imported.filters.len(), 1);
+            assert!(imported.warnings.is_empty());
+            let colors = imported.filters[0].color_config.as_ref().unwrap();
+            assert_eq!(colors.bg, None);
+            if xml.contains("red") {
+                assert_eq!(colors.fg, Some(Color::Rgb(255, 0, 0)));
+            } else {
+                assert_eq!(colors.fg, None);
+            }
+        }
+    }
+
+    #[test]
+    fn actual_analyse_options_and_xml_syntax() {
+        let imported = convert_npp_xml(
+            r#"<AnalyseDoc>
+          <!-- <SearchText bgColor="red">fake</SearchText> -->
+          <SearchText group='a&amp;b' color='red' searchType='regex'
+            matchCase='true' doSearch='false' select='text'><![CDATA[err[0-9]+]]></SearchText>
+          <SearchText>default</SearchText>
+        </AnalyseDoc>"#,
+        )
+        .unwrap();
+        assert_eq!(imported.filters.len(), 2);
+        let f = &imported.filters[0];
+        assert_eq!(f.pattern, "err[0-9]+");
+        assert!(f.use_regex);
+        assert!(!f.ignore_case);
+        assert!(!f.enabled);
+        assert_eq!(f.group.as_deref(), Some("a&b"));
+        assert_eq!(
+            f.color_config.as_ref().unwrap().fg,
+            Some(Color::Rgb(255, 0, 0))
+        );
+        assert!(f.color_config.as_ref().unwrap().match_only);
+        let f = &imported.filters[1];
+        assert!(f.ignore_case);
+        assert!(!f.color_config.as_ref().unwrap().match_only);
+        assert_eq!(f.color_config.as_ref().unwrap().bg, None);
+    }
+
+    #[test]
+    fn malformed_or_unrecognized_xml_is_an_error() {
+        for xml in [
+            "<AnalyseDoc>",
+            "<unrelated/>",
+            "<!DOCTYPE x [<!ENTITY x 'boom'>]><AnalyseDoc/>",
+        ] {
+            assert!(convert_npp_xml(xml).is_err(), "{xml}");
+        }
+    }
+
+    #[test]
+    fn whole_words_escape_literals_and_validate_regex() {
+        let f = convert_npp_xml(r#"<SearchText wholeWord="true">a.b</SearchText>"#)
+            .unwrap()
+            .filters
+            .remove(0);
+        assert!(f.use_regex);
+        let re = Regex::new(&f.pattern).unwrap();
+        assert!(re.is_match("a.b"));
+        assert!(!re.is_match("aXb"));
+        assert!(!re.is_match("za.b"));
+        assert!(convert_npp_xml(r#"<SearchText searchType="regex">[</SearchText>"#).is_err());
+    }
+
+    #[test]
+    fn udl_languages_keep_settings_and_styles_separate() {
+        let imported = convert_npp_xml(
+            r#"<NotepadPlus>
+          <UserLang name="A"><Settings><Global caseIgnored="yes"/></Settings>
+            <Keywords name='Keywords1'>"two words" alpha</Keywords>
+            <WordsStyle bgColor='112233' name='KEYWORDS1'></WordsStyle>
+          </UserLang>
+          <UserLang name="B"><Keywords name="Keywords1">beta</Keywords>
+            <WordsStyle name="KEYWORDS1" bgColor="445566"/>
+          </UserLang>
+        </NotepadPlus>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            imported
+                .filters
+                .iter()
+                .map(|f| f.pattern.as_str())
+                .collect::<Vec<_>>(),
+            ["two words", "alpha", "beta"]
+        );
+        assert!(imported.filters[0].ignore_case);
+        assert!(!imported.filters[2].ignore_case);
+        assert_eq!(
+            imported.filters[0].color_config.as_ref().unwrap().bg,
+            Some(Color::Rgb(17, 34, 51))
+        );
+    }
 
     const ANALYSEDOC_XML: &str = r##"
         <AnalyseDoc>
@@ -330,7 +550,7 @@ mod tests {
         let cc = error_filter.color_config.as_ref().unwrap();
         assert_eq!(cc.fg, Some(Color::Rgb(255, 255, 255)));
         assert_eq!(cc.bg, Some(Color::Rgb(0, 128, 0)));
-        assert!(cc.match_only);
+        assert!(!cc.match_only);
     }
 
     #[test]
@@ -510,8 +730,45 @@ mod tests {
     }
 
     #[test]
-    fn test_unescape_html_handles_named_and_numeric_entities() {
-        assert_eq!(unescape_html("a&amp;b&lt;c&gt;d"), "a&b<c>d");
-        assert_eq!(unescape_html("&#65;&#x42;"), "AB");
+    fn xml_entities_are_decoded_once() {
+        let f = convert_npp_xml("<SearchText>a&amp;b&lt;c&gt;&#65;&#x42;&amp;lt;</SearchText>")
+            .unwrap()
+            .filters
+            .remove(0);
+        assert_eq!(f.pattern, "a&b<c>AB&lt;");
+    }
+
+    #[test]
+    fn escaped_search_and_unsupported_options() {
+        let imported = convert_npp_xml(r#"<SearchText searchType="escaped" hide="true" bold="true" italic="true" underlined="true">a\t\x41\d066\o103\b01000100\q\</SearchText>"#).unwrap();
+        assert_eq!(imported.filters[0].pattern, "a\tABCD\\q\\");
+        assert!(!imported.filters[0].use_regex);
+        assert_eq!(imported.warnings.len(), 4);
+        assert_eq!(decode_escaped(r"\xGZ\d999\x1"), r"\xGZ\d999\x1");
+        assert!(
+            convert_npp_xml(r#"<SearchText searchType="rgx_multiline">x</SearchText>"#).is_err()
+        );
+    }
+
+    #[test]
+    fn all_eight_udl_lists_and_empty_entries() {
+        let mut xml = String::from("<UserLang>");
+        for i in 1..=8 {
+            xml.push_str(&format!(r#"<Keywords name="Keywords{i}">word{i}</Keywords><WordsStyle name="KEYWORDS{i}" bgColor="FFFFFF"/>"#));
+        }
+        xml.push_str("</UserLang>");
+        let imported = convert_npp_xml(&xml).unwrap();
+        assert_eq!(imported.filters.len(), 8);
+        for (i, f) in imported.filters.iter().enumerate() {
+            assert_eq!(f.id, i);
+            assert_eq!(f.pattern, format!("word{}", i + 1));
+        }
+        assert!(
+            convert_npp_xml("<AnalyseDoc><SearchText/></AnalyseDoc>")
+                .unwrap()
+                .filters
+                .is_empty()
+        );
+        assert!(udl_tokens("'unclosed").is_err());
     }
 }

@@ -22,6 +22,7 @@ license = false
 eula = false
 
 [dependencies]
+roxmltree = "0.21.1"
 anyhow = { version = "1.0", default-features = false, features = ["std"] }
 libc = { version = "0.2", default-features = false }
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions"] }
