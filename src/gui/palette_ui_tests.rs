@@ -4204,6 +4204,11 @@ fn filter_rows_show_current_match_counts_only_when_enabled(cx: &mut TestAppConte
             ids
         });
         window.render_frame(cx);
+        assert!(
+            window.find(("filter-type", ids[0])).bounds().size.height > px(18.),
+            "filter tags should use the standard readable size: {:?}",
+            window.find(("filter-type", ids[0])).bounds()
+        );
         assert_eq!(
             window.find(("filter-match-count", ids[0])).label(),
             Some("12 matches")

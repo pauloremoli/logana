@@ -99,10 +99,19 @@ impl App {
 
     /// Execute a command string, transitioning mode on success/failure.
     pub async fn execute_command_str(&mut self, cmd: String) {
+        let previous_tab = self.tabs[self.active_tab].id;
+        let previous_count = self.tabs[self.active_tab].log_manager.get_filters().len();
         let result = self.run_command(&cmd).await;
         let tab = &mut self.tabs[self.active_tab];
         match result {
             Ok(mode_was_set) => {
+                let count = tab.log_manager.get_filters().len();
+                if tab.id == previous_tab && count > previous_count {
+                    tab.filter.last_selected_filter = count - 1;
+                    if tab.filter.filter_context.is_some() {
+                        tab.filter.filter_context = Some(count - 1);
+                    }
+                }
                 if !cmd.trim().is_empty() {
                     tab.interaction.command_history.push(cmd.trim().to_string());
                 }

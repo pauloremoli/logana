@@ -321,15 +321,20 @@ fn filter_row(
                         .flex_wrap()
                         .items_center()
                         .gap_1()
-                        .child(Tag::secondary().small().child(type_label))
+                        .child(Tag::secondary().small().text_sm().child(type_label))
                         .when(def.use_regex, |d| {
-                            d.child(Tag::secondary().small().child("Regex"))
+                            d.child(Tag::secondary().small().text_sm().child("Regex"))
                         })
                         .when(def.ignore_case, |d| {
-                            d.child(Tag::secondary().small().child("Ignore case"))
+                            d.child(Tag::secondary().small().text_sm().child("Ignore case"))
                         })
                         .when_some(def.group.clone(), |d, group| {
-                            d.child(Tag::secondary().small().child(format!("Group: {group}")))
+                            d.child(
+                                Tag::secondary()
+                                    .small()
+                                    .text_sm()
+                                    .child(format!("Group: {group}")),
+                            )
                         })
                         .when(def.enabled, |d| {
                             let summary = format!(

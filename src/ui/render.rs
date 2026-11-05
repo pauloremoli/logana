@@ -2619,6 +2619,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_filter_is_selected_and_scrolled_into_view() {
+        let mut app = make_app(&["line"]).await;
+        let mut terminal = make_terminal();
+        for i in 0..30 {
+            app.execute_command_str(format!("highlight pattern_{i}"))
+                .await;
+        }
+        terminal.draw(|f| app.ui(f)).unwrap();
+        assert_eq!(app.tabs[0].filter.last_selected_filter, 29);
+        assert!(app.tabs[0].filter.sidebar_scroll > 0);
+        let buffer = terminal.backend().buffer();
+        assert!((0..buffer.area.height).any(|row| row_content(buffer, row).contains("pattern_29")));
+    }
+
+    #[tokio::test]
     async fn test_sidebar_does_not_rescroll_when_selection_stays_in_view() {
         use crate::ui::widgets::sidebar::sidebar_inner_dims;
 

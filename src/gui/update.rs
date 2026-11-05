@@ -1774,7 +1774,17 @@ fn apply_log_manager(state: &mut GuiState, tab_idx: usize, log_manager: LogManag
     let Some(tab) = state.tabs.get_mut(tab_idx) else {
         return;
     };
+    let previous_count = tab.log_manager.get_filters().len();
+    let count = log_manager.get_filters().len();
     tab.log_manager = log_manager;
+    if count > previous_count {
+        tab.filter.last_selected_filter = count - 1;
+        if tab_idx == state.active_tab {
+            state.sidebar_tab = crate::gui::state::SidebarTab::Filters;
+            state.keyboard_sidebar = Some(crate::gui::state::SidebarTab::Filters);
+            state.sidebar_cursor = count - 1;
+        }
+    }
     refresh_filters(state, tab_idx);
 }
 
