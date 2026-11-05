@@ -3915,6 +3915,18 @@ fn long_messages_expand_horizontal_scroll_extent(cx: &mut TestAppContext) {
         window.render_frame(cx);
         let extent = app.read(cx).horizontal_scroll.max_offset().x;
         assert!(extent > px(50000.), "long message is clipped: {extent:?}");
+        let viewport = app.read(cx).horizontal_scroll.bounds();
+        let scale = window.scale_factor();
+        assert!(
+            window.painted_quads().into_iter().any(|quad| {
+                quad.background.as_solid().is_some_and(|color| color.a > 0.)
+                    && quad.bounds.size.height.0 / scale <= 14.
+                    && quad.bounds.size.width.0 / scale >= 10.
+                    && quad.bounds.size.width.0 / scale < f32::from(viewport.size.width) / 2.
+                    && (quad.bounds.origin.y.0 / scale - f32::from(viewport.bottom())).abs() < 14.
+            }),
+            "overflowing messages must show a horizontal scrollbar without hover"
+        );
         let measurements = app.read(cx).row_cache.measurements;
         app.read(cx)
             .horizontal_scroll

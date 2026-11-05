@@ -11,7 +11,7 @@ use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::menu::ContextMenuExt;
-use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::scroll::{ScrollableElement, Scrollbar, ScrollbarMode};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::gpui::prelude::*;
 use gpui_kit::gpui::{
@@ -520,8 +520,12 @@ pub fn log_pane(
                 .track_scroll(horizontal_scroll)
                 .size_full()
                 .overflow_x_scroll()
-                .child(table)
-                .horizontal_scrollbar(horizontal_scroll),
+                .child(table),
+        )
+        .child(
+            Scrollbar::horizontal(horizontal_scroll)
+                .id("log-table-horizontal-scrollbar")
+                .mode(ScrollbarMode::Always),
         )
         .child(
             div()
