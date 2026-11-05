@@ -2128,6 +2128,51 @@ fn minimal_filter_sidebar_selects_conditions_and_edits_only_explicitly(cx: &mut 
 }
 
 #[gpui_kit::test]
+fn new_filter_is_selected_and_scrolled_into_view(cx: &mut TestAppContext) {
+    use super::message::Message;
+    use crate::filters::{FilterOptions, FilterType};
+    let (handle, app) = palette_window(cx, (1000., 500.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        add_log_tab(&app, cx, false);
+        app.update(cx, |app, cx| {
+            for i in 0..30 {
+                runtime::handle().block_on(app.state.tabs[0].log_manager.add_filter_with_color(
+                    format!("pattern{i}"),
+                    FilterType::Highlight,
+                    FilterOptions::default(),
+                ));
+            }
+            app.state.tabs[0].display.show_sidebar = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        let id = app.update(cx, |app, cx| {
+            let mut manager = app.state.tabs[0].log_manager.clone();
+            runtime::handle().block_on(manager.add_filter_with_color(
+                "new pattern".into(),
+                FilterType::Highlight,
+                FilterOptions::default(),
+            ));
+            let id = manager.get_filters().last().unwrap().id;
+            app.dispatch(Message::CommandExecuted(0, Ok(manager)), window, cx);
+            id
+        });
+        window.render_frame(cx);
+        assert_eq!(app.read(cx).state.sidebar_cursor, 30);
+        assert_eq!(
+            app.read(cx).state.keyboard_sidebar,
+            Some(super::state::SidebarTab::Filters)
+        );
+        let viewport = window.find("sidebar-filters-scroll").bounds();
+        let selected = window.find(("filter-condition", id)).bounds();
+        assert!(selected.top() >= viewport.top());
+        assert!(selected.bottom() <= viewport.bottom());
+        assert!(app.read(cx).filter_sidebar_scroll.offset().y < px(0.));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn filter_sidebar_keyboard_navigation_scrolls_selection_into_view(cx: &mut TestAppContext) {
     use crate::filters::{FilterOptions, FilterType};
     use crate::input::{KeyCode, KeyModifiers};

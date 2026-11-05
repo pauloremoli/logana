@@ -9,6 +9,7 @@ All notable changes to logana will be documented in this file.
 - [gui] Show live match counts on enabled filters, matching the TUI.
 
 ### Fixed
+- [gui][tui] Select newly added filters and scroll them into view.
 - [gui] Increase filter tag text to the standard size for easier reading.
 - [gui] Show archive files in collapsible folders and let selected files fill and scroll within the resizable panel.
 - [gui] Display clean Windows drive and UNC paths consistently in file tabs, dialogs, menus, and notifications while retaining original filesystem paths.
