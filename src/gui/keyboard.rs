@@ -285,6 +285,10 @@ pub fn apply(state: &mut GuiState, key: KeyCode, modifiers: KeyModifiers) -> Eff
         };
         if let Some(target) = target {
             tab.scroll.scroll_offset = target;
+            tab.scroll.wrapped_row = 0;
+            tab.stream.tail_mode = false;
+            let id = tab.id;
+            state.log_selection = Some((id, target, target));
             return Effect::None;
         }
     }
@@ -573,6 +577,36 @@ pub fn shortcuts(state: &GuiState) -> Vec<(&'static str, String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn severity_navigation_selects_destination_and_stops_following() {
+        let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());
+        let manager = crate::db::LogManager::new(db.clone(), None).await;
+        let mut state = GuiState::new(db);
+        state.tabs.push(crate::shared::TabState::new(
+            crate::ingestion::FileReader::from_bytes(
+                b"INFO hidden\nINFO before\nERROR failed\nWARN careful\nFATAL crash\n".to_vec(),
+            ),
+            manager,
+            "test".into(),
+        ));
+        state.tabs[0].filter.visible_indices =
+            crate::shared::VisibleLines::Filtered(vec![1, 2, 3, 4]);
+        let id = state.tabs[0].id;
+        for (key, expected) in [('e', 1), ('e', 3), ('E', 1), ('w', 2), ('W', 2)] {
+            if key == 'W' {
+                state.tabs[0].scroll.scroll_offset = 3;
+            }
+            state.tabs[0].stream.tail_mode = true;
+            state.tabs[0].scroll.wrapped_row = 7;
+            state.log_selection = Some((id, 0, 0));
+            apply(&mut state, KeyCode::Char(key), KeyModifiers::NONE);
+            assert_eq!(state.tabs[0].scroll.scroll_offset, expected);
+            assert_eq!(state.log_selection, Some((id, expected, expected)), "{key}");
+            assert!(!state.tabs[0].stream.tail_mode, "{key}");
+            assert_eq!(state.tabs[0].scroll.wrapped_row, 0, "{key}");
+        }
+    }
+
     #[tokio::test]
     async fn navigation_extends_ranges_clamps_and_leaves_follow_mode() {
         let db = std::sync::Arc::new(crate::db::Database::in_memory().await.unwrap());

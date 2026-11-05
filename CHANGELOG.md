@@ -9,6 +9,8 @@ All notable changes to logana will be documented in this file.
 - [gui] Show live match counts on enabled filters, matching the TUI.
 
 ### Fixed
+- [tui] Keep next/previous filter-match navigation active after clicking a sidebar filter.
+- [gui][tui] Select error, warning, and filter-match navigation destinations and keep them visible, including wrapped lines and tail mode.
 - [gui][tui] Select newly added filters and scroll them into view.
 - [gui] Increase filter tag text to the standard size for easier reading.
 - [gui] Show archive files in collapsible folders and let selected files fill and scroll within the resizable panel.

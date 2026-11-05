@@ -211,7 +211,9 @@ impl App {
                 self.handle_double_click(col, row).await;
                 return;
             }
-            self.handle_left_click(c, r).await;
+            if !self.is_over_sidebar(c, r) {
+                self.handle_left_click(c, r).await;
+            }
         }
         let (hit_log_panel, hit_sidebar) = {
             let tab = &self.tabs[self.active_tab];
@@ -243,7 +245,9 @@ impl App {
                 return;
             }
             self.input.last_click = None;
-            self.handle_left_click(c, r).await;
+            if !self.is_over_sidebar(c, r) {
+                self.handle_left_click(c, r).await;
+            }
         }
     }
 

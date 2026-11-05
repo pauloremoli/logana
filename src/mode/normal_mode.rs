@@ -590,6 +590,8 @@ impl Mode for NormalMode {
         if kb.normal.next_error.matches(key, modifiers) {
             if let Some(pos) = tab.next_error_position(tab.scroll.scroll_offset) {
                 tab.scroll.scroll_offset = pos;
+                tab.scroll.wrapped_row = 0;
+                tab.stream.tail_mode = false;
             } else {
                 tab.interaction.command_error = Some("No more errors".to_string());
             }
@@ -601,6 +603,8 @@ impl Mode for NormalMode {
         if kb.normal.prev_error.matches(key, modifiers) {
             if let Some(pos) = tab.prev_error_position(tab.scroll.scroll_offset) {
                 tab.scroll.scroll_offset = pos;
+                tab.scroll.wrapped_row = 0;
+                tab.stream.tail_mode = false;
             } else {
                 tab.interaction.command_error = Some("No previous error".to_string());
             }
@@ -612,6 +616,8 @@ impl Mode for NormalMode {
         if kb.normal.next_warning.matches(key, modifiers) {
             if let Some(pos) = tab.next_warning_position(tab.scroll.scroll_offset) {
                 tab.scroll.scroll_offset = pos;
+                tab.scroll.wrapped_row = 0;
+                tab.stream.tail_mode = false;
             } else {
                 tab.interaction.command_error = Some("No more warnings".to_string());
             }
@@ -623,6 +629,8 @@ impl Mode for NormalMode {
         if kb.normal.prev_warning.matches(key, modifiers) {
             if let Some(pos) = tab.prev_warning_position(tab.scroll.scroll_offset) {
                 tab.scroll.scroll_offset = pos;
+                tab.scroll.wrapped_row = 0;
+                tab.stream.tail_mode = false;
             } else {
                 tab.interaction.command_error = Some("No previous warning".to_string());
             }
@@ -2112,6 +2120,21 @@ mod tests {
         mode.handle_key(&mut tab, KeyCode::Char('s'), KeyModifiers::CONTROL)
             .await;
         assert_eq!(tab.comment_manager.get().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn severity_navigation_selects_start_of_line_and_stops_following() {
+        for (key, start, target) in [('e', 0, 1), ('E', 2, 1), ('w', 0, 2), ('W', 3, 2)] {
+            let mut tab =
+                make_tab(&["INFO before", "ERROR failed", "WARN careful", "INFO after"]).await;
+            tab.scroll.scroll_offset = start;
+            tab.scroll.wrapped_row = 7;
+            tab.stream.tail_mode = true;
+            press(&mut tab, KeyCode::Char(key), KeyModifiers::NONE).await;
+            assert_eq!(tab.scroll.scroll_offset, target);
+            assert_eq!(tab.scroll.wrapped_row, 0, "{key}");
+            assert!(!tab.stream.tail_mode, "{key}");
+        }
     }
 
     #[tokio::test]

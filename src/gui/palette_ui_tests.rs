@@ -3591,7 +3591,16 @@ fn selected_filter_navigation_uses_n_and_shift_n_from_the_sidebar(cx: &mut TestA
         app.update(cx, |app, cx| {
             let mut tab = crate::shared::TabState::new(
                 crate::ingestion::FileReader::from_bytes(
-                    b"hit first\nother\nhit second\n".to_vec(),
+                    (0..200)
+                        .map(|i| {
+                            if i == 0 || i == 180 {
+                                "hit\n"
+                            } else {
+                                "other\n"
+                            }
+                        })
+                        .collect::<String>()
+                        .into_bytes(),
                 ),
                 manager,
                 "navigation.log".into(),
@@ -3604,9 +3613,12 @@ fn selected_filter_navigation_uses_n_and_shift_n_from_the_sidebar(cx: &mut TestA
         window.click(("filter-condition", id), cx);
     })
     .unwrap();
-    for (key, expected) in [("n", 2), ("shift-n", 0), ("shift-n", 2)] {
-        cx.update_window(handle.into(), |_, window, cx| window.press(key, cx))
-            .unwrap();
+    for (key, expected) in [("n", 180), ("shift-n", 0), ("shift-n", 180)] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            app.update(cx, |app, _| app.state.tabs[0].scroll.wrapped_row = 7);
+            window.press(key, cx);
+        })
+        .unwrap();
         let started = std::time::Instant::now();
         loop {
             cx.background_executor
@@ -3626,6 +3638,11 @@ fn selected_filter_navigation_uses_n_and_shift_n_from_the_sidebar(cx: &mut TestA
                 state.log_selection,
                 Some((state.tabs[0].id, expected, expected))
             );
+            assert_eq!(state.tabs[0].scroll.wrapped_row, 0);
+            let bounds = window.find(("log-row", expected)).bounds();
+            assert!(bounds.size.height > px(0.));
+            assert!(bounds.origin.y >= px(0.));
+            assert!(bounds.bottom() <= window.viewport_size().height);
             assert_eq!(state.sidebar_cursor, 0);
             assert!(state.tabs[0].search.query.get_pattern().is_none());
         })
@@ -4276,6 +4293,46 @@ fn filter_rows_show_current_match_counts_only_when_enabled(cx: &mut TestAppConte
             window.find(("filter-match-count", ids[1])).label(),
             Some("0 matches")
         );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn severity_navigation_reveals_selected_error(cx: &mut TestAppContext) {
+    let (handle, app) = palette_window(cx, (1000., 600.), "dracula");
+    cx.update_window(handle.into(), |_, window, cx| {
+        let manager = runtime::handle().block_on(crate::db::LogManager::new(
+            app.read(cx).state.db.clone(),
+            None,
+        ));
+        let lines = (0..200)
+            .map(|i| {
+                if i == 1 || i == 180 {
+                    "ERROR failed\n"
+                } else {
+                    "INFO normal\n"
+                }
+            })
+            .collect::<String>();
+        app.update(cx, |app, cx| {
+            app.state.tabs.push(crate::shared::TabState::new(
+                crate::ingestion::FileReader::from_bytes(lines.into_bytes()),
+                manager,
+                "errors.log".into(),
+            ));
+            cx.notify();
+        });
+        window.render_frame(cx);
+        for (key, row) in [("e", 1usize), ("e", 180), ("shift-e", 1)] {
+            window.press(key, cx);
+            window.render_frame(cx);
+            let tab = &app.read(cx).state.tabs[0];
+            assert_eq!(app.read(cx).state.log_selection, Some((tab.id, row, row)));
+            let bounds = window.find(("log-row", row)).bounds();
+            assert!(bounds.size.height > px(0.));
+            assert!(bounds.origin.y >= px(0.));
+            assert!(bounds.bottom() <= window.viewport_size().height);
+        }
     })
     .unwrap();
 }

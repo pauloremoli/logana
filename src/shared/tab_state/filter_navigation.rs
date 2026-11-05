@@ -163,6 +163,7 @@ impl TabState {
         }
         if let Some(line) = result {
             self.scroll_to_line_idx(line);
+            self.scroll.wrapped_row = 0;
             self.stream.tail_mode = false;
             Some(true)
         } else {
@@ -259,8 +260,10 @@ mod tests {
             (false, 1, 3),
             (true, 5, 2),
         ] {
+            tab.scroll.wrapped_row = 7;
             assert!(navigate(&mut tab, 0, forward, count).await);
             assert_eq!(tab.scroll.scroll_offset, expected);
+            assert_eq!(tab.scroll.wrapped_row, 0);
         }
         assert!(!tab.stream.tail_mode);
         assert_eq!(tab.search.query.get_pattern(), Some("other"));

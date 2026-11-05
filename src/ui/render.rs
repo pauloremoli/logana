@@ -1291,6 +1291,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn selected_filter_navigation_through_tui_input_and_rendering() {
+        let lines: Vec<_> = (0..200)
+            .map(|i| if i == 0 || i == 180 { "hit" } else { "other" })
+            .collect();
+        let mut app = make_app(&lines).await;
+        app.tabs[0]
+            .log_manager
+            .add_filter_with_color(
+                "hit".into(),
+                crate::filters::FilterType::Highlight,
+                crate::filters::FilterOptions::default(),
+            )
+            .await;
+        app.tabs[0].refresh_visible();
+        let mut terminal = make_terminal();
+        app.tabs[0].display.show_sidebar = true;
+        terminal.draw(|f| app.ui(f)).unwrap();
+        let area = app.input.sidebar_area.unwrap();
+        let (col, row) = (area.y..area.bottom())
+            .find_map(|row| {
+                (area.x..area.right()).find_map(|col| {
+                    matches!(
+                        app.input.hit_test_sidebar(col, row, &app.tabs[0]),
+                        Some(super::super::input_handler::SidebarHit::Filter(0))
+                    )
+                    .then_some((col, row))
+                })
+            })
+            .unwrap();
+        app.handle_left_down(col, row).await;
+        for (key, expected) in [('n', 180), ('N', 0)] {
+            app.handle_key_event(crate::input::KeyCode::Char(key)).await;
+            if let Some((time, _, _)) = &mut app.input.last_click {
+                *time = std::time::Instant::now() - std::time::Duration::from_secs(1);
+            }
+            app.flush_pending_click().await;
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while app.tabs[0].filter.navigation.is_some() {
+                    terminal.draw(|f| app.ui(f)).unwrap();
+                    app.advance_search();
+                    app.advance_filter_computation();
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+            terminal.draw(|f| app.ui(f)).unwrap();
+            let tab = &app.tabs[0];
+            assert_eq!(tab.scroll.scroll_offset, expected);
+            assert!(
+                tab.scroll
+                    .rendered_rows
+                    .as_ref()
+                    .unwrap()
+                    .contains(&Some(expected))
+            );
+            assert!(matches!(
+                tab.interaction.mode.render_state(),
+                ModeRenderState::FilterManagement { .. }
+            ));
+        }
+    }
+
+    #[tokio::test]
     async fn test_ui_normal_mode_basic() {
         let lines: Vec<&str> = (0..10)
             .map(|i| match i {
