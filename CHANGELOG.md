@@ -5,6 +5,8 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-11-06
+
 ### Added
 - [gui] Show live match counts on enabled filters, matching the TUI.
 

@@ -4631,7 +4631,7 @@ dependencies = [
 
 [[package]]
 name = "logana"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -4681,7 +4681,7 @@ dependencies = [
 
 [[package]]
 name = "logana-full"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -4700,7 +4700,7 @@ dependencies = [
 
 [[package]]
 name = "logana-gui"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "clap",
  "embed-resource",
