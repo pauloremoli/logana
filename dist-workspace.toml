@@ -26,6 +26,10 @@ install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
 
+# macOS 14 runners were retired; keep Apple Silicon builds on a supported image.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+
 # Native GUI libraries are needed by the GNU desktop builds only.
 [dist.dependencies.apt]
 libfontconfig1-dev = { targets = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"] }

@@ -9,6 +9,7 @@ All notable changes to logana will be documented in this file.
 - [gui] Show live match counts on enabled filters, matching the TUI.
 
 ### Fixed
+- [core] Use a supported macOS runner for Apple Silicon release artifacts.
 - [gui] Keep the horizontal scrollbar visible whenever rendered messages overflow the log pane.
 - [tui] Keep next/previous filter-match navigation active after clicking a sidebar filter.
 - [gui][tui] Select error, warning, and filter-match navigation destinations and keep them visible, including wrapped lines and tail mode.
