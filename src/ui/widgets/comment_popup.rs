@@ -30,7 +30,14 @@ impl<'a> CommentPopup<'a> {
         let text_area_y = y + 1;
         let text_area_width = popup_width.saturating_sub(2);
         let text_area_height = popup_height.saturating_sub(4);
-        let cur_x = text_area_x + self.cursor_col as u16;
+        let prefix: String = self
+            .lines
+            .get(self.cursor_row)?
+            .chars()
+            .take(self.cursor_col)
+            .collect();
+        let display_col = unicode_width::UnicodeWidthStr::width(prefix.as_str());
+        let cur_x = text_area_x.saturating_add(u16::try_from(display_col).ok()?);
         let cur_y = text_area_y + self.cursor_row as u16;
         if cur_x < text_area_x + text_area_width && cur_y < text_area_y + text_area_height {
             Some((cur_x, cur_y))
@@ -133,6 +140,7 @@ impl<'a> Widget for CommentPopup<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::{CommentPopup, Rect};
     use crate::config::Keybindings;
     use crate::db::Database;
     use crate::db::LogManager;
@@ -170,6 +178,26 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    #[test]
+    fn test_unicode_comment_cursor_width() {
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let lines = vec!["中ç".into()];
+        let mut popup = CommentPopup {
+            theme: &theme,
+            keybindings: &kb,
+            lines: &lines,
+            cursor_row: 0,
+            cursor_col: 0,
+            line_count: 1,
+            is_editing: false,
+        };
+        let area = Rect::new(0, 0, 80, 24);
+        let start = popup.cursor_position(area).unwrap().0;
+        popup.cursor_col = 2;
+        assert_eq!(popup.cursor_position(area).unwrap().0, start + 3);
     }
 
     #[tokio::test]

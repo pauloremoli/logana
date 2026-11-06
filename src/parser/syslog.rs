@@ -74,7 +74,7 @@ fn parse_bsd_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 15 {
         return None;
     }
-    let month = &s[..3];
+    let month = s.get(..3)?;
     if !MONTHS.contains(&month) {
         return None;
     }
@@ -98,7 +98,7 @@ fn parse_bsd_timestamp(s: &str) -> Option<(&str, usize)> {
     if time_start + 8 > s.len() {
         return None;
     }
-    let time_part = &s[time_start..time_start + 8];
+    let time_part = s.get(time_start..time_start + 8)?;
     if time_part.as_bytes()[2] != b':'
         || time_part.as_bytes()[5] != b':'
         || !time_part.as_bytes()[0].is_ascii_digit()

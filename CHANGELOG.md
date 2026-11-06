@@ -5,6 +5,10 @@ All notable changes to logana will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- [core] Prevent timestamp detection and date filters from crashing on Unicode text across log formats.
+- [tui] Keep comment and export-field editing on Unicode character boundaries, position their cursors by display width, and truncate Unicode paths, device names, and shortcut labels safely.
+
 ## [0.8.6] - 2026-11-06
 
 ### Added

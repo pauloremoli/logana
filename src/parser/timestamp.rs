@@ -31,7 +31,7 @@ pub fn parse_bsd_precise_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 16 {
         return None;
     }
-    let month = &s[..3];
+    let month = s.get(..3)?;
     if !MONTHS.contains(&month) {
         return None;
     }
@@ -55,7 +55,7 @@ pub fn parse_bsd_precise_timestamp(s: &str) -> Option<(&str, usize)> {
     if time_start + 8 > s.len() {
         return None;
     }
-    let t = &s[time_start..time_start + 8];
+    let t = s.get(time_start..time_start + 8)?;
     if t.as_bytes()[2] != b':'
         || t.as_bytes()[5] != b':'
         || !t.as_bytes()[0].is_ascii_digit()
@@ -102,14 +102,14 @@ pub fn parse_full_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 27 {
         return None;
     }
-    let weekday = &s[..3];
+    let weekday = s.get(..3)?;
     if !WEEKDAYS.contains(&weekday) {
         return None;
     }
     if s.as_bytes()[3] != b' ' {
         return None;
     }
-    let date_part = &s[4..14];
+    let date_part = s.get(4..14)?;
     let db = date_part.as_bytes();
     if !db[0].is_ascii_digit()
         || !db[1].is_ascii_digit()
@@ -130,7 +130,7 @@ pub fn parse_full_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 23 {
         return None;
     }
-    let t = &s[15..23];
+    let t = s.get(15..23)?;
     if t.as_bytes()[2] != b':'
         || t.as_bytes()[5] != b':'
         || !t.as_bytes()[0].is_ascii_digit()
@@ -220,7 +220,7 @@ pub fn parse_bsd_plain_timestamp(s: &str) -> Option<(&str, usize)> {
     if s.len() < 15 {
         return None;
     }
-    let month = &s[..3];
+    let month = s.get(..3)?;
     if !MONTHS.contains(&month) {
         return None;
     }
@@ -244,7 +244,7 @@ pub fn parse_bsd_plain_timestamp(s: &str) -> Option<(&str, usize)> {
     if time_start + 8 > s.len() {
         return None;
     }
-    let t = &s[time_start..time_start + 8];
+    let t = s.get(time_start..time_start + 8)?;
     if t.as_bytes()[2] != b':'
         || t.as_bytes()[5] != b':'
         || !t.as_bytes()[0].is_ascii_digit()
@@ -361,6 +361,38 @@ pub fn is_level_keyword(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_timestamp_parsers_handle_unicode() {
+        let parsers = [
+            parse_iso_timestamp,
+            parse_bsd_precise_timestamp,
+            parse_bsd_plain_timestamp,
+            parse_full_timestamp,
+            parse_datetime_timestamp,
+            parse_nano_timestamp,
+            parse_monotonic_timestamp,
+            parse_unix_timestamp,
+        ];
+        for parse in parsers {
+            assert_eq!(parse("ação iniciada com sucesso no servidor"), None);
+            for template in [
+                "Feb 22 10:15:30.123456 rest",
+                "Mon 2024-02-22 10:15:30 UTC rest",
+                "2024-02-22T10:15:30Z rest",
+            ] {
+                for (pos, _) in template.char_indices() {
+                    for ch in ['ç', '€', '🦀'] {
+                        let mut input = template.to_owned();
+                        input.replace_range(pos..pos + 1, &ch.to_string());
+                        if let Some((timestamp, consumed)) = parse(&input) {
+                            assert_eq!(input.get(..consumed), Some(timestamp));
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_parse_iso_timestamp_basic() {

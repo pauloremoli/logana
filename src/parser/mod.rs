@@ -619,3 +619,31 @@ mod tests {
         assert_eq!(parser.name(), "syslog");
     }
 }
+
+#[cfg(test)]
+mod unicode_tests {
+    use super::*;
+
+    #[test]
+    fn builtin_parsers_handle_unicode_at_every_position() {
+        for template in [
+            "Feb 22 10:15:30 host app[12]: message",
+            "<34>Feb 22 10:15:30 host app[12]: message",
+            "host - - [10/Oct/2000:13:55:36 -0700] \"GET / HTTP/1.0\" 200 12",
+            "2024-02-22T10:15:30Z INFO target: message",
+            "<34>1 2024-02-22T10:15:30Z host app 12 id [meta key=\"value\"] message",
+        ] {
+            for (pos, _) in template.char_indices() {
+                for ch in ['ç', '中', 'ع', '🦀', '\u{301}'] {
+                    let mut input = template.to_owned();
+                    input.replace_range(pos..pos + 1, &ch.to_string());
+                    for parser in builtin_parsers() {
+                        let _ = parser.parse_line(input.as_bytes());
+                        let _ = parser.parse_timestamp(input.as_bytes());
+                        let _ = parser.detect_score(&[input.as_bytes()]);
+                    }
+                }
+            }
+        }
+    }
+}

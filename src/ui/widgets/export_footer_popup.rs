@@ -68,6 +68,14 @@ impl<'a> ExportFooterPopup<'a> {
         cursor_row.saturating_sub(field_h.saturating_sub(1) as usize) as u16
     }
 
+    fn display_cursor_col(&self) -> usize {
+        let prefix: String = self.fields[self.active_idx].1[self.cursor_row]
+            .chars()
+            .take(self.cursor_col)
+            .collect();
+        unicode_width::UnicodeWidthStr::width(prefix.as_str())
+    }
+
     pub fn cursor_position(&self, area: Rect) -> Option<(u16, u16)> {
         let p = self.layout(area);
         let text_y_offset = p.field_text_y(self.active_idx);
@@ -75,8 +83,8 @@ impl<'a> ExportFooterPopup<'a> {
         let text_area_y = p.popup_y + text_y_offset;
         let text_area_x = p.popup_x + 1;
         let inner_w = p.popup_w.saturating_sub(2);
-        let scroll_x = Self::scroll_for(self.cursor_col, inner_w);
-        let cur_x = text_area_x + self.cursor_col as u16 - scroll_x;
+        let scroll_x = Self::scroll_for(self.display_cursor_col(), inner_w);
+        let cur_x = text_area_x + self.display_cursor_col() as u16 - scroll_x;
         let cur_y = text_area_y + self.cursor_row as u16 - scroll_y;
         if cur_x < text_area_x + inner_w && cur_y < text_area_y + p.field_h {
             Some((cur_x, cur_y))
@@ -87,11 +95,20 @@ impl<'a> ExportFooterPopup<'a> {
 }
 
 fn truncated_path(path: &str, popup_w: u16) -> String {
-    if path.len() > popup_w as usize - 12 {
-        format!("…{}", &path[path.len() - (popup_w as usize - 13)..])
-    } else {
-        path.to_string()
+    let available = popup_w.saturating_sub(12) as usize;
+    if unicode_width::UnicodeWidthStr::width(path) <= available {
+        return path.to_string();
     }
+    let mut width = 1; // ellipsis
+    let suffix: String = path
+        .chars()
+        .rev()
+        .take_while(|&ch| {
+            width += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            width <= available
+        })
+        .collect();
+    format!("…{}", suffix.chars().rev().collect::<String>())
 }
 
 fn label_style(active: bool, theme: &Theme) -> Style {
@@ -216,7 +233,7 @@ impl<'a> Widget for ExportFooterPopup<'a> {
             let (scroll_y, scroll_x) = if active {
                 (
                     Self::scroll_for(self.cursor_row, p.field_h),
-                    Self::scroll_for(self.cursor_col, inner_w),
+                    Self::scroll_for(self.display_cursor_col(), inner_w),
                 )
             } else {
                 (0, 0)
@@ -281,6 +298,22 @@ mod tests {
             cursor_row: 0,
             cursor_col: 0,
         }
+    }
+
+    #[test]
+    fn test_unicode_footer_cursor_and_path() {
+        let theme = Theme::default();
+        let kb = Keybindings::default();
+        let fields = vec![("conclusion".into(), vec!["中ç".into()])];
+        let mut popup = make_popup(&theme, &kb, &fields, 0);
+        popup.cursor_col = 2;
+        let area = Rect::new(0, 0, 80, 24);
+        let (x, _) = popup.cursor_position(area).unwrap();
+        assert_eq!(x, popup.layout(area).popup_x + 1 + 3);
+        let path = "中".repeat(40);
+        let shortened = truncated_path(&path, 50);
+        assert!(shortened.starts_with('…'));
+        assert!(unicode_width::UnicodeWidthStr::width(shortened.as_str()) <= 38);
     }
 
     #[test]

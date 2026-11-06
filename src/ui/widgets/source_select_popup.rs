@@ -458,17 +458,9 @@ impl<'a> Widget for DltSelectPopup<'a> {
             for (i, dev) in self.devices.iter().enumerate().skip(scroll).take(content_h) {
                 let is_selected = i == self.selected;
                 let prefix = if is_selected { "> " } else { "  " };
-                let name = if dev.name.len() > name_w {
-                    &dev.name[..name_w]
-                } else {
-                    &dev.name
-                };
+                let name = super::truncate_text(&dev.name, name_w);
                 let host_port = format!("{}:{}", dev.host, dev.port.unwrap_or(DEFAULT_DLT_PORT));
-                let hp_display = if host_port.len() > host_w {
-                    &host_port[..host_w]
-                } else {
-                    &host_port
-                };
+                let hp_display = super::truncate_text(&host_port, host_w);
                 let style = if is_selected {
                     Style::default()
                         .fg(self.theme.text_highlight_fg)
@@ -865,8 +857,8 @@ mod tests {
         use crate::mode::dlt_select_mode::DltSelectMode;
         let mut app = make_app(&["line one"]).await;
         let devices = vec![DltDevice {
-            name: "a".repeat(60),
-            host: "b".repeat(60),
+            name: "中".repeat(60),
+            host: "ç".repeat(60),
             port: Some(9999),
         }];
         app.tabs[0].interaction.mode = Box::new(DltSelectMode::new(devices));

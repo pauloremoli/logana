@@ -53,3 +53,14 @@ pub(super) fn popup_entry(
         txt_style,
     ));
 }
+
+// Keep terminal columns within their display width without splitting UTF-8 characters.
+fn truncate_text(text: &str, max_width: usize) -> String {
+    let mut width = 0;
+    text.chars()
+        .take_while(|&ch| {
+            width += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            width <= max_width
+        })
+        .collect()
+}

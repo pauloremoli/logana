@@ -57,17 +57,13 @@ impl<'a> Widget for KeybindingsHelpPopup<'a> {
                     )]));
                 }
                 HelpRow::Entry { action, keys } => {
-                    let keys_str = if keys.len() > key_col {
-                        &keys[..key_col]
-                    } else {
-                        keys.as_str()
-                    };
-                    let action_str = if action.len() > action_col {
-                        &action[..action_col]
-                    } else {
-                        action.as_str()
-                    };
-                    let gap = " ".repeat(key_col.saturating_sub(keys_str.len()));
+                    let keys_str = super::truncate_text(keys, key_col);
+                    let action_str = super::truncate_text(action, action_col);
+                    let gap = " ".repeat(
+                        key_col.saturating_sub(unicode_width::UnicodeWidthStr::width(
+                            keys_str.as_str(),
+                        )),
+                    );
                     lines.push(Line::from(vec![
                         Span::raw(" "),
                         Span::styled("<", Style::default().fg(self.theme.text)),
@@ -184,6 +180,29 @@ mod tests {
 
     fn make_terminal() -> Terminal<TestBackend> {
         Terminal::new(TestBackend::new(80, 24)).unwrap()
+    }
+
+    #[test]
+    fn test_unicode_keybindings_truncation() {
+        use super::*;
+        use crate::config::{KeyBinding, KeyBindings};
+        use crate::input::{KeyCode, KeyModifiers};
+        let theme = Theme::default();
+        let mut keybindings = Keybindings::default();
+        keybindings.global.quit =
+            KeyBindings(vec![
+                KeyBinding(KeyCode::Char('中'), KeyModifiers::NONE);
+                10
+            ]);
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        KeybindingsHelpPopup {
+            theme: &theme,
+            keybindings: &keybindings,
+            scroll: 0,
+            search: "quit",
+        }
+        .render(area, &mut buf);
     }
 
     #[tokio::test]

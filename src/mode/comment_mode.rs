@@ -23,6 +23,7 @@ use ratatui::text::{Line, Span};
 pub struct CommentMode {
     pub lines: Vec<String>,
     pub cursor_row: usize,
+    /// Cursor column in Unicode scalar values.
     pub cursor_col: usize,
     /// The actual file-line indices this comment will be attached to.
     pub line_indices: Vec<usize>,
@@ -31,6 +32,13 @@ pub struct CommentMode {
 }
 
 impl CommentMode {
+    fn cursor_byte_offset(&self) -> usize {
+        let line = &self.lines[self.cursor_row];
+        line.char_indices()
+            .nth(self.cursor_col)
+            .map_or(line.len(), |(offset, _)| offset)
+    }
+
     pub fn new(line_indices: Vec<usize>) -> Self {
         CommentMode {
             lines: vec![String::new()],
@@ -49,7 +57,7 @@ impl CommentMode {
             text.split('\n').map(String::from).collect()
         };
         let cursor_row = lines.len() - 1;
-        let cursor_col = lines.last().map_or(0, |l| l.len());
+        let cursor_col = lines.last().map_or(0, |l| l.chars().count());
         CommentMode {
             lines,
             cursor_row,
@@ -74,8 +82,8 @@ impl Mode for CommentMode {
         // Insert newline: split current line at cursor (configurable, default Enter)
         // Checked first so it runs before save — Enter = newline is the common case.
         if comment_kb.newline.matches(key, modifiers) {
-            let rest = self.lines[self.cursor_row][self.cursor_col..].to_string();
-            self.lines[self.cursor_row].truncate(self.cursor_col);
+            let byte_offset = self.cursor_byte_offset();
+            let rest = self.lines[self.cursor_row].split_off(byte_offset);
             self.cursor_row += 1;
             self.lines.insert(self.cursor_row, rest);
             self.cursor_col = 0;
@@ -121,17 +129,19 @@ impl Mode for CommentMode {
             KeyCode::Backspace => {
                 if self.cursor_col > 0 {
                     self.cursor_col -= 1;
-                    self.lines[self.cursor_row].remove(self.cursor_col);
+                    let byte_offset = self.cursor_byte_offset();
+                    self.lines[self.cursor_row].remove(byte_offset);
                 } else if self.cursor_row > 0 {
                     let current = self.lines.remove(self.cursor_row);
                     self.cursor_row -= 1;
-                    self.cursor_col = self.lines[self.cursor_row].len();
+                    self.cursor_col = self.lines[self.cursor_row].chars().count();
                     self.lines[self.cursor_row].push_str(&current);
                 }
             }
             // Insert character (ignore Ctrl combos)
             KeyCode::Char(c) if !ctrl => {
-                self.lines[self.cursor_row].insert(self.cursor_col, c);
+                let byte_offset = self.cursor_byte_offset();
+                self.lines[self.cursor_row].insert(byte_offset, c);
                 self.cursor_col += 1;
             }
             // Cursor left — wrap to end of previous line
@@ -140,12 +150,12 @@ impl Mode for CommentMode {
                     self.cursor_col -= 1;
                 } else if self.cursor_row > 0 {
                     self.cursor_row -= 1;
-                    self.cursor_col = self.lines[self.cursor_row].len();
+                    self.cursor_col = self.lines[self.cursor_row].chars().count();
                 }
             }
             // Cursor right — wrap to start of next line
             KeyCode::Right => {
-                let line_len = self.lines[self.cursor_row].len();
+                let line_len = self.lines[self.cursor_row].chars().count();
                 if self.cursor_col < line_len {
                     self.cursor_col += 1;
                 } else if self.cursor_row + 1 < self.lines.len() {
@@ -156,12 +166,16 @@ impl Mode for CommentMode {
             // Cursor up — clamp col to new line length
             KeyCode::Up if self.cursor_row > 0 => {
                 self.cursor_row -= 1;
-                self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+                self.cursor_col = self
+                    .cursor_col
+                    .min(self.lines[self.cursor_row].chars().count());
             }
             // Cursor down — clamp col to new line length
             KeyCode::Down if self.cursor_row + 1 < self.lines.len() => {
                 self.cursor_row += 1;
-                self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+                self.cursor_col = self
+                    .cursor_col
+                    .min(self.lines[self.cursor_row].chars().count());
             }
             _ => {}
         }
@@ -228,6 +242,30 @@ mod tests {
         modifiers: KeyModifiers,
     ) -> (Box<dyn Mode>, KeyResult) {
         Box::new(mode).handle_key(tab, key, modifiers).await
+    }
+
+    #[tokio::test]
+    async fn test_unicode_comment_editing() {
+        let mut tab = make_tab().await;
+        let mut mode: Box<dyn Mode> = Box::new(CommentMode::new(vec![0]));
+        for key in [
+            KeyCode::Char('ç'),
+            KeyCode::Char('中'),
+            KeyCode::Left,
+            KeyCode::Backspace,
+            KeyCode::Right,
+            KeyCode::Enter,
+            KeyCode::Char('🦀'),
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Backspace,
+        ] {
+            (mode, _) = mode.handle_key(&mut tab, key, KeyModifiers::NONE).await;
+        }
+        match mode.render_state() {
+            ModeRenderState::Comment { lines, .. } => assert_eq!(lines, vec!["中", ""]),
+            other => panic!("expected Comment, got {:?}", other),
+        }
     }
 
     #[tokio::test]

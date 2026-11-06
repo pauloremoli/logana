@@ -31,6 +31,7 @@ pub struct ExportFooterMode {
     pub fields: Vec<FooterField>,
     pub active_idx: usize,
     pub cursor_row: usize,
+    /// Cursor column in Unicode scalar values.
     pub cursor_col: usize,
 }
 
@@ -75,7 +76,7 @@ impl ExportFooterMode {
         let (row, col) = {
             let lines = self.active_lines();
             let row = lines.len().saturating_sub(1);
-            let col = lines.last().map_or(0, |l| l.len());
+            let col = lines.last().map_or(0, |l| l.chars().count());
             (row, col)
         };
         self.cursor_row = row;
@@ -85,8 +86,11 @@ impl ExportFooterMode {
     fn insert_newline(&mut self) {
         let (row, col) = (self.cursor_row, self.cursor_col);
         let lines = &mut self.fields[self.active_idx].lines;
-        let rest = lines[row][col..].to_string();
-        lines[row].truncate(col);
+        let offset = lines[row]
+            .char_indices()
+            .nth(col)
+            .map_or(lines[row].len(), |(i, _)| i);
+        let rest = lines[row].split_off(offset);
         lines.insert(row + 1, rest);
         self.cursor_row += 1;
         self.cursor_col = 0;
@@ -95,7 +99,11 @@ impl ExportFooterMode {
     fn insert_char(&mut self, c: char) {
         let (row, col) = (self.cursor_row, self.cursor_col);
         let lines = &mut self.fields[self.active_idx].lines;
-        lines[row].insert(col, c);
+        let offset = lines[row]
+            .char_indices()
+            .nth(col)
+            .map_or(lines[row].len(), |(i, _)| i);
+        lines[row].insert(offset, c);
         self.cursor_col += 1;
     }
 
@@ -103,13 +111,14 @@ impl ExportFooterMode {
         let (row, col) = (self.cursor_row, self.cursor_col);
         if col > 0 {
             let lines = &mut self.fields[self.active_idx].lines;
-            lines[row].remove(col - 1);
+            let offset = lines[row].char_indices().nth(col - 1).unwrap().0;
+            lines[row].remove(offset);
             self.cursor_col -= 1;
         } else if row > 0 {
             let prev_len = {
                 let lines = &mut self.fields[self.active_idx].lines;
                 let current = lines.remove(row);
-                let prev_len = lines[row - 1].len();
+                let prev_len = lines[row - 1].chars().count();
                 lines[row - 1].push_str(&current);
                 prev_len
             };
@@ -121,8 +130,9 @@ impl ExportFooterMode {
     fn delete_forward(&mut self) {
         let (row, col) = (self.cursor_row, self.cursor_col);
         let lines = &mut self.fields[self.active_idx].lines;
-        if col < lines[row].len() {
-            lines[row].remove(col);
+        if col < lines[row].chars().count() {
+            let offset = lines[row].char_indices().nth(col).unwrap().0;
+            lines[row].remove(offset);
         } else if row + 1 < lines.len() {
             let next = lines.remove(row + 1);
             lines[row].push_str(&next);
@@ -134,14 +144,14 @@ impl ExportFooterMode {
             self.cursor_col -= 1;
         } else if self.cursor_row > 0 {
             self.cursor_row -= 1;
-            self.cursor_col = self.active_lines()[self.cursor_row].len();
+            self.cursor_col = self.active_lines()[self.cursor_row].chars().count();
         }
     }
 
     fn move_right(&mut self) {
         let (row, col) = (self.cursor_row, self.cursor_col);
         let lines = self.active_lines();
-        if col < lines[row].len() {
+        if col < lines[row].chars().count() {
             self.cursor_col += 1;
         } else if row + 1 < lines.len() {
             self.cursor_row += 1;
@@ -152,7 +162,7 @@ impl ExportFooterMode {
     fn move_up(&mut self) {
         if self.cursor_row > 0 {
             self.cursor_row -= 1;
-            let max_col = self.active_lines()[self.cursor_row].len();
+            let max_col = self.active_lines()[self.cursor_row].chars().count();
             self.cursor_col = self.cursor_col.min(max_col);
         }
     }
@@ -161,7 +171,7 @@ impl ExportFooterMode {
         let row = self.cursor_row;
         if row + 1 < self.active_lines().len() {
             self.cursor_row += 1;
-            let max_col = self.active_lines()[self.cursor_row].len();
+            let max_col = self.active_lines()[self.cursor_row].chars().count();
             self.cursor_col = self.cursor_col.min(max_col);
         }
     }
@@ -289,6 +299,26 @@ mod tests {
             "markdown".into(),
             vec!["conclusion".into(), "next_steps".into()],
         )
+    }
+
+    #[test]
+    fn test_unicode_footer_editing() {
+        let mut mode = make_mode();
+        mode.insert_char('ç');
+        mode.insert_char('中');
+        mode.move_left();
+        mode.backspace();
+        assert_eq!(mode.active_lines()[0], "中");
+        mode.delete_forward();
+        assert_eq!(mode.active_lines()[0], "");
+        mode.insert_char('🦀');
+        mode.insert_newline();
+        mode.backspace();
+        assert_eq!(mode.active_lines()[0], "🦀");
+        assert_eq!(mode.cursor_col, 1);
+        mode.switch_to(1);
+        mode.switch_to(0);
+        assert_eq!(mode.cursor_col, 1);
     }
 
     #[test]

@@ -106,7 +106,9 @@ fn validate_clf_date(date: &str) -> bool {
     if !b[0].is_ascii_digit() || !b[1].is_ascii_digit() || b[2] != b'/' {
         return false;
     }
-    let month = &date[3..6];
+    let Some(month) = date.get(3..6) else {
+        return false;
+    };
     if !CLF_MONTHS.contains(&month) || b[6] != b'/' {
         return false;
     }

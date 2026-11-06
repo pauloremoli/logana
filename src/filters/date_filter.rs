@@ -131,7 +131,7 @@ fn parse_bound(input: &str) -> Result<(DateBound, ComparisonMode, Granularity), 
 
     // Try BSD month prefix: "Feb 21 HH:MM:SS", "Feb/21", "Feb 21", etc.
     if s.len() >= 3 {
-        let month_abbr = &s[..3];
+        let month_abbr = s.get(..3).unwrap_or("");
         if let Some(month_num) = bsd_month_number(month_abbr) {
             return parse_bsd_bound(s, month_num);
         }
@@ -260,7 +260,7 @@ fn parse_slash_month_day_bound(
     // Optional /YYYY or -YYYY (same separator as MM/DD or MM-DD)
     let (year, after_year) = if after_day.as_bytes().first().copied() == Some(sep) {
         let rest = &after_day[1..];
-        if rest.len() >= 4 && rest[..4].bytes().all(|c| c.is_ascii_digit()) {
+        if rest.len() >= 4 && rest.as_bytes()[..4].iter().all(|c| c.is_ascii_digit()) {
             let y: u32 = rest[..4]
                 .parse()
                 .map_err(|_| format!("Invalid year in '{}'", s))?;
@@ -292,14 +292,22 @@ fn parse_slash_month_day_bound(
 }
 
 fn parse_iso_bound(s: &str) -> Result<(DateBound, ComparisonMode, Granularity), String> {
-    let date_part = &s[..10]; // YYYY-MM-DD
-    let year: u32 = date_part[..4]
+    let date_part = s
+        .get(..10)
+        .ok_or_else(|| format!("Invalid date in '{}'", s))?; // YYYY-MM-DD
+    let year: u32 = date_part
+        .get(..4)
+        .ok_or_else(|| format!("Invalid date in '{}'", s))?
         .parse()
         .map_err(|_| format!("Invalid year in '{}'", s))?;
-    let month: u32 = date_part[5..7]
+    let month: u32 = date_part
+        .get(5..7)
+        .ok_or_else(|| format!("Invalid date in '{}'", s))?
         .parse()
         .map_err(|_| format!("Invalid month in '{}'", s))?;
-    let day: u32 = date_part[8..10]
+    let day: u32 = date_part
+        .get(8..10)
+        .ok_or_else(|| format!("Invalid date in '{}'", s))?
         .parse()
         .map_err(|_| format!("Invalid day in '{}'", s))?;
     if !(1..=12).contains(&month) {
@@ -510,7 +518,7 @@ pub(crate) fn system_time_to_date(st: Option<std::time::SystemTime>) -> Option<t
 /// Returns `None` if the timestamp is not BSD-format.
 pub(crate) fn bsd_month_from_timestamp(ts: &str) -> Option<u32> {
     let s = ts.trim_ascii();
-    if s.len() >= 3 && bsd_month_number(&s[..3]).is_some() {
+    if s.len() >= 3 && bsd_month_number(s.get(..3)?).is_some() {
         let n = normalize_bsd_ts(s)?;
         let c = &n.canonical;
         Some((c[5] - b'0') as u32 * 10 + (c[6] - b'0') as u32)
@@ -579,7 +587,7 @@ fn normalize_log_timestamp(ts: &str) -> Option<NormalizedTimestamp> {
     // Handle bracket-prefixed timestamps
     if s.starts_with('[') {
         // dmesg: [  seconds.usecs] — digits/spaces/dots only inside brackets
-        if s.ends_with(']') && is_dmesg_content(&s[1..s.len() - 1]) {
+        if s.ends_with(']') && is_dmesg_content(s.get(1..s.len() - 1)?) {
             return None;
         }
         // Apache error: [Www Mmm DD HH:MM:SS... YYYY]
@@ -593,7 +601,7 @@ fn normalize_log_timestamp(ts: &str) -> Option<NormalizedTimestamp> {
 
     // Try weekday prefix: "Mon 2024-02-22 10:15:30 UTC" (journalctl short-full)
     if s.len() >= 4 && s.as_bytes()[3] == b' ' {
-        let weekday = &s[..3];
+        let weekday = s.get(..3)?;
         if crate::parser::timestamp::WEEKDAYS.contains(&weekday) {
             return normalize_full_ts(s);
         }
@@ -615,7 +623,7 @@ fn normalize_log_timestamp(ts: &str) -> Option<NormalizedTimestamp> {
     }
 
     // Try BSD: "Feb 22 10:15:30" or "Feb 22 10:15:30.123456"
-    if s.len() >= 3 && bsd_month_number(&s[..3]).is_some() {
+    if s.len() >= 3 && bsd_month_number(s.get(..3)?).is_some() {
         return normalize_bsd_ts(s);
     }
 
@@ -638,10 +646,10 @@ fn is_dmesg_content(inner: &str) -> bool {
 
 fn normalize_iso_ts(s: &str) -> Option<NormalizedTimestamp> {
     // "2024-02-22T10:15:30..."
-    let year: u32 = s[..4].parse().ok()?;
-    let month: u32 = s[5..7].parse().ok()?;
-    let day: u32 = s[8..10].parse().ok()?;
-    let (h, m, sec, ms) = parse_hms_frac(&s[11..])?;
+    let year: u32 = s.get(..4)?.parse().ok()?;
+    let month: u32 = s.get(5..7)?.parse().ok()?;
+    let day: u32 = s.get(8..10)?.parse().ok()?;
+    let (h, m, sec, ms) = parse_hms_frac(s.get(11..)?)?;
     Some(NormalizedTimestamp {
         time_of_day: h * 3600 + m * 60 + sec,
         canonical: write_canonical(year, month, day, h, m, sec, ms),
@@ -653,10 +661,10 @@ fn normalize_full_ts(s: &str) -> Option<NormalizedTimestamp> {
     if s.len() < 23 {
         return None;
     }
-    let year: u32 = s[4..8].parse().ok()?;
-    let month: u32 = s[9..11].parse().ok()?;
-    let day: u32 = s[12..14].parse().ok()?;
-    let (h, m, sec, ms) = parse_hms_frac(&s[15..])?;
+    let year: u32 = s.get(4..8)?.parse().ok()?;
+    let month: u32 = s.get(9..11)?.parse().ok()?;
+    let day: u32 = s.get(12..14)?.parse().ok()?;
+    let (h, m, sec, ms) = parse_hms_frac(s.get(15..)?)?;
     Some(NormalizedTimestamp {
         time_of_day: h * 3600 + m * 60 + sec,
         canonical: write_canonical(year, month, day, h, m, sec, ms),
@@ -665,10 +673,10 @@ fn normalize_full_ts(s: &str) -> Option<NormalizedTimestamp> {
 
 fn normalize_datetime_ts(s: &str) -> Option<NormalizedTimestamp> {
     // "2024-01-15 10:30:00[.mmm]"
-    let year: u32 = s[..4].parse().ok()?;
-    let month: u32 = s[5..7].parse().ok()?;
-    let day: u32 = s[8..10].parse().ok()?;
-    let (h, m, sec, ms) = parse_hms_frac(&s[11..])?;
+    let year: u32 = s.get(..4)?.parse().ok()?;
+    let month: u32 = s.get(5..7)?.parse().ok()?;
+    let day: u32 = s.get(8..10)?.parse().ok()?;
+    let (h, m, sec, ms) = parse_hms_frac(s.get(11..)?)?;
     Some(NormalizedTimestamp {
         time_of_day: h * 3600 + m * 60 + sec,
         canonical: write_canonical(year, month, day, h, m, sec, ms),
@@ -677,10 +685,10 @@ fn normalize_datetime_ts(s: &str) -> Option<NormalizedTimestamp> {
 
 fn normalize_slash_ts(s: &str) -> Option<NormalizedTimestamp> {
     // "2024/01/15 10:30:00"
-    let year: u32 = s[..4].parse().ok()?;
-    let month: u32 = s[5..7].parse().ok()?;
-    let day: u32 = s[8..10].parse().ok()?;
-    let (h, m, sec, ms) = parse_hms_frac(&s[11..])?;
+    let year: u32 = s.get(..4)?.parse().ok()?;
+    let month: u32 = s.get(5..7)?.parse().ok()?;
+    let day: u32 = s.get(8..10)?.parse().ok()?;
+    let (h, m, sec, ms) = parse_hms_frac(s.get(11..)?)?;
     Some(NormalizedTimestamp {
         time_of_day: h * 3600 + m * 60 + sec,
         canonical: write_canonical(year, month, day, h, m, sec, ms),
@@ -697,7 +705,7 @@ fn normalize_clf_ts(s: &str) -> Option<NormalizedTimestamp> {
         return None;
     }
     let day = (b[0] - b'0') as u32 * 10 + (b[1] - b'0') as u32;
-    let month_abbr = &s[3..6];
+    let month_abbr = s.get(3..6)?;
     let month_num = bsd_month_number(month_abbr)?;
     if !b[7].is_ascii_digit()
         || !b[8].is_ascii_digit()
@@ -713,7 +721,7 @@ fn normalize_clf_ts(s: &str) -> Option<NormalizedTimestamp> {
     if b[11] != b':' {
         return None;
     }
-    let (h, m, sec, ms) = parse_hms_frac(&s[12..])?;
+    let (h, m, sec, ms) = parse_hms_frac(s.get(12..)?)?;
     Some(NormalizedTimestamp {
         time_of_day: h * 3600 + m * 60 + sec,
         canonical: write_canonical(year, month_num, day, h, m, sec, ms),
@@ -722,8 +730,8 @@ fn normalize_clf_ts(s: &str) -> Option<NormalizedTimestamp> {
 
 fn normalize_bsd_ts(s: &str) -> Option<NormalizedTimestamp> {
     // "Feb 22 10:15:30" or "Feb 22 10:15:30.123456"
-    let month_num = bsd_month_number(&s[..3])?;
-    let rest = s[3..].trim_start();
+    let month_num = bsd_month_number(s.get(..3)?)?;
+    let rest = s.get(3..)?.trim_start();
     let day_end = rest.find(|c: char| !c.is_ascii_digit())?;
     if day_end == 0 {
         return None;
@@ -805,17 +813,17 @@ fn normalize_apache_error_ts(s: &str) -> Option<NormalizedTimestamp> {
     if inner.len() < 4 || inner.as_bytes()[3] != b' ' {
         return None;
     }
-    let weekday = &inner[..3];
+    let weekday = inner.get(..3)?;
     if !crate::parser::timestamp::WEEKDAYS.contains(&weekday) {
         return None;
     }
-    let after_weekday = &inner[4..];
+    let after_weekday = inner.get(4..)?;
     // Month
     if after_weekday.len() < 3 {
         return None;
     }
-    let month_num = bsd_month_number(&after_weekday[..3])?;
-    let rest = after_weekday[3..].trim_start();
+    let month_num = bsd_month_number(after_weekday.get(..3)?)?;
+    let rest = after_weekday.get(3..)?.trim_start();
     // Day
     let day_end = rest.find(|c: char| !c.is_ascii_digit())?;
     let day: u32 = rest[..day_end].parse().ok()?;
@@ -1800,5 +1808,32 @@ mod tests {
     fn test_normalize_iso_no_tz() {
         let n = normalize_log_timestamp("2024-02-22T10:15:30").unwrap();
         assert_eq!(buf_as_str(&n.canonical), "2024-02-22 10:15:30.000");
+    }
+}
+
+#[cfg(test)]
+mod unicode_tests {
+    use super::*;
+
+    #[test]
+    fn date_filters_handle_unicode_at_every_position() {
+        for template in [
+            "Feb 22 10:15:30",
+            "Mon 2024-02-22 10:15:30 UTC",
+            "2024-02-22T10:15:30Z",
+            "02/22/2024",
+            "10/Oct/2000:13:55:36 -0700",
+            "[Mon Jan 15 10:30:00.123456 2024]",
+        ] {
+            for (pos, _) in template.char_indices() {
+                for ch in ['ç', '中', 'ع', '🦀', '\u{301}'] {
+                    let mut input = template.to_owned();
+                    input.replace_range(pos..pos + 1, &ch.to_string());
+                    let _ = parse_date_filter(&input);
+                    let _ = canonical_timestamp(&input, None);
+                    let _ = bsd_month_from_timestamp(&input);
+                }
+            }
+        }
     }
 }
